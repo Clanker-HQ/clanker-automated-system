@@ -73,3 +73,97 @@ grants:
     expect(() => parseGrants("grants.yaml", yaml)).toThrow(/urlPattern/);
   });
 });
+
+import { decide, detectOutwardEffect, matchGrant } from "../src/grants.js";
+
+const TEST_ECHO = parseGrants(
+  "grants.yaml",
+  'grants:\n  - id: test-echo\n    kind: http\n    method: POST\n    urlPattern: "https://httpbin.org/post"\n    secret: X\n',
+)[0]!;
+
+const PUSH_SITE = parseGrants(
+  "grants.yaml",
+  "grants:\n  - id: push-site\n    kind: git-push\n    remote: \"github.com/me/site\"\n    branches: [main]\n    secret: X\n",
+)[0]!;
+
+describe("detectOutwardEffect", () => {
+  it("recognises git push inside a Bash command", () => {
+    const effect = detectOutwardEffect("Bash", { command: "git push github.com/me/site main" });
+    expect(effect).toEqual({
+      description: "git push (git push github.com/me/site main)",
+      target: "github.com/me/site",
+    });
+  });
+
+  it("does not flag a local git commit", () => {
+    expect(detectOutwardEffect("Bash", { command: "git commit -m wip" })).toBeNull();
+  });
+
+  it("recognises curl to a non-local host but not to localhost", () => {
+    expect(detectOutwardEffect("Bash", { command: "curl https://httpbin.org/post" })).not.toBeNull();
+    expect(detectOutwardEffect("Bash", { command: "curl http://localhost:3000" })).toBeNull();
+  });
+
+  it("recognises WebFetch as always an outward effect, keyed by its url", () => {
+    expect(detectOutwardEffect("WebFetch", { url: "https://httpbin.org/post" })).toEqual({
+      description: "fetch https://httpbin.org/post",
+      target: "https://httpbin.org/post",
+    });
+  });
+
+  it("returns null for a tool with no outward-effect pattern, like Read", () => {
+    expect(detectOutwardEffect("Read", { file_path: "notes.md" })).toBeNull();
+  });
+});
+
+describe("matchGrant", () => {
+  it("matches a git-push grant by remote, ignoring branch detail in the target", () => {
+    const effect = detectOutwardEffect("Bash", { command: "git push github.com/me/site main" })!;
+    expect(matchGrant([PUSH_SITE], effect)).toBe(PUSH_SITE);
+  });
+
+  it("returns null when no grant's target matches", () => {
+    const effect = detectOutwardEffect("Bash", { command: "git push github.com/someone-else/repo main" })!;
+    expect(matchGrant([PUSH_SITE], effect)).toBeNull();
+  });
+});
+
+function agent(tier: string, grantRefs: string[] = [], approval = "notify") {
+  return { tier, grantRefs, approval } as never;
+}
+
+describe("decide", () => {
+  it("allows a call with no outward effect regardless of tier", () => {
+    expect(decide(agent("readonly"), [], "Read", { file_path: "x" })).toEqual({ kind: "allow" });
+  });
+
+  it("denies an outward effect from a readonly agent", () => {
+    const result = decide(agent("readonly"), [], "WebFetch", { url: "https://httpbin.org/post" });
+    expect(result.kind).toBe("deny");
+  });
+
+  it("denies an outward effect from a sandboxed agent even with no grantRefs", () => {
+    const result = decide(agent("sandboxed"), [TEST_ECHO], "WebFetch", { url: "https://httpbin.org/post" });
+    expect(result.kind).toBe("deny");
+  });
+
+  it("parks a granted agent's effect that matches one of its grantRefs", () => {
+    const result = decide(agent("granted", ["test-echo"]), [TEST_ECHO], "WebFetch", { url: "https://httpbin.org/post" });
+    expect(result).toEqual({ kind: "park", grantRef: "test-echo", effect: "fetch https://httpbin.org/post" });
+  });
+
+  it("denies a granted agent's effect that matches no grantRef", () => {
+    const result = decide(agent("granted", ["test-echo"]), [TEST_ECHO], "Bash", { command: "git push github.com/x/y main" });
+    expect(result.kind).toBe("deny");
+  });
+
+  it("allows an autonomous agent's matching effect without parking", () => {
+    const result = decide(agent("autonomous", ["test-echo"], "auto"), [TEST_ECHO], "WebFetch", { url: "https://httpbin.org/post" });
+    expect(result).toEqual({ kind: "allow" });
+  });
+
+  it("still parks an autonomous-tier agent whose approval mode isn't auto", () => {
+    const result = decide(agent("autonomous", ["test-echo"], "notify"), [TEST_ECHO], "WebFetch", { url: "https://httpbin.org/post" });
+    expect(result.kind).toBe("park");
+  });
+});

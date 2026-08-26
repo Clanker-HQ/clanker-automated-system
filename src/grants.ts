@@ -67,3 +67,87 @@ export function parseGrants(source: string, yamlText: string): Grant[] {
 export function loadGrants(path: string): Grant[] {
   return parseGrants(path, readFileSync(path, "utf8"));
 }
+
+export interface OutwardEffect {
+  description: string;
+  target: string;
+}
+
+const OUTWARD_HOST_PATTERN = /https?:\/\/\S+/;
+
+export function detectOutwardEffect(toolName: string, input: Record<string, unknown>): OutwardEffect | null {
+  if (toolName === "Bash") {
+    const command = typeof input.command === "string" ? input.command : "";
+    const push = command.match(/\bgit\s+push\s+(\S+)/);
+    if (push) return { description: `git push (${command.trim()})`, target: push[1]! };
+
+    if (/\b(curl|wget)\b/.test(command) && !/localhost|127\.0\.0\.1/.test(command)) {
+      const url = command.match(OUTWARD_HOST_PATTERN);
+      return { description: `network call (${command.trim()})`, target: url?.[0] ?? command.trim() };
+    }
+    if (/\bnpm\s+publish\b/.test(command)) {
+      return { description: `npm publish (${command.trim()})`, target: "npm-publish" };
+    }
+    if (/\bgh\s+(repo\s+create|release\s+create|pr\s+create)\b/.test(command)) {
+      return { description: `gh (${command.trim()})`, target: "gh-provision" };
+    }
+    return null;
+  }
+
+  if (toolName === "WebFetch") {
+    const url = typeof input.url === "string" ? input.url : "";
+    return url ? { description: `fetch ${url}`, target: url } : null;
+  }
+
+  return null;
+}
+
+function grantTargetPattern(grant: Grant): string {
+  switch (grant.kind) {
+    case "http":
+      return grant.urlPattern;
+    case "git-push":
+      return grant.remote;
+    case "provision":
+      return grant.scope;
+  }
+}
+
+function globMatch(pattern: string, value: string): boolean {
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === "*" ? "\\uFFFF" : `\\${c}`));
+  const regex = new RegExp(`^${escaped.replace(/\\uFFFF/g, ".*")}$`);
+  return regex.test(value);
+}
+
+export function matchGrant(grants: Grant[], effect: OutwardEffect): Grant | null {
+  return grants.find((g) => globMatch(grantTargetPattern(g), effect.target) || effect.target.includes(grantTargetPattern(g).replace(/\*/g, ""))) ?? null;
+}
+
+export type Decision =
+  | { kind: "allow" }
+  | { kind: "deny"; reason: string }
+  | { kind: "park"; grantRef: string; effect: string };
+
+export function decide(
+  agent: { tier: string; grantRefs: string[]; approval: string },
+  grants: Grant[],
+  toolName: string,
+  input: Record<string, unknown>,
+): Decision {
+  const effect = detectOutwardEffect(toolName, input);
+  if (!effect) return { kind: "allow" };
+
+  if (agent.tier === "readonly" || agent.tier === "sandboxed") {
+    return { kind: "deny", reason: `tier "${agent.tier}" forbids outward effects: ${effect.description}` };
+  }
+
+  const relevantGrants = grants.filter((g) => agent.grantRefs.includes(g.id));
+  const matched = matchGrant(relevantGrants, effect);
+  if (!matched) {
+    return { kind: "deny", reason: `no grant matches attempted effect: ${effect.description}` };
+  }
+  if (agent.tier === "autonomous" && agent.approval === "auto") {
+    return { kind: "allow" };
+  }
+  return { kind: "park", grantRef: matched.id, effect: effect.description };
+}
