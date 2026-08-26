@@ -44,28 +44,13 @@ export function parseGrants(source: string, yamlText: string): Grant[] {
   try {
     raw = parseYaml(yamlText) ?? {};
   } catch (error) {
-    const msg = (error as Error).message;
-    // If the error is about duplicate keys, it might be duplicate grants
-    if (msg.includes("Map keys must be unique")) {
-      throw new ValidationError(source, [
-        "grants list appears to have duplicate entries (the 'grants' key is defined multiple times)",
-      ]);
-    }
-    throw new ValidationError(source, [`is not valid YAML: ${msg}`]);
+    throw new ValidationError(source, [
+      `is not valid YAML: ${(error as Error).message}`,
+    ]);
   }
 
   const result = GrantsFileSchema.safeParse(raw);
-  if (!result.success) {
-    const error = formatZodError(source, result.error);
-    // Add "Legal values" hint for discriminator errors if not already present
-    const lines = error.lines.map((line) => {
-      if (line.includes("Invalid discriminator value") && !line.includes("Legal values")) {
-        return line.replace("Expected", "Legal values:");
-      }
-      return line;
-    });
-    throw new ValidationError(source, lines);
-  }
+  if (!result.success) throw formatZodError(source, result.error);
 
   const seen = new Map<string, number>();
   result.data.grants.forEach((g) => seen.set(g.id, (seen.get(g.id) ?? 0) + 1));

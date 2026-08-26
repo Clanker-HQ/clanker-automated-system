@@ -52,7 +52,19 @@ describe("parseGrants", () => {
   });
 
   it("rejects two grants sharing an id", () => {
-    const yaml = VALID + VALID.replace("test-echo", "test-echo");
+    const yaml = `
+grants:
+  - id: test-echo
+    kind: http
+    method: POST
+    urlPattern: "https://httpbin.org/post"
+    secret: TEST_ECHO_TOKEN
+  - id: test-echo
+    kind: http
+    method: POST
+    urlPattern: "https://example.com/other"
+    secret: OTHER_TOKEN
+`;
     expect(() => parseGrants("grants.yaml", yaml)).toThrow(/duplicate/i);
   });
 

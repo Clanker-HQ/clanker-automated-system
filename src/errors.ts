@@ -32,6 +32,10 @@ function hint(issue: unknown): string {
   if (Array.isArray(values) && values.length > 0) {
     return ` Legal values: ${values.map((v) => JSON.stringify(v)).join(", ")}.`;
   }
+  const options = (issue as { options?: readonly unknown[] }).options;
+  if (Array.isArray(options) && options.length > 0) {
+    return ` Legal values: ${options.map((v) => JSON.stringify(v)).join(", ")}.`;
+  }
   const keys = (issue as { keys?: readonly string[] }).keys;
   if (Array.isArray(keys) && keys.length > 0) {
     return ` Unrecognised key(s): ${keys.join(", ")}. Check spelling, or remove them.`;
