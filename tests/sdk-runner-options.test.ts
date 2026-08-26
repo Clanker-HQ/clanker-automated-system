@@ -32,7 +32,7 @@ interface QueryParams {
     maxTurns: number;
     maxBudgetUsd: number;
     cwd: string;
-    allowedTools: string[];
+    allowedTools?: string[];
     disallowedTools: string[];
     tools: string[];
     permissionMode: string;
@@ -119,7 +119,12 @@ describe("SdkRunner query options", () => {
     expect(params.options.maxTurns).toBe(7);
     expect(params.options.maxBudgetUsd).toBe(0.25);
     expect(params.options.cwd).toBe(CTX.workspace);
-    expect(params.options.allowedTools).toEqual(["Read", "Glob"]);
+    // Deliberately NOT set: `allowedTools` makes the SDK auto-approve those
+    // tools without ever consulting `canUseTool`, which would defeat grant
+    // enforcement for exactly the tools it needs to gate. `tools` (asserted
+    // in the "trimming what's loaded" test below) is the separate, unrelated
+    // option that still carries the agent's tool list.
+    expect(params.options.allowedTools).toBeUndefined();
     expect(params.options.disallowedTools).toEqual(["Bash"]);
     expect(params.options.settingSources).toEqual([]);
     expect(params.options.permissionMode).toBe("default");
@@ -298,5 +303,51 @@ describe("SdkRunner grant enforcement", () => {
     const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> } };
     const decision = await params.options.canUseTool("Read", { file_path: "notes.md" }, { signal: new AbortController().signal, toolUseID: "t1" });
     expect(decision).toEqual({ behavior: "allow" });
+  });
+
+  // The 4 tests above all call canUseTool AFTER execute() has fully drained,
+  // which can't prove anything about what happens when a park/deny decision
+  // lands WHILE the stream is still running. The real SDK's transport
+  // rejects the async iterator once `controller.abort()` is called mid-run
+  // (it does not just stop yielding quietly) — this test's mocked `query`
+  // return value simulates exactly that: it yields one message carrying a
+  // session id, then calls the SdkRunner-built `canUseTool` itself (as the
+  // real SDK would, mid-stream) and, once that resolves, throws — modeling
+  // the transport's abort-triggered rejection. This is what actually proves
+  // the terminalEvent reaches the caller instead of the generator throwing.
+  it("yields the parked terminal event when canUseTool parks mid-stream and the transport then rejects on abort", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+
+    queryMock.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "assistant", session_id: "sess-mid-stream", message: { content: "starting" } };
+        // By the time query() was called (synchronously, before this
+        // generator is ever iterated), the params it was called with are
+        // already recorded on the mock — grab the real canUseTool it built.
+        const params = queryMock.mock.calls[0]![0] as {
+          options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> };
+        };
+        const decision = await params.options.canUseTool(
+          "WebFetch",
+          { url: "https://httpbin.org/post" },
+          { signal: new AbortController().signal, toolUseID: "t1" },
+        );
+        expect(decision).toMatchObject({ behavior: "deny", interrupt: true });
+        throw new DOMException("The operation was aborted.", "AbortError");
+      },
+    });
+
+    const events = await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, CTX, new AbortController().signal));
+
+    expect(events[0]).toEqual({ type: "assistant", text: "starting" });
+    expect(events.at(-1)).toMatchObject({ type: "parked", kind: "approval" });
+
+    // Also proves Important #4's fix: the pending entry got the session id
+    // carried by the message the loop had already processed, not "".
+    const entries = await new PendingStore(dir).list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ sessionId: "sess-mid-stream", kind: "approval", grantRef: "test-echo" });
   });
 });

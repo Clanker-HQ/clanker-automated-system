@@ -215,6 +215,16 @@ export class SdkRunner implements Runner {
     linkAbort(signal, controller);
 
     let sessionId = "";
+    // canUseTool/AskHuman run on the SDK's own concurrent task, not driven by
+    // the `for await` loop below — a decision can land before the loop has
+    // pulled the first message carrying `session_id`. A deferred promise lets
+    // either side await the session id instead of racing a plain variable
+    // (which could otherwise be persisted into a pending entry as "").
+    let resolveSessionId!: (id: string) => void;
+    const sessionIdPromise = new Promise<string>((resolve) => {
+      resolveSessionId = resolve;
+    });
+
     // Set by canUseTool or the AskHuman tool handler when a decision parks
     // or denies the run — those code paths abort `controller` directly
     // (not `signal`, which they don't own) to stop the SDK from continuing,
@@ -234,16 +244,21 @@ export class SdkRunner implements Runner {
         return { behavior: "deny", message: decision.reason, interrupt: true };
       }
 
+      // Abort first — synchronously, before the disk write — so the
+      // underlying agent process is told to stop as soon as possible rather
+      // than after `pending.create()`'s await widens the window in which the
+      // model could still act (and the stream could end naturally before
+      // `terminalEvent` is even set).
+      controller.abort();
       const entry = await this.deps.pending.create({
         runId: ctx.runId,
         agentName: agent.name,
-        sessionId,
+        sessionId: await sessionIdPromise,
         kind: "approval",
         effect: decision.effect,
         grantRef: decision.grantRef,
       });
       terminalEvent = { type: "parked", kind: "approval", pendingId: entry.id };
-      controller.abort();
       return { behavior: "deny", message: `parked for approval: ${decision.effect}`, interrupt: true };
     };
 
@@ -255,15 +270,15 @@ export class SdkRunner implements Runner {
           "Ask the owner a free-text question and stop this run until they answer. Use this when you're blocked on information only the owner can provide.",
           { question: z.string().min(1) },
           async ({ question }) => {
+            controller.abort();
             const entry = await this.deps.pending.create({
               runId: ctx.runId,
               agentName: agent.name,
-              sessionId,
+              sessionId: await sessionIdPromise,
               kind: "question",
               question,
             });
             terminalEvent = { type: "parked", kind: "question", pendingId: entry.id };
-            controller.abort();
             return { content: [{ type: "text", text: "Waiting for the owner's answer." }] };
           },
         ),
@@ -278,7 +293,20 @@ export class SdkRunner implements Runner {
         maxTurns: agent.run.maxTurns,
         maxBudgetUsd: agent.run.maxBudgetUsd,
         cwd: ctx.workspace,
-        allowedTools: agent.permissions.allowedTools,
+        // Deliberately NOT passing `allowedTools`: the SDK auto-approves any
+        // tool named there without ever consulting `canUseTool` (it only
+        // routes a call through the "ask" path — where canUseTool lives —
+        // when the tool isn't already on that auto-allow list). Since every
+        // tool `canUseTool` needs to gate (WebFetch, Bash, ...) is also on
+        // the agent's own allowedTools list, setting both would let the SDK
+        // auto-approve exactly the calls this boundary exists to intercept.
+        // `tools` (below) still controls what's loaded/available — that's
+        // unrelated to auto-approval — and `disallowedTools` is still a hard
+        // block, also unrelated. Leaving `allowedTools` unset means every
+        // tool call routes through `canUseTool`, where `decide()` is the
+        // actual arbiter: non-outward-effect calls (Read, Glob, ...) still
+        // get `{kind: "allow"}` immediately, just with one extra async
+        // round-trip.
         disallowedTools: agent.permissions.disallowedTools,
         tools: agent.permissions.allowedTools,
         permissionMode: "default",
@@ -311,17 +339,46 @@ export class SdkRunner implements Runner {
     // park/deny decision, and the terminalEvent below would never be
     // reached. `controller.signal.aborted` is true in every case that
     // matters, so it's the single condition both paths share.
-    for await (const message of stream) {
-      const record = message as Record<string, unknown>;
-      if (typeof record.session_id === "string") sessionId = record.session_id;
+    //
+    // Wrapped in try/catch: the real SDK's transport REJECTS the async
+    // iterator when `controller.abort()` is called mid-stream (it does not
+    // just stop yielding), so `canUseTool`/`AskHuman` calling
+    // `controller.abort()` makes this `for await` throw, not exit quietly.
+    // Without the catch, that throw would propagate out of `execute()`
+    // instead of reaching the post-loop block below — the caller would see
+    // the run as crashed and never learn it was parked/denied. A rejection
+    // that happens for any OTHER reason (a genuine transport failure) must
+    // still propagate, so it's only swallowed when `controller.signal` is
+    // the reason we know something aborted it.
+    try {
+      for await (const message of stream) {
+        const record = message as Record<string, unknown>;
+        if (typeof record.session_id === "string") {
+          sessionId = record.session_id;
+          resolveSessionId(record.session_id);
+        }
 
-      partial = accumulateUsage(partial, message);
-      const events = toRunEvents(message);
-      if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
-      yield* events;
+        partial = accumulateUsage(partial, message);
+        const events = toRunEvents(message);
+        if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
+        yield* events;
 
-      if (controller.signal.aborted) break;
+        if (controller.signal.aborted) break;
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) throw err;
+      // else: this is the abort-caused rejection from the transport — fall
+      // through to the post-loop block below, same as a clean break.
     }
+
+    // Safety valve: resolve sessionIdPromise (a no-op if a message already
+    // did) once the stream has been fully consumed either way. Without this,
+    // a canUseTool/AskHuman call that lands after the stream has already
+    // ended without ever carrying a session_id — e.g. a stream that closes
+    // before any message reports one — would leave that handler's
+    // `await sessionIdPromise` unsettled forever instead of falling back to
+    // whatever (possibly still "") sessionId was captured.
+    resolveSessionId(sessionId);
 
     // Fallback synthesis, reached either by the `break` above (aborted
     // mid-loop, after the last-pulled message was fully processed) or by the
