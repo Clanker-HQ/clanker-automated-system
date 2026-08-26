@@ -11,6 +11,20 @@ export const APPROVALS = ["auto", "notify", "approve"] as const;
 export const MODELS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] as const;
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
+/**
+ * The only tools a `readonly` agent may be granted.
+ *
+ * Spec §7.2 gives `readonly` "read, search, web fetch, report" and forbids all
+ * writes. Nothing downstream reads `tier` in this plan, so this schema is the
+ * one place the tier can be made to mean something: without it, `tier:
+ * readonly` alongside `allowedTools: [Read, Write, Bash]` would boot happily
+ * and hand the agent a pre-approved shell — a silent lie rather than a
+ * boundary.
+ */
+const READONLY_TOOLS: readonly string[] = [
+  "Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite",
+];
+
 /** Tiers and features this plan cannot enforce yet, and the plan that delivers each. */
 const NOT_YET: Record<string, string> = {
   granted: "Plan B (tiers and grant enforcement)",
@@ -88,6 +102,18 @@ export const AgentSchema = z
         path: ["tier"],
         message: `tier "${agent.tier}" requires grant enforcement, which is delivered in ${unavailable}. Use "sandboxed" or "readonly" until then`,
       });
+    }
+    if (agent.tier === "readonly") {
+      const forbidden = agent.permissions.allowedTools.filter(
+        (t) => !READONLY_TOOLS.includes(t),
+      );
+      if (forbidden.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["permissions", "allowedTools"],
+          message: `tool(s) ${forbidden.join(", ")} cannot be granted to a "readonly" agent, which forbids all writes. Legal tools for tier "readonly": ${READONLY_TOOLS.join(", ")}. Remove them, or use tier: sandboxed if the agent needs to write`,
+        });
+      }
     }
     if (agent.approval !== "notify") {
       ctx.addIssue({

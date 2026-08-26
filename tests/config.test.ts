@@ -1,5 +1,8 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseConfig } from "../src/config.js";
+import { loadConfig, parseConfig } from "../src/config.js";
 import { ValidationError } from "../src/errors.js";
 
 const VALID = `
@@ -72,5 +75,29 @@ describe("parseConfig", () => {
   it("rejects an unknown key rather than ignoring it", () => {
     const yaml = VALID + "\nunexpected: true\n";
     expect(() => parseConfig("config.yaml", yaml)).toThrow(/unexpected/);
+  });
+});
+
+describe("loadConfig", () => {
+  // A fresh deploy that forgets to mount config.yaml hits this first. A raw
+  // ENOENT would bypass index.ts's formatted boot path and reach the owner as
+  // a stack trace.
+  it("reports a missing file as a ValidationError naming the path and the fix", () => {
+    const missing = join(mkdtempSync(join(tmpdir(), "cai-config-")), "config.yaml");
+    expect(() => loadConfig(missing)).toThrow(ValidationError);
+    try {
+      loadConfig(missing);
+    } catch (error) {
+      const message = (error as ValidationError).message;
+      expect(message).toContain(missing);
+      expect(message).toContain("does not exist");
+    }
+  });
+
+  it("loads a valid file from disk", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-config-"));
+    const path = join(dir, "config.yaml");
+    writeFileSync(path, VALID);
+    expect(loadConfig(path).governor.maxConcurrent).toBe(2);
   });
 });

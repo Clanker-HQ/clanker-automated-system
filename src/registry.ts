@@ -115,7 +115,7 @@ export function loadRegistry(opts: {
     }
     if (schedule !== undefined && timezone !== undefined && !isValidCron(schedule, timezone)) {
       lines.push(
-        `trigger.schedule: "${schedule}" is not a valid cron expression. Use five fields, e.g. "0 7 * * *" for 07:00 daily`,
+        `trigger.schedule: "${schedule}" is not a valid cron expression. Use five or six fields (croner also accepts a leading seconds field), e.g. "0 7 * * *" for 07:00 daily`,
       );
     }
     if (discord !== undefined) {

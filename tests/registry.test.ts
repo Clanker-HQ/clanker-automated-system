@@ -72,6 +72,46 @@ describe("parseAgent", () => {
     expect(() => parseAgent("agent.yaml", yaml)).toThrow(/Plan C/);
   });
 
+  // tier: readonly is only meaningful if something enforces it. Nothing
+  // downstream reads `tier` in this plan, so the schema is the only place a
+  // readonly agent can be stopped from being handed a pre-approved shell.
+  it("rejects a readonly agent that asks for a writing tool, naming the offender and the fix", () => {
+    const yaml = AGENT + "tier: readonly\n";
+    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/readonly/);
+    try {
+      parseAgent("agent.yaml", yaml);
+    } catch (e) {
+      const message = (e as Error).message;
+      expect(message).toContain("Write");
+      expect(message).toContain("Glob");
+      expect(message).toContain("tier: sandboxed");
+    }
+  });
+
+  it("rejects a readonly agent granted Bash", () => {
+    const yaml =
+      AGENT.replace("allowedTools: [Read, Write]", "allowedTools: [Read, Bash]").replace(
+        "disallowedTools: [Bash]",
+        "disallowedTools: [Write]",
+      ) + "tier: readonly\n";
+    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/Bash/);
+  });
+
+  it("accepts a readonly agent whose tools are all read-only", () => {
+    const yaml =
+      AGENT.replace(
+        "allowedTools: [Read, Write]",
+        "allowedTools: [Read, Glob, Grep, WebSearch, WebFetch, TodoWrite]",
+      ) + "tier: readonly\n";
+    const agent = parseAgent("agent.yaml", yaml);
+    expect(agent.tier).toBe("readonly");
+  });
+
+  it("leaves a sandboxed agent free to use writing tools", () => {
+    const agent = parseAgent("agent.yaml", AGENT + "tier: sandboxed\n");
+    expect(agent.permissions.allowedTools).toContain("Write");
+  });
+
   it("rejects a tool listed as both allowed and disallowed", () => {
     const yaml = AGENT.replace("disallowedTools: [Bash]", "disallowedTools: [Read]");
     expect(() => parseAgent("agent.yaml", yaml)).toThrow(/exactly one/);

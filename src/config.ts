@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { formatZodError } from "./errors.js";
+import { ValidationError, formatZodError } from "./errors.js";
 
 /**
  * True only for canonical IANA zone names.
@@ -74,5 +74,21 @@ export function parseConfig(source: string, yamlText: string): Config {
 }
 
 export function loadConfig(path: string): Config {
-  return parseConfig(path, readFileSync(path, "utf8"));
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    // A fresh deploy that forgets to mount config.yaml hits this first. Left
+    // unwrapped it surfaces as a raw ENOENT, bypassing the formatted boot
+    // failure every other configuration problem gets.
+    const code = (error as NodeJS.ErrnoException).code;
+    const reason =
+      code === "ENOENT"
+        ? "the file does not exist"
+        : `it could not be read (${code ?? (error as Error).message})`;
+    throw new ValidationError(path, [
+      `${reason}. Create it at that path (the config.yaml in the repository root is a working example), or mount it there in the container`,
+    ]);
+  }
+  return parseConfig(path, text);
 }
