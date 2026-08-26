@@ -1,4 +1,9 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PendingStore } from "../src/control/pending.js";
+import type { Grant } from "../src/grants.js";
 import type { AgentDef } from "../src/registry.js";
 import { resolveCredentials } from "../src/runner/credentials.js";
 import type { RunEvent } from "../src/runner/types.js";
@@ -7,7 +12,15 @@ import type { RunEvent } from "../src/runner/types.js";
 // exercises the option object SdkRunner builds WITHOUT any network call,
 // credential, or subscription quota. Nothing here reaches Anthropic.
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  // Only `query` is replaced — the real network call this file must never
+  // make. `createSdkMcpServer` and `tool` are pure descriptor-builders (no
+  // network/credential access) that SdkRunner now calls unconditionally on
+  // every execute(), so they're passed through from the real module rather
+  // than stubbed out.
+  const actual = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
+  return { ...actual, query: queryMock };
+});
 
 const { SdkRunner, estimateCostUsd } = await import("../src/runner/sdk-runner.js");
 
@@ -226,5 +239,64 @@ describe("SdkRunner query options", () => {
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     await collect(new SdkRunner().execute(bare, CTX, new AbortController().signal));
     expect((queryMock.mock.calls[0]![0] as QueryParams).options.tools).toEqual([]);
+  });
+});
+
+const TEST_ECHO: Grant = { id: "test-echo", kind: "http", method: "POST", urlPattern: "https://httpbin.org/post", secret: "X" };
+
+function sdkRunnerWith(grants: Grant[], pendingDir: string) {
+  return new SdkRunner({ grants, pending: new PendingStore(pendingDir) });
+}
+
+describe("SdkRunner grant enforcement", () => {
+  it("passes a canUseTool function and the AskHuman tool's MCP server to the SDK", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueryParams & { options: { canUseTool: unknown; mcpServers: Record<string, unknown> } };
+    expect(typeof params.options.canUseTool).toBe("function");
+    expect(params.options.mcpServers.askHuman).toBeDefined();
+  });
+
+  it("parks and writes a pending entry when canUseTool sees a matching-grant effect on a granted agent", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, CTX, new AbortController().signal));
+
+    const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: { signal: AbortSignal; toolUseID: string }) => Promise<unknown> } };
+    const decision = await params.options.canUseTool("WebFetch", { url: "https://httpbin.org/post" }, { signal: new AbortController().signal, toolUseID: "t1" } as never);
+
+    expect(decision).toMatchObject({ behavior: "deny", interrupt: true });
+    const pending = new PendingStore(dir);
+    const entries = await pending.list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ runId: CTX.runId, agentName: granted.name, kind: "approval", grantRef: "test-echo" });
+  });
+
+  it("denies without parking when no grant matches", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: [], approval: "notify" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> } };
+
+    const decision = await params.options.canUseTool("WebFetch", { url: "https://httpbin.org/post" }, { signal: new AbortController().signal, toolUseID: "t1" });
+    expect(decision).toMatchObject({ behavior: "deny", interrupt: true });
+    expect(await new PendingStore(dir).list()).toEqual([]);
+  });
+
+  it("allows a call with no outward effect", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([], dir).execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> } };
+    const decision = await params.options.canUseTool("Read", { file_path: "notes.md" }, { signal: new AbortController().signal, toolUseID: "t1" });
+    expect(decision).toEqual({ behavior: "allow" });
   });
 });

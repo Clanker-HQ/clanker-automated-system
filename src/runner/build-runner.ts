@@ -1,3 +1,5 @@
+import type { PendingStore } from "../control/pending.js";
+import type { Grant } from "../grants.js";
 import { FakeRunner } from "./fake-runner.js";
 import { SdkRunner } from "./sdk-runner.js";
 import type { Runner } from "./types.js";
@@ -13,7 +15,10 @@ import type { Runner } from "./types.js";
  * index.ts runs main(), which loads config, builds a schedule and starts the
  * supervisor.
  */
-export function buildRunner(env: NodeJS.ProcessEnv = process.env): Runner {
+export function buildRunner(
+  opts: { grants: Grant[]; pending: PendingStore },
+  env: NodeJS.ProcessEnv = process.env,
+): Runner {
   if (env.RUNNER === "fake") {
     console.log("[boot] RUNNER=fake — no subscription quota will be consumed");
     return new FakeRunner({
@@ -23,5 +28,5 @@ export function buildRunner(env: NodeJS.ProcessEnv = process.env): Runner {
       ],
     });
   }
-  return new SdkRunner();
+  return new SdkRunner(opts);
 }

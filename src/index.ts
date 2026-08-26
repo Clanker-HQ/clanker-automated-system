@@ -1,8 +1,10 @@
 import { join } from "node:path";
 import { type Config, loadConfig } from "./config.js";
 import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
+import { PendingStore } from "./control/pending.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
+import { loadGrants } from "./grants.js";
 import { Orchestrator } from "./orchestrator.js";
 import { DiscordOutbox } from "./outbox/discord.js";
 import { type AgentDef, loadRegistry } from "./registry.js";
@@ -26,7 +28,7 @@ function main(): void {
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
     agents = loadRegistry({ agentsDir: join(ROOT, "agents"), dataDir: DATA_DIR, config });
-    runner = buildRunner();
+    runner = buildRunner({ grants: loadGrants(join(ROOT, "grants.yaml")), pending: new PendingStore(DATA_DIR) });
     if (runner instanceof SdkRunner) {
       // Resolved once, here, rather than only inside SdkRunner.execute: that
       // body does not run until the orchestrator's first next(), so a missing

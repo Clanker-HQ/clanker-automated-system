@@ -1,26 +1,37 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PendingStore } from "../src/control/pending.js";
 import { buildRunner } from "../src/runner/build-runner.js";
 import { FakeRunner } from "../src/runner/fake-runner.js";
 import { SdkRunner } from "../src/runner/sdk-runner.js";
 
-// Constructing an SdkRunner does nothing on its own — no credential is read
-// and no SDK call is made until execute() is iterated — so both polarities are
-// safe to assert offline.
 afterEach(() => vi.restoreAllMocks());
+
+function opts() {
+  return { grants: [], pending: new PendingStore(mkdtempSync(join(tmpdir(), "cai-buildrunner-"))) };
+}
 
 describe("buildRunner", () => {
   it("returns the real runner by default: the fake is the opt-in, not the other way round", () => {
-    expect(buildRunner({})).toBeInstanceOf(SdkRunner);
+    expect(buildRunner(opts(), {})).toBeInstanceOf(SdkRunner);
   });
 
   it("returns the fake runner only when RUNNER=fake", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    expect(buildRunner({ RUNNER: "fake" })).toBeInstanceOf(FakeRunner);
+    expect(buildRunner(opts(), { RUNNER: "fake" })).toBeInstanceOf(FakeRunner);
     expect(log.mock.calls.flat().join(" ")).toContain("no subscription quota");
   });
 
   it("does not treat some other RUNNER value as the fake", () => {
-    expect(buildRunner({ RUNNER: "sdk" })).toBeInstanceOf(SdkRunner);
-    expect(buildRunner({ RUNNER: "" })).toBeInstanceOf(SdkRunner);
+    expect(buildRunner(opts(), { RUNNER: "sdk" })).toBeInstanceOf(SdkRunner);
+    expect(buildRunner(opts(), { RUNNER: "" })).toBeInstanceOf(SdkRunner);
+  });
+
+  it("passes the grants and pending store through to the real runner's constructor", () => {
+    const { grants, pending } = opts();
+    const runner = buildRunner({ grants, pending }, {}) as SdkRunner;
+    expect(runner).toBeInstanceOf(SdkRunner);
   });
 });

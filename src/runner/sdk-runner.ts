@@ -1,4 +1,7 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
+import { PendingStore } from "../control/pending.js";
+import { decide, type Grant } from "../grants.js";
 import type { AgentDef } from "../registry.js";
 import { resolveCredentials } from "./credentials.js";
 import type { RunContext, RunEvent, Runner } from "./types.js";
@@ -195,6 +198,13 @@ export function linkAbort(signal: AbortSignal, controller: AbortController): voi
 }
 
 export class SdkRunner implements Runner {
+  constructor(
+    private readonly deps: { grants: Grant[]; pending: PendingStore } = {
+      grants: [],
+      pending: new PendingStore(process.cwd()),
+    },
+  ) {}
+
   async *execute(
     agent: AgentDef,
     ctx: RunContext,
@@ -203,6 +213,62 @@ export class SdkRunner implements Runner {
     const { childEnv } = resolveCredentials();
     const controller = new AbortController();
     linkAbort(signal, controller);
+
+    let sessionId = "";
+    // Set by canUseTool or the AskHuman tool handler when a decision parks
+    // or denies the run — those code paths abort `controller` directly
+    // (not `signal`, which they don't own) to stop the SDK from continuing,
+    // and stash the RunEvent to yield here once the stream loop notices.
+    let terminalEvent: RunEvent | undefined;
+
+    const canUseTool = async (
+      toolName: string,
+      input: Record<string, unknown>,
+    ): Promise<{ behavior: "allow" } | { behavior: "deny"; message: string; interrupt?: boolean }> => {
+      const decision = decide(agent, this.deps.grants, toolName, input);
+      if (decision.kind === "allow") return { behavior: "allow" };
+
+      if (decision.kind === "deny") {
+        terminalEvent = { type: "denied", reason: decision.reason };
+        controller.abort();
+        return { behavior: "deny", message: decision.reason, interrupt: true };
+      }
+
+      const entry = await this.deps.pending.create({
+        runId: ctx.runId,
+        agentName: agent.name,
+        sessionId,
+        kind: "approval",
+        effect: decision.effect,
+        grantRef: decision.grantRef,
+      });
+      terminalEvent = { type: "parked", kind: "approval", pendingId: entry.id };
+      controller.abort();
+      return { behavior: "deny", message: `parked for approval: ${decision.effect}`, interrupt: true };
+    };
+
+    const askHumanServer = createSdkMcpServer({
+      name: "askHuman",
+      tools: [
+        tool(
+          "AskHuman",
+          "Ask the owner a free-text question and stop this run until they answer. Use this when you're blocked on information only the owner can provide.",
+          { question: z.string().min(1) },
+          async ({ question }) => {
+            const entry = await this.deps.pending.create({
+              runId: ctx.runId,
+              agentName: agent.name,
+              sessionId,
+              kind: "question",
+              question,
+            });
+            terminalEvent = { type: "parked", kind: "question", pendingId: entry.id };
+            controller.abort();
+            return { content: [{ type: "text", text: "Waiting for the owner's answer." }] };
+          },
+        ),
+      ],
+    });
 
     const stream = query({
       prompt: ctx.prompt,
@@ -219,6 +285,8 @@ export class SdkRunner implements Runner {
         settingSources: [],
         env: childEnv,
         abortController: controller,
+        canUseTool,
+        mcpServers: { askHuman: askHumanServer },
       },
     });
 
@@ -230,17 +298,29 @@ export class SdkRunner implements Runner {
     // So every message is processed unconditionally (accumulate its usage,
     // map it to events, yield those events); the abort signal is checked only
     // AFTER processing, and only to decide whether to stop asking the stream
-    // for more messages. Checking signal.aborted BEFORE mapping a message
+    // for more messages. Checking the abort state BEFORE mapping a message
     // that was already pulled would silently drop its usage/events, which is
     // the exact bug this file exists to fix (see accumulateUsage's doc
     // comment) — just for the specific message that races the abort.
+    //
+    // Checked here against `controller.signal`, not the outer `signal`
+    // parameter: `linkAbort` only propagates outer -> inner, so an outer
+    // abort/timeout always shows up on `controller.signal` too, but
+    // canUseTool/AskHuman abort `controller` directly (they don't own
+    // `signal`) — checking the outer `signal` here would never observe a
+    // park/deny decision, and the terminalEvent below would never be
+    // reached. `controller.signal.aborted` is true in every case that
+    // matters, so it's the single condition both paths share.
     for await (const message of stream) {
+      const record = message as Record<string, unknown>;
+      if (typeof record.session_id === "string") sessionId = record.session_id;
+
       partial = accumulateUsage(partial, message);
       const events = toRunEvents(message);
       if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
       yield* events;
 
-      if (signal.aborted) break;
+      if (controller.signal.aborted) break;
     }
 
     // Fallback synthesis, reached either by the `break` above (aborted
@@ -249,20 +329,25 @@ export class SdkRunner implements Runner {
     // yielding without ever handing back another message to trigger the
     // check inside the loop) — either way, if the terminal `result` message
     // never arrived but per-turn usage was accumulated, that's the only
-    // record of what the run actually spent. Gated on signal.aborted: a
-    // stream that ends early for some OTHER reason (crash, unexpected close,
-    // protocol hiccup) with no `result` message is not this fix's concern —
-    // synthesizing here is specifically the abort fallback, not a generic
-    // "stream ended without a result" fallback. Single call site: this used
-    // to be duplicated at two points inside the loop.
-    if (signal.aborted && !sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
-      yield {
-        type: "usage",
-        inputTokens: partial.inputTokens,
-        outputTokens: partial.outputTokens,
-        costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
-        durationMs: 0,
-      };
+    // record of what the run actually spent. Gated on controller.signal.aborted
+    // (see the loop comment above for why): a stream that ends early for some
+    // OTHER reason (crash, unexpected close, protocol hiccup) with no `result`
+    // message is not this fix's concern — synthesizing here is specifically
+    // the abort fallback, not a generic "stream ended without a result"
+    // fallback. Single call site: this used to be duplicated at two points
+    // inside the loop, and now also covers yielding the parked/denied
+    // terminalEvent set by canUseTool/AskHuman, for the same reason.
+    if (controller.signal.aborted) {
+      if (!sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
+        yield {
+          type: "usage",
+          inputTokens: partial.inputTokens,
+          outputTokens: partial.outputTokens,
+          costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
+          durationMs: 0,
+        };
+      }
+      if (terminalEvent) yield terminalEvent;
     }
   }
 }
