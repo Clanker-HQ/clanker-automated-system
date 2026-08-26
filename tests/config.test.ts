@@ -30,6 +30,11 @@ describe("parseConfig", () => {
     expect(config.governor.quietHours).toBeNull();
   });
 
+  it("defaults discord.botChannels to {} when absent", () => {
+    const config = parseConfig("config.yaml", VALID);
+    expect(config.discord.botChannels).toEqual({});
+  });
+
   it.each(["CEST", "PST", "EST", "+02:00", "Etc/GMT-2", "nonsense"])(
     "rejects the non-canonical timezone %s",
     (tz) => {

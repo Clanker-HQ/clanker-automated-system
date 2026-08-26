@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { type Config, loadConfig } from "./config.js";
 import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
+import { DiscordBot } from "./control/bot.js";
+import { DiscordJsTransport } from "./control/discord-transport.js";
 import { PendingStore } from "./control/pending.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
@@ -19,11 +21,18 @@ import { RateLimitTracker } from "./state/rate-limit.js";
 const ROOT = process.env.APP_ROOT ?? process.cwd();
 const DATA_DIR = process.env.DATA_DIR ?? join(ROOT, "data");
 
+function mustEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new ValidationError(".env", [`${name} is required`]);
+  return v;
+}
+
 function main(): void {
   let config: Config;
   let agents: AgentDef[];
   let runner: Runner;
   let credentialMode: string | undefined;
+  let botToken: string;
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
@@ -37,6 +46,11 @@ function main(): void {
       // boot failure. All configuration is validated at boot.
       credentialMode = resolveCredentials().mode;
     }
+    // Same reasoning as credentialMode above: resolved here, inside the
+    // formatted boot-failure path, rather than only when DiscordJsTransport
+    // is constructed below — a missing token must fail boot the same way a
+    // missing config.yaml or grants.yaml does, not crash with a raw stack.
+    botToken = mustEnv("DISCORD_BOT_TOKEN");
   } catch (error) {
     if (error instanceof ValidationError) {
       console.error(`\n[boot] Configuration is invalid. Nothing was started.\n`);
@@ -51,9 +65,10 @@ function main(): void {
 
   const runStore = new RunStore(DATA_DIR);
   const overrides = new ConfigOverridesStore(DATA_DIR);
+  const breaker = new BreakerStore(DATA_DIR);
   const governor = new Governor({
     dataDir: DATA_DIR, config, store: runStore, overrides,
-    rateLimits: new RateLimitTracker(DATA_DIR), breaker: new BreakerStore(DATA_DIR),
+    rateLimits: new RateLimitTracker(DATA_DIR), breaker,
   });
 
   void overrides.read().then((o) => {
@@ -75,14 +90,33 @@ function main(): void {
   // Reconcile any pending approval/question entries left over from before
   // this process started (e.g. a restart while a run was parked). Expired
   // entries are auto-denied by `reconcile` itself; still-active ones are
-  // just logged here for now — Task 15's control bot is what actually
-  // re-posts `active` entries to Discord so the owner can act on them again.
+  // re-posted to Discord below, once the bot is connected, so the owner can
+  // act on them again.
   const pending = new PendingStore(DATA_DIR);
-  void pending.reconcile({ timeoutHours: config.governor.pendingTimeoutHours }).then(({ expired, active }) => {
+
+  const bot = new DiscordBot({
+    transport: new DiscordJsTransport({ token: botToken }),
+    pending, orchestrator, agents,
+    channelFor: (agentName) => {
+      const agentDef = agents.find((a) => a.name === agentName);
+      const key = agentDef?.outbox.discord ?? "";
+      const varName = config.discord.botChannels[key];
+      return varName ? (process.env[varName] ?? "") : "";
+    },
+    store: runStore, overrides, breaker, dataDir: DATA_DIR,
+  });
+
+  void bot.start().then(async () => {
+    console.log("[boot] Discord bot connected");
+    const { expired, active } = await pending.reconcile({ timeoutHours: config.governor.pendingTimeoutHours });
     for (const entry of expired) {
       console.log(`[pending] expired (auto-denied): ${entry.id} for ${entry.agentName}`);
     }
     console.log(`[pending] ${active.length} awaiting a response after startup`);
+    for (const entry of active) {
+      if (entry.kind === "approval") await bot.postApproval(entry);
+      else await bot.postQuestion(entry);
+    }
   });
 
   // Imported lazily so a boot failure above never starts a schedule.

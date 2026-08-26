@@ -66,6 +66,25 @@ describe("Governor.admit", () => {
     expect(await build(dir).admit(agent(), "resume")).toEqual({ kind: "admit" });
   });
 
+  it("refuses a trigger for a manually-disabled agent, with alert: false (operator-initiated, expected)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new ConfigOverridesStore(dir).set("disabledAgents", ["smoke"], "test");
+    const result = await build(dir).admit(agent(), "trigger");
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("disabled"), alert: false });
+  });
+
+  it("a resume ignores the manual-disable kill-switch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new ConfigOverridesStore(dir).set("disabledAgents", ["smoke"], "test");
+    expect(await build(dir).admit(agent(), "resume")).toEqual({ kind: "admit" });
+  });
+
+  it("does not refuse an agent that isn't in disabledAgents", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new ConfigOverridesStore(dir).set("disabledAgents", ["some-other-agent"], "test");
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
   it("refuses during quiet hours", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     // 02:30 Europe/Berlin falls inside the 02:00-03:00 window in CONFIG.

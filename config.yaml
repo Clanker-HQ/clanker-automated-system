@@ -10,4 +10,6 @@ governor:
 
 discord:
   channels:
-    smoke: DISCORD_WEBHOOK_SMOKE
+    smoke: DISCORD_WEBHOOK_SMOKE   # webhook URL — routine reports (outbox)
+  botChannels:
+    smoke: DISCORD_CHANNEL_ID_SMOKE   # numeric Discord channel id, for the bot

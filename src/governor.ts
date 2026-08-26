@@ -59,6 +59,17 @@ export class Governor {
     }
 
     const overrides = await this.overrides.read();
+
+    // A manual `!disable <agent>` kill-switch: like the breaker check above,
+    // it only gates a fresh `trigger` — a human resuming an already-parked
+    // run via `!resume`/approve/answer is deliberately overriding automatic
+    // gating, the same precedent the breaker check establishes ("a resume
+    // ignores the breaker"). alert: false because this is an operator's own
+    // deliberate, expected action, not something gone wrong.
+    if (kind === "trigger" && overrides.disabledAgents?.includes(agent.name)) {
+      return { kind: "refuse", reason: `"${agent.name}" is manually disabled (!enable ${agent.name} to resume)`, alert: false };
+    }
+
     const settings = resolveGovernorSettings(this.config, overrides);
     const now = this.now();
 

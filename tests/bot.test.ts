@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { DiscordBot, FakeBotTransport } from "../src/control/bot.js";
+import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { PendingStore } from "../src/control/pending.js";
 import type { AgentDef } from "../src/registry.js";
+import { RunStore } from "../src/run-store.js";
+import { BreakerStore } from "../src/state/breaker.js";
 
 const AGENTS = [{ name: "smoke", workspace: "/ws/smoke" } as AgentDef];
 
@@ -13,11 +16,15 @@ function setup() {
   const pending = new PendingStore(dataDir);
   const transport = new FakeBotTransport();
   const orchestrator = { resumeRun: vi.fn().mockResolvedValue({ status: "success" }) };
+  const store = new RunStore(dataDir);
+  const overrides = new ConfigOverridesStore(dataDir);
+  const breaker = new BreakerStore(dataDir);
   const bot = new DiscordBot({
     transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
     channelFor: () => "smoke-channel",
+    store, overrides, breaker, dataDir,
   });
-  return { dataDir, pending, transport, orchestrator, bot };
+  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker };
 }
 
 describe("DiscordBot", () => {
@@ -114,5 +121,47 @@ describe("DiscordBot", () => {
     const entry2 = await pending.create({ runId: "r2", agentName: "smoke", sessionId: "s2", kind: "approval", effect: "y", grantRef: "g2" });
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry2.id}` });
     expect(orchestrator.resumeRun).toHaveBeenCalledWith(entry2, { approved: true }, AGENTS[0]);
+  });
+
+  it("!budget <n> updates the override and echoes the new value", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!budget 25" });
+    expect(transport.sent.some((m) => m.text.includes("25"))).toBe(true);
+  });
+
+  it("!quiet off disables quiet hours", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!quiet off" });
+    expect((await overrides.read()).quietHours).toBeNull();
+  });
+
+  it("!stop creates the STOP file; !resume removes it", async () => {
+    const { transport, bot, dataDir } = setup();
+    await bot.start();
+    const { existsSync } = await import("node:fs");
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!stop" });
+    expect(existsSync(join(dataDir, "STOP"))).toBe(true);
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!resume" });
+    expect(existsSync(join(dataDir, "STOP"))).toBe(false);
+  });
+
+  it("!disable <agent> and !enable <agent> update disabledAgents", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!disable smoke" });
+    expect((await overrides.read()).disabledAgents).toEqual(["smoke"]);
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!enable smoke" });
+    expect((await overrides.read()).disabledAgents ?? []).toEqual([]);
+  });
+
+  it("!runs reports the most recent runs", async () => {
+    const { transport, bot, store } = setup();
+    const writer = await store.open("smoke-run-1", "smoke");
+    await writer.close({ status: "success", summary: "did the thing" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!runs" });
+    expect(transport.sent.some((m) => m.text.includes("smoke-run-1"))).toBe(true);
   });
 });

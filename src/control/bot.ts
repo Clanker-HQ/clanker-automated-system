@@ -1,6 +1,10 @@
+import { join } from "node:path";
 import type { PendingEntry } from "./pending.js";
 import type { PendingStore } from "./pending.js";
 import type { AgentDef } from "../registry.js";
+import type { ConfigOverridesStore } from "../config-overrides.js";
+import type { RunStore } from "../run-store.js";
+import type { BreakerStore } from "../state/breaker.js";
 
 export interface IncomingMessage {
   channelId: string;
@@ -47,16 +51,25 @@ export class DiscordBot {
   private readonly orchestrator: ResumeCapableOrchestrator;
   private readonly agents: AgentDef[];
   private readonly channelFor: (agentName: string) => string;
+  private readonly store: RunStore;
+  private readonly overrides: ConfigOverridesStore;
+  private readonly breaker: BreakerStore;
+  private readonly dataDir: string;
 
   constructor(opts: {
     transport: BotTransport; pending: PendingStore; orchestrator: ResumeCapableOrchestrator;
     agents: AgentDef[]; channelFor: (agentName: string) => string;
+    store: RunStore; overrides: ConfigOverridesStore; breaker: BreakerStore; dataDir: string;
   }) {
     this.transport = opts.transport;
     this.pending = opts.pending;
     this.orchestrator = opts.orchestrator;
     this.agents = opts.agents;
     this.channelFor = opts.channelFor;
+    this.store = opts.store;
+    this.overrides = opts.overrides;
+    this.breaker = opts.breaker;
+    this.dataDir = opts.dataDir;
   }
 
   async postApproval(entry: PendingEntry): Promise<void> {
@@ -75,6 +88,8 @@ export class DiscordBot {
 
   async start(): Promise<void> {
     this.transport.onMessage(async (msg) => {
+      if (msg.content.startsWith("!")) return this.handleCommand(msg);
+
       const approve = msg.content.match(/^approve\s+(\S+)/i);
       const deny = msg.content.match(/^deny\s+(\S+)/i);
       const answer = msg.content.match(/^answer\s+(\S+)\s+([\s\S]+)/i);
@@ -114,5 +129,68 @@ export class DiscordBot {
       }
     });
     await this.transport.start();
+  }
+
+  private async handleCommand(msg: IncomingMessage): Promise<void> {
+    const [command, ...rest] = msg.content.trim().split(/\s+/);
+    const arg = rest.join(" ");
+    const reply = (text: string) => this.transport.send(msg.channelId, text);
+
+    switch (command) {
+      case "!stop": {
+        const { writeFileSync } = await import("node:fs");
+        writeFileSync(join(this.dataDir, "STOP"), "");
+        return void reply("🛑 STOP file set. No new runs until `!resume`.");
+      }
+      case "!resume": {
+        const { rmSync } = await import("node:fs");
+        rmSync(join(this.dataDir, "STOP"), { force: true });
+        return void reply("▶️ STOP file cleared. Runs resume on the next trigger.");
+      }
+      case "!disable": {
+        const overrides = await this.overrides.read();
+        const disabled = new Set(overrides.disabledAgents ?? []);
+        disabled.add(arg);
+        await this.overrides.set("disabledAgents", [...disabled], "discord");
+        return void reply(`⏸️ ${arg} disabled.`);
+      }
+      case "!enable": {
+        const overrides = await this.overrides.read();
+        const disabled = new Set(overrides.disabledAgents ?? []);
+        disabled.delete(arg);
+        await this.overrides.set("disabledAgents", [...disabled], "discord");
+        await this.breaker.reset(arg);
+        return void reply(`▶️ ${arg} enabled.`);
+      }
+      case "!budget": {
+        const value = Number(arg);
+        if (!Number.isFinite(value) || value <= 0) return void reply(`Not a valid budget: "${arg}"`);
+        await this.overrides.set("dailyBudgetUsd", value, "discord");
+        return void reply(`💰 Daily budget set to $${value}.`);
+      }
+      case "!concurrency": {
+        const value = Number(arg);
+        if (!Number.isInteger(value) || value <= 0) return void reply(`Not a valid concurrency: "${arg}"`);
+        await this.overrides.set("maxConcurrent", value, "discord");
+        return void reply(`🔀 Concurrency set to ${value}.`);
+      }
+      case "!quiet": {
+        if (arg === "off") {
+          await this.overrides.set("quietHours", null, "discord");
+          return void reply("🔕 Quiet hours disabled.");
+        }
+        const match = arg.match(/^(\d\d:\d\d)-(\d\d:\d\d)\s+(\S+)$/);
+        if (!match) return void reply('Usage: `!quiet HH:MM-HH:MM Area/City` or `!quiet off`');
+        await this.overrides.set("quietHours", { from: match[1]!, to: match[2]!, timezone: match[3]! }, "discord");
+        return void reply(`🌙 Quiet hours set to ${match[1]}-${match[2]} ${match[3]}.`);
+      }
+      case "!runs": {
+        const recent = await this.store.listRecent(20);
+        const lines = recent.map((r) => `${r.runId} — ${r.status} — $${r.costUsd.toFixed(4)}`);
+        return void reply(lines.length > 0 ? lines.join("\n") : "No runs yet.");
+      }
+      default:
+        return void reply(`Unknown command: ${command}`);
+    }
   }
 }

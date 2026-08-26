@@ -57,7 +57,10 @@ export const ConfigSchema = z
   .object({
     governor: GovernorSchema.prefault({}),
     discord: z
-      .object({ channels: z.record(z.string(), z.string()).default({}) })
+      .object({
+        channels: z.record(z.string(), z.string()).default({}),
+        botChannels: z.record(z.string(), z.string()).default({}).prefault({}),
+      })
       .strict()
       .prefault({}),
   })
