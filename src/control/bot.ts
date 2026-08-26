@@ -22,6 +22,8 @@ export interface BotTransport {
 /** Test double: records everything sent, and lets a test inject an incoming message without a real Discord connection. */
 export class FakeBotTransport implements BotTransport {
   sent: { channelId: string; text: string }[] = [];
+  /** Set by a test to make the next start() reject, simulating a failed Discord connection (bad token, network drop, outage). */
+  startError: Error | null = null;
   private handler: ((msg: IncomingMessage) => Promise<void>) | null = null;
 
   onMessage(handler: (msg: IncomingMessage) => Promise<void>): void {
@@ -33,7 +35,9 @@ export class FakeBotTransport implements BotTransport {
     return { messageId: `fake-${this.sent.length}` };
   }
 
-  async start(): Promise<void> {}
+  async start(): Promise<void> {
+    if (this.startError) throw this.startError;
+  }
   async stop(): Promise<void> {}
 
   async simulateMessage(msg: IncomingMessage): Promise<void> {
@@ -148,6 +152,7 @@ export class DiscordBot {
         return void reply("▶️ STOP file cleared. Runs resume on the next trigger.");
       }
       case "!disable": {
+        if (!arg.trim()) return void reply("Usage: `!disable <agent-name>`");
         const overrides = await this.overrides.read();
         const disabled = new Set(overrides.disabledAgents ?? []);
         disabled.add(arg);
@@ -155,6 +160,7 @@ export class DiscordBot {
         return void reply(`⏸️ ${arg} disabled.`);
       }
       case "!enable": {
+        if (!arg.trim()) return void reply("Usage: `!enable <agent-name>`");
         const overrides = await this.overrides.read();
         const disabled = new Set(overrides.disabledAgents ?? []);
         disabled.delete(arg);

@@ -156,6 +156,23 @@ describe("DiscordBot", () => {
     expect((await overrides.read()).disabledAgents ?? []).toEqual([]);
   });
 
+  it("!disable with no argument replies with a usage error and does not mutate disabledAgents", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!disable" });
+    expect(transport.sent.some((m) => m.text.includes("Usage"))).toBe(true);
+    expect((await overrides.read()).disabledAgents).toBeUndefined();
+  });
+
+  it("!enable with no argument replies with a usage error and does not mutate disabledAgents", async () => {
+    const { transport, bot, overrides } = setup();
+    await overrides.set("disabledAgents", ["smoke"], "test");
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!enable" });
+    expect(transport.sent.some((m) => m.text.includes("Usage"))).toBe(true);
+    expect((await overrides.read()).disabledAgents).toEqual(["smoke"]);
+  });
+
   it("!runs reports the most recent runs", async () => {
     const { transport, bot, store } = setup();
     const writer = await store.open("smoke-run-1", "smoke");

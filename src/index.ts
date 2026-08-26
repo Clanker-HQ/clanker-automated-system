@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { type Config, loadConfig } from "./config.js";
 import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
 import { DiscordBot } from "./control/bot.js";
+import { reconcileAndConnectBot } from "./control/boot-wiring.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
 import { PendingStore } from "./control/pending.js";
 import { ValidationError } from "./errors.js";
@@ -88,10 +89,10 @@ function main(): void {
   });
 
   // Reconcile any pending approval/question entries left over from before
-  // this process started (e.g. a restart while a run was parked). Expired
-  // entries are auto-denied by `reconcile` itself; still-active ones are
-  // re-posted to Discord below, once the bot is connected, so the owner can
-  // act on them again.
+  // this process started (e.g. a restart while a run was parked), and
+  // connect the Discord bot. reconcileAndConnectBot runs reconciliation
+  // unconditionally — independent of whether the bot manages to connect —
+  // and only re-posts still-active entries once a connection succeeds.
   const pending = new PendingStore(DATA_DIR);
 
   const bot = new DiscordBot({
@@ -106,18 +107,7 @@ function main(): void {
     store: runStore, overrides, breaker, dataDir: DATA_DIR,
   });
 
-  void bot.start().then(async () => {
-    console.log("[boot] Discord bot connected");
-    const { expired, active } = await pending.reconcile({ timeoutHours: config.governor.pendingTimeoutHours });
-    for (const entry of expired) {
-      console.log(`[pending] expired (auto-denied): ${entry.id} for ${entry.agentName}`);
-    }
-    console.log(`[pending] ${active.length} awaiting a response after startup`);
-    for (const entry of active) {
-      if (entry.kind === "approval") await bot.postApproval(entry);
-      else await bot.postQuestion(entry);
-    }
-  });
+  void reconcileAndConnectBot({ pending, bot, timeoutHours: config.governor.pendingTimeoutHours });
 
   // Imported lazily so a boot failure above never starts a schedule.
   void import("./triggers/cron.js")
