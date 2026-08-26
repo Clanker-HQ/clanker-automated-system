@@ -302,6 +302,13 @@ grants:
     method: POST
     urlPattern: "https://api.netlify.com/build_hooks/*"
     secret: NETLIFY_HOOK
+
+  - id: new-repo
+    kind: provision                      # see §7.6
+    resource: github-repo
+    scope: github.com/<machine-account>  # may create repos only here
+    limit: { perDay: 3 }
+    secret: GH_TOKEN_PROVISION
 ```
 
 An agent's outward powers are readable from two files; grants are revocable
@@ -348,9 +355,20 @@ over (tier, grants, attempted effect) → allow | deny | park.
 governor:
   maxConcurrent: 2
   dailyBudgetUsd: 10
-  quietHours: { from: "09:00", to: "18:00", timezone: UTC }
   pendingTimeoutHours: 24
+
+  # Local development: agents run almost always; the window is nominal.
+  quietHours: { from: "02:00", to: "03:00", timezone: UTC }
+
+  # Production (VPS): agents work overnight and stand down while the owner
+  # is awake and using Claude interactively.
+  # quietHours: { from: "10:00", to: "22:00", timezone: <owner timezone> }
 ```
+
+The production window deliberately reserves twelve hours a day for the owner's
+own use of the subscription. Agents are nocturnal by design; this is the single
+most effective protection against the failure mode where agents exhaust the
+shared rate limit during working hours.
 
 **Kill switch:** the presence of `data/STOP` prevents new runs and aborts running
 ones. One file, usable over SSH in seconds.
@@ -392,6 +410,57 @@ effects it touched, and the run id. Failures retry three times, then write to
 
 Webhooks are used for reporting and the bot for interaction, because webhooks
 cannot receive replies.
+
+### 7.6 Identity and resource provisioning
+
+The system must be able to create things for itself — a repository for a new
+project, a site to deploy to, a subdomain to publish on — without the owner
+operating a dashboard. It must not create **identities**.
+
+| | Created by | Rationale |
+|---|---|---|
+| **Identity roots** — email, GitHub machine account, hosting account, domain | The owner, once (four items) | Legally the owner's regardless of who registers them; bound to payment methods; unrevocable if unenumerable. Automated registration also violates the terms of every relevant service and is defeated by CAPTCHA and phone verification |
+| **Resources** — repositories, sites, subdomains, projects | Agents, via API, under a `provision` grant | Created inside a boundary the owner already controls: listable, revocable in bulk, free |
+
+An agent registering accounts does not reduce the owner's liability; it removes
+the owner's visibility. An agent creating its fiftieth repository inside a
+machine account the owner controls is unremarkable — all fifty are visible and
+removable in one action.
+
+**Identity roots to establish once:**
+
+1. **A dedicated email**, or better, a **domain with catch-all addressing** —
+   one mailbox yields unlimited per-agent addresses, and the same domain
+   supplies subdomains to publish on. One purchase serves both needs.
+2. **A GitHub machine account.** GitHub's terms explicitly permit one machine
+   account for automation alongside a personal account, so the agent system
+   holds a legitimate identity of its own and its commits are visibly not the
+   owner's.
+3. **A hosting account** with an API — Netlify or Cloudflare Pages; both have
+   free tiers.
+4. **A domain**, per item 1.
+
+**The `provision` grant kind.** Distinct from `http` because provisioning
+creates persistent resources and therefore carries a rate limit:
+
+```yaml
+- id: new-repo
+  kind: provision
+  resource: github-repo | host-site | dns-subdomain
+  scope: <the account or zone within which creation is permitted>
+  limit: { perDay: 3 }
+  secret: <token scoped to that account>
+```
+
+Provisioning obeys the same approval posture as any other outward effect: under
+the default `approve`, the agent parks and Discord asks. Per Lock 3, the runner
+calls the provider API and returns the created resource's identifier; the token
+never enters the workspace.
+
+**Never agent-created:** accounts, identities, payment methods, or domain
+registrations. These are enumerated as forbidden in `schema/capabilities.json`
+so an authoring agent cannot propose them, and rejected by grant validation if
+one is somehow written by hand.
 
 ---
 
