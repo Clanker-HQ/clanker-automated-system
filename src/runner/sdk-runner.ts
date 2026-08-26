@@ -237,9 +237,13 @@ export class SdkRunner implements Runner {
     // yielding without ever handing back another message to trigger the
     // check inside the loop) — either way, if the terminal `result` message
     // never arrived but per-turn usage was accumulated, that's the only
-    // record of what the run actually spent. Single call site: this used to
-    // be duplicated at two points inside the loop.
-    if (!sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
+    // record of what the run actually spent. Gated on signal.aborted: a
+    // stream that ends early for some OTHER reason (crash, unexpected close,
+    // protocol hiccup) with no `result` message is not this fix's concern —
+    // synthesizing here is specifically the abort fallback, not a generic
+    // "stream ended without a result" fallback. Single call site: this used
+    // to be duplicated at two points inside the loop.
+    if (signal.aborted && !sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
       yield {
         type: "usage",
         inputTokens: partial.inputTokens,
