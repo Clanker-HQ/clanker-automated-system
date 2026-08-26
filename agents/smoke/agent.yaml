@@ -15,7 +15,10 @@ run:
   effort: low
   maxTurns: 6
   timeoutMinutes: 3
-  maxBudgetUsd: 0.10
+  # Every run pays a fixed ~$0.046 floor: the SDK loads all tool definitions
+  # into the system prompt (~22.5k cache-creation tokens, measured 2026-08-26).
+  # 0.10 would cut a two-turn run off mid-task.
+  maxBudgetUsd: 0.50
 
 permissions:
   allowedTools: [Read, Write]

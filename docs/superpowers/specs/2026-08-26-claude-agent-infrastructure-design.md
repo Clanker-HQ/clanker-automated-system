@@ -419,12 +419,43 @@ boundary in §3 can defend.
 ones. One file, usable over SSH in seconds.
 
 **Subscription rate limits.** Agents share one rate limit with the owner's
-interactive Claude Code use, and no API reports the remaining allowance. Three
-mitigations: track estimated cost and tokens per run, enforcing daily budgets
-against those; on a rate-limit error, pause globally, alert, and retry with
-exponential backoff; and defer to the human during `quietHours`. The third
-matters most — agents consuming the allowance during the owner's working hours
-is the failure that would cause abandonment.
+interactive Claude Code use.
+
+**Corrected 2026-08-26, from live probe output.** An earlier draft of this
+section stated that no API reports the remaining allowance, and designed the
+governor around dollar-cost proxies. That is false. The Agent SDK emits a
+`rate_limit_event` message carrying the real figures:
+
+```json
+{ "type": "rate_limit_event",
+  "rate_limit_info": {
+    "status": "allowed_warning", "rateLimitType": "five_hour",
+    "utilization": 0.91, "resetsAt": 1787766600, "isUsingOverage": false,
+    "surpassedThreshold": 0.9,
+    "unifiedWindows": { "five_hour": { "utilization": 0.91, "resetsAt": 1787766600 },
+                        "seven_day":  { "utilization": 0.58, "resetsAt": 1788019200 } } } }
+```
+
+The governor therefore reads **measured utilisation**, not an estimate: pause
+new runs above a configurable ceiling, resume after `resetsAt`, and report the
+`five_hour` and `seven_day` windows separately since they exhaust at different
+rates. `status` and `surpassedThreshold` give a warning tier before the hard
+limit. This is a strictly better governor than the one originally specified,
+and `rate_limit_event` must therefore be surfaced by the runner rather than
+discarded as an unrecognised message type.
+
+Remaining mitigations, unchanged: on a rate-limit error, pause globally, alert,
+and retry with exponential backoff; and defer to the human during `quietHours`.
+The last still matters most — agents consuming the allowance during the owner's
+working hours is the failure that would cause abandonment.
+
+**Cost has a fixed floor, measured at ~$0.046 per run.** The SDK loads every
+tool definition into the system prompt — 22,559 cache-creation tokens on a
+one-word Haiku reply. `permissions.allowedTools` controls auto-approval, not
+what is loaded, so it does not reduce this. Two consequences: `maxBudgetUsd`
+must sit well above the floor or a run is cut off mid-task; and reducing the
+loaded tool set (the SDK's `tools` option, distinct from `allowedTools`) is the
+real cost lever, and belongs on the Plan B list.
 
 **Parked runs hold no slot.** A run awaiting approval has exited (§8.2); it
 consumes nothing while it waits.
