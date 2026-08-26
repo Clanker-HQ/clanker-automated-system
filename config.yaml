@@ -1,0 +1,13 @@
+governor:
+  maxConcurrent: 2
+  dailyBudgetUsd: 10
+  pendingTimeoutHours: 24
+  # Local development: agents run at almost any hour; the window is nominal.
+  quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
+  # Production (VPS): agents work overnight, standing down while the owner
+  # is awake and using Claude interactively. Swap the two lines on deploy.
+  # quietHours: { from: "10:00", to: "22:00", timezone: Europe/Berlin }
+
+discord:
+  channels:
+    smoke: DISCORD_WEBHOOK_SMOKE
