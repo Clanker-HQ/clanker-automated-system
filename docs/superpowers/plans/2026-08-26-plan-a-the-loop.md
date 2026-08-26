@@ -940,6 +940,22 @@ describe("RunStore", () => {
     expect(recent).toHaveLength(2);
     expect(recent[0]!.runId).toContain("02-00-00");
   });
+
+  // Alphabetical order is the OPPOSITE of chronological here, which is what
+  // catches sorting by directory name instead of by timestamp.
+  it("orders across agents by time, not by agent name, before applying the limit", async () => {
+    const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+    for (const [agent, t] of [
+      ["zebra", "2026-08-26T01:00:00.000Z"],
+      ["apple", "2026-08-26T05:00:00.000Z"],
+    ] as const) {
+      const writer = await store.open(newRunId(agent, new Date(t)), agent);
+      await writer.close({ status: "success", summary: "" });
+    }
+    const recent = await store.listRecent(1);
+    expect(recent).toHaveLength(1);
+    expect(recent[0]!.agent).toBe("apple"); // the more recent run, not the last alphabetically
+  });
 });
 ```
 
@@ -1052,15 +1068,26 @@ export class RunStore {
     return JSON.parse(raw) as RunResult;
   }
 
+  /**
+   * Newest first, across all agents.
+   *
+   * Run IDs are `${agentName}-${timestamp}`, so sorting directory names would
+   * sort by agent name, not by time — and slicing before reading would drop
+   * recent runs belonging to a later-alphabetised agent. Read every result,
+   * sort by startedAt, then slice. If run counts ever reach the thousands,
+   * the fix is an index file, not a change to the run ID format.
+   */
   async listRecent(limit: number): Promise<RunResult[]> {
     const root = join(this.dataDir, "runs");
     const dirs = await readdir(root).catch(() => [] as string[]);
     const results: RunResult[] = [];
-    for (const runId of dirs.sort().reverse().slice(0, limit)) {
+    for (const runId of dirs) {
       const result = await this.readResult(runId).catch(() => null);
       if (result) results.push(result);
     }
-    return results;
+    return results
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, limit);
   }
 }
 ```
