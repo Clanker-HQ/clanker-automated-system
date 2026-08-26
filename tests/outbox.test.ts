@@ -159,4 +159,15 @@ describe("DiscordOutbox", () => {
     const { instance } = outbox(fetchImpl);
     await expect(instance.post("nope", RESULT)).rejects.toThrow(/nope/);
   });
+
+  it("postAlert sends raw text and retries/falls back to undelivered the same way post does", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(null, { status: 204 }),
+    );
+    const { instance } = outbox(fetchImpl as unknown as typeof fetch);
+    await expect(instance.postAlert("smoke", "daily budget reached")).resolves.toBe("delivered");
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as { body: string }).body);
+    expect(body.content).toContain("daily budget reached");
+  });
 });

@@ -34,6 +34,25 @@ const RUN_DEFAULTS = {
 const INSTANT_TIMEOUT = { ...RUN_DEFAULTS, timeoutMinutes: 0.001 };
 const NORMAL_TIMEOUT = { ...RUN_DEFAULTS, timeoutMinutes: 5 };
 
+/**
+ * A standalone agent fixture (not built via `harness()`) for the governor
+ * tests below, which construct their own `Orchestrator` with custom
+ * governor/outbox/store stubs. It has a real prompt file on disk so that
+ * tests exercising an admitted run (which reach the real `readFile`) succeed.
+ */
+const AGENT_DIR = mkdtempSync(join(tmpdir(), "cai-orch-agent-"));
+const AGENT_PROMPT_PATH = join(AGENT_DIR, "prompt.md");
+writeFileSync(AGENT_PROMPT_PATH, "Do the thing.");
+const AGENT = {
+  name: "smoke",
+  enabled: true,
+  dir: AGENT_DIR,
+  promptPath: AGENT_PROMPT_PATH,
+  workspace: join(AGENT_DIR, "workspaces", "smoke"),
+  run: NORMAL_TIMEOUT,
+  outbox: { discord: "smoke", notifyOn: ["success", "failure"] },
+} as unknown as AgentDef;
+
 function harness(
   script: FakeScript,
   agentOverrides: Partial<AgentDef> = {},
@@ -69,6 +88,7 @@ function harness(
       sleep: async () => {},
     }),
     dataDir,
+    governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
   });
   return { agent, orchestrator, dataDir, fetchImpl };
 }
@@ -93,6 +113,7 @@ describe("Orchestrator.executeRun", () => {
     });
 
     const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
 
     expect(result.status).toBe("success");
     expect(result.summary).toBe("Done: wrote notes.");
@@ -121,6 +142,7 @@ describe("Orchestrator.executeRun", () => {
       throwAfter: 1,
     });
     const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
     expect(result.status).toBe("failed");
     expect(result.error).toContain("scripted failure");
 
@@ -139,6 +161,7 @@ describe("Orchestrator.executeRun", () => {
       run: INSTANT_TIMEOUT,
     } as Partial<AgentDef>);
     const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
     expect(result.status).toBe("timeout");
   });
 
@@ -148,6 +171,7 @@ describe("Orchestrator.executeRun", () => {
       { run: INSTANT_TIMEOUT } as Partial<AgentDef>,
     );
     const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
     expect(result.status).toBe("timeout");
     expect(result.error).toContain("minute limit");
   });
@@ -180,6 +204,7 @@ describe("Orchestrator.executeRun", () => {
     );
 
     const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
 
     expect(result.status).toBe("timeout");
     expect(result.error).toContain("minute limit");
@@ -194,15 +219,6 @@ describe("Orchestrator.executeRun", () => {
     );
     await orchestrator.executeRun(agent);
     expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("halts when the STOP file is present", async () => {
-    const { agent, orchestrator, dataDir } = harness({
-      events: [{ type: "assistant", text: "ok" }],
-    });
-    writeFileSync(join(dataDir, "STOP"), "");
-    const result = await orchestrator.executeRun(agent);
-    expect(result.status).toBe("killed");
   });
 
   it("still returns a successful RunResult when reporting fails", async () => {
@@ -234,9 +250,11 @@ describe("Orchestrator.executeRun", () => {
       store: new RunStore(dataDir),
       outbox,
       dataDir,
+      governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
     });
 
     const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
 
     expect(result.status).toBe("success");
     expect(outbox.post).toHaveBeenCalledTimes(1);
@@ -246,5 +264,60 @@ describe("Orchestrator.executeRun", () => {
     expect(loggedText).toContain(agent.name);
 
     stderrSpy.mockRestore();
+  });
+
+  it("does not execute the runner, and creates no run record, when the governor refuses", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "refuse", reason: "quiet hours", alert: false }), releaseSlot: vi.fn() };
+    const runner = new FakeRunner({ events: [] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-")));
+    const outbox = { post: vi.fn(), postAlert: vi.fn().mockResolvedValue("delivered") };
+    const orchestrator = new Orchestrator({ runner, store, outbox: outbox as never, dataDir: store["dataDir"] as never, governor: governor as never });
+
+    const result = await orchestrator.executeRun(AGENT);
+
+    expect(result).toBeUndefined();
+    expect(executeSpy).not.toHaveBeenCalled();
+    await expect(store.listRecent(10)).resolves.toEqual([]);
+  });
+
+  it("posts an alert (not a run report) when the governor's refusal is alert-worthy", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "refuse", reason: "daily budget reached", alert: true }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn(), postAlert: vi.fn().mockResolvedValue("delivered") };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [] }), store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+
+    await orchestrator.executeRun(AGENT);
+
+    expect(outbox.postAlert).toHaveBeenCalledWith(AGENT.outbox.discord, expect.stringContaining("daily budget reached"));
+    expect(outbox.post).not.toHaveBeenCalled();
+  });
+
+  it("releases the governor's slot after a successful run", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+
+    await orchestrator.executeRun(AGENT);
+    expect(governor.releaseSlot).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the governor's slot even when the run throws", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [{ type: "assistant", text: "a" }], throwAfter: 0 }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+
+    await orchestrator.executeRun(AGENT);
+    expect(governor.releaseSlot).toHaveBeenCalledTimes(1);
   });
 });

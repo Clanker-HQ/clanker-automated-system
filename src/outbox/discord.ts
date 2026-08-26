@@ -83,8 +83,19 @@ export class DiscordOutbox {
     result: RunResult,
     tail?: string[],
   ): Promise<"delivered" | "undelivered"> {
+    return this.deliver(channelKey, formatRunMessage(result, tail), result.runId);
+  }
+
+  async postAlert(channelKey: string, text: string): Promise<"delivered" | "undelivered"> {
+    return this.deliver(channelKey, text, `alert-${Date.now()}`);
+  }
+
+  private async deliver(
+    channelKey: string,
+    content: string,
+    undeliveredFileStem: string,
+  ): Promise<"delivered" | "undelivered"> {
     const url = this.webhookFor(channelKey);
-    const content = formatRunMessage(result, tail);
 
     // Why the last attempt failed, so the undelivered file says what went
     // wrong instead of leaving the owner to guess. The webhook URL is a
@@ -114,9 +125,9 @@ export class DiscordOutbox {
     const dir = join(this.dataDir, "undelivered");
     await mkdir(dir, { recursive: true });
     await writeFile(
-      join(dir, `${result.runId}.json`),
+      join(dir, `${undeliveredFileStem}.json`),
       JSON.stringify(
-        { channelKey, error: `after 3 attempts: ${failure}`, content, result },
+        { channelKey, error: `after 3 attempts: ${failure}`, content },
         null,
         2,
       ) + "\n",

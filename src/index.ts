@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { type Config, loadConfig } from "./config.js";
+import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
 import { ValidationError } from "./errors.js";
+import { Governor } from "./governor.js";
 import { Orchestrator } from "./orchestrator.js";
 import { DiscordOutbox } from "./outbox/discord.js";
 import { type AgentDef, loadRegistry } from "./registry.js";
@@ -9,6 +11,8 @@ import { buildRunner } from "./runner/build-runner.js";
 import { resolveCredentials } from "./runner/credentials.js";
 import { SdkRunner } from "./runner/sdk-runner.js";
 import type { Runner } from "./runner/types.js";
+import { BreakerStore } from "./state/breaker.js";
+import { RateLimitTracker } from "./state/rate-limit.js";
 
 const ROOT = process.env.APP_ROOT ?? process.cwd();
 const DATA_DIR = process.env.DATA_DIR ?? join(ROOT, "data");
@@ -42,17 +46,28 @@ function main(): void {
 
   console.log(`[boot] ${agents.length} agent(s) loaded: ${agents.map((a) => a.name).join(", ")}`);
   if (credentialMode) console.log(`[boot] credentials: ${credentialMode}`);
-  // config.yaml's governor block parses but nothing acts on it yet. Saying so
-  // out loud keeps a safety-shaped setting from looking active.
-  console.log(
-    "[boot] governor not yet enforced (Plan B): quietHours, dailyBudgetUsd, maxConcurrent have no effect",
-  );
+
+  const runStore = new RunStore(DATA_DIR);
+  const overrides = new ConfigOverridesStore(DATA_DIR);
+  const governor = new Governor({
+    dataDir: DATA_DIR, config, store: runStore, overrides,
+    rateLimits: new RateLimitTracker(DATA_DIR), breaker: new BreakerStore(DATA_DIR),
+  });
+
+  void overrides.read().then((o) => {
+    const settings = resolveGovernorSettings(config, o);
+    console.log(
+      `[boot] governor live: maxConcurrent=${settings.maxConcurrent} dailyBudgetUsd=${settings.dailyBudgetUsd} ` +
+        `quietHours=${settings.quietHours ? `${settings.quietHours.from}-${settings.quietHours.to} ${settings.quietHours.timezone}` : "off"}`,
+    );
+  });
 
   const orchestrator = new Orchestrator({
     runner,
-    store: new RunStore(DATA_DIR),
+    store: runStore,
     outbox: new DiscordOutbox({ config, dataDir: DATA_DIR }),
     dataDir: DATA_DIR,
+    governor,
   });
 
   // Imported lazily so a boot failure above never starts a schedule.
