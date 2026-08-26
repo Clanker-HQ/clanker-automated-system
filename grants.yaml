@@ -1,0 +1,6 @@
+grants:
+  - id: test-echo
+    kind: http
+    method: POST
+    urlPattern: "https://httpbin.org/post"
+    secret: TEST_ECHO_TOKEN
