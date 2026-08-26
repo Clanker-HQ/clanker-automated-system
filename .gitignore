@@ -1,0 +1,11 @@
+# Secrets — NEVER commit. A leaked OAuth token is full access to your Claude account.
+.env
+.env.*
+!.env.example
+
+# Runtime data (docker volume): workspaces, transcripts, run records
+data/
+
+node_modules/
+dist/
+*.log
