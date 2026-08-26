@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toRunEvents } from "../src/runner/sdk-runner.js";
+import { linkAbort, toRunEvents } from "../src/runner/sdk-runner.js";
 
 // These messages are synthetic: modeled on the SDKMessage shapes documented
 // in the installed @anthropic-ai/claude-agent-sdk type declarations
@@ -143,3 +143,36 @@ describe("toRunEvents", () => {
     ]);
   });
 });
+
+// linkAbort exists because a listener attached to an AbortSignal that is
+// ALREADY aborted never fires (per the AbortSignal spec) — so wiring it with
+// only `signal.addEventListener("abort", ...)` silently drops the abort if
+// the orchestrator's timeout fires before the async generator body starts
+// running. This mirrors the check FakeRunner already makes at
+// src/runner/fake-runner.ts:23-25.
+describe("linkAbort", () => {
+  it("aborts the controller immediately when the signal is already aborted before linking", () => {
+    const source = new AbortController();
+    source.abort();
+    const target = new AbortController();
+    linkAbort(source.signal, target);
+    expect(target.signal.aborted).toBe(true);
+  });
+
+  it("aborts the controller when the signal aborts after linking", () => {
+    const source = new AbortController();
+    const target = new AbortController();
+    linkAbort(source.signal, target);
+    expect(target.signal.aborted).toBe(false);
+    source.abort();
+    expect(target.signal.aborted).toBe(true);
+  });
+
+  it("leaves the controller un-aborted when the signal never aborts", () => {
+    const source = new AbortController();
+    const target = new AbortController();
+    linkAbort(source.signal, target);
+    expect(target.signal.aborted).toBe(false);
+  });
+});
+

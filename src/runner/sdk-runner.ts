@@ -123,6 +123,21 @@ export function toRunEvents(message: unknown): RunEvent[] {
   }
 }
 
+/**
+ * Propagates an abort from `signal` to `controller`. A listener attached to
+ * an AbortSignal that is already aborted never fires (per the AbortSignal
+ * spec), so the already-aborted case must be checked explicitly rather than
+ * relying solely on the "abort" event — the same pattern FakeRunner already
+ * uses at src/runner/fake-runner.ts:23-25. Without this, a timeout that
+ * fires before SdkRunner.execute's async generator body starts running
+ * would never reach the SDK's own abortController, and the run would
+ * continue to completion past its deadline.
+ */
+export function linkAbort(signal: AbortSignal, controller: AbortController): void {
+  if (signal.aborted) controller.abort();
+  else signal.addEventListener("abort", () => controller.abort(), { once: true });
+}
+
 export class SdkRunner implements Runner {
   async *execute(
     agent: AgentDef,
@@ -131,7 +146,7 @@ export class SdkRunner implements Runner {
   ): AsyncIterable<RunEvent> {
     const { childEnv } = resolveCredentials();
     const controller = new AbortController();
-    signal.addEventListener("abort", () => controller.abort(), { once: true });
+    linkAbort(signal, controller);
 
     const stream = query({
       prompt: ctx.prompt,
