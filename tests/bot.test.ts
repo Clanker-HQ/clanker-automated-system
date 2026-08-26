@@ -80,4 +80,39 @@ describe("DiscordBot", () => {
     await expect(transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "just chatting" })).resolves.not.toThrow();
     expect(orchestrator.resumeRun).not.toHaveBeenCalled();
   });
+
+  it("ignores 'approve <id>' when the entry is a question, not an approval", async () => {
+    const { pending, transport, orchestrator, bot } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "question", question: "Which branch?" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry.id}` });
+    expect(orchestrator.resumeRun).not.toHaveBeenCalled();
+    expect(await pending.get(entry.id)).not.toBeNull();
+  });
+
+  it("ignores 'answer <id> <text>' when the entry is an approval, not a question", async () => {
+    const { pending, transport, orchestrator, bot } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `answer ${entry.id} use main` });
+    expect(orchestrator.resumeRun).not.toHaveBeenCalled();
+    expect(await pending.get(entry.id)).not.toBeNull();
+  });
+
+  it("does not throw or reject when resumeRun fails, so the handler survives for future messages", async () => {
+    const { pending, transport, orchestrator, bot } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    orchestrator.resumeRun.mockRejectedValueOnce(new Error("downstream failure"));
+    await bot.start();
+
+    await expect(
+      transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry.id}` }),
+    ).resolves.not.toThrow();
+    expect(orchestrator.resumeRun).toHaveBeenCalledWith(entry, { approved: true }, AGENTS[0]);
+
+    // The handler should still work for a subsequent message after the failure.
+    const entry2 = await pending.create({ runId: "r2", agentName: "smoke", sessionId: "s2", kind: "approval", effect: "y", grantRef: "g2" });
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry2.id}` });
+    expect(orchestrator.resumeRun).toHaveBeenCalledWith(entry2, { approved: true }, AGENTS[0]);
+  });
 });

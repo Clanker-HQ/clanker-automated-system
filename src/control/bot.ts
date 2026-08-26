@@ -95,14 +95,22 @@ export class DiscordBot {
       const agent = this.agents.find((a) => a.name === entry.agentName);
       if (!agent) return;
 
-      await this.pending.resolve(id);
+      // Never let a failed resolve/resume become an unhandled rejection: a real
+      // EventEmitter-based transport (Task 15) won't await this listener, so a
+      // thrown/rejected promise here would otherwise risk crashing the process
+      // and would definitely stop this handler from processing future messages.
+      try {
+        await this.pending.resolve(id);
 
-      if (approve) {
-        await this.orchestrator.resumeRun(entry, { approved: true }, agent);
-      } else if (deny) {
-        await this.orchestrator.resumeRun(entry, { approved: false }, agent);
-      } else if (answer) {
-        await this.orchestrator.resumeRun(entry, { answer: answer[2]!.trim() }, agent);
+        if (approve) {
+          await this.orchestrator.resumeRun(entry, { approved: true }, agent);
+        } else if (deny) {
+          await this.orchestrator.resumeRun(entry, { approved: false }, agent);
+        } else if (answer) {
+          await this.orchestrator.resumeRun(entry, { answer: answer[2]!.trim() }, agent);
+        }
+      } catch (error) {
+        console.error(`[bot] failed to resolve/resume pending entry ${id}:`, error);
       }
     });
     await this.transport.start();
