@@ -320,4 +320,92 @@ describe("Orchestrator.executeRun", () => {
     await orchestrator.executeRun(AGENT);
     expect(governor.releaseSlot).toHaveBeenCalledTimes(1);
   });
+
+  it("records status 'parked' (not 'failed') when the runner emits a parked event, and does not treat it as an error", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [{ type: "parked", kind: "approval", pendingId: "p1" }] }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+    const result = await orchestrator.executeRun(AGENT);
+    expect(result?.status).toBe("parked");
+    expect(result?.error).toBeUndefined();
+  });
+
+  it("records status 'question' when the runner emits a parked event with kind question", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [{ type: "parked", kind: "question", pendingId: "p1" }] }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+    const result = await orchestrator.executeRun(AGENT);
+    expect(result?.status).toBe("question");
+  });
+
+  it("records status 'denied' when the runner emits a denied event", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [{ type: "denied", reason: "no grant matches" }] }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+    const result = await orchestrator.executeRun(AGENT);
+    expect(result?.status).toBe("denied");
+    expect(result?.error).toContain("no grant matches");
+  });
+
+  it("resumeRun asks the governor with kind 'resume' and calls the runner with the session id", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    const orchestrator = new Orchestrator({
+      runner, store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+
+    await orchestrator.resumeRun(
+      { id: "p1", runId: "smoke-1", agentName: AGENT.name, sessionId: "sess-abc", kind: "approval", effect: "x", grantRef: "g", askedAt: new Date().toISOString() },
+      { approved: true },
+      AGENT,
+    );
+
+    expect(governor.admit).toHaveBeenCalledWith(AGENT, "resume");
+    const ctxArg = executeSpy.mock.calls[0]![1] as { resume?: string };
+    expect(ctxArg.resume).toBe("sess-abc");
+  });
+
+  it("feeds a rate_limit_event seen mid-run to the governor live, not only after the run finishes", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn(), recordRateLimit: vi.fn(), recordRateLimitError: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [
+        { type: "rate_limit_event", status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.91 },
+        { type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 },
+      ] }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+    await orchestrator.executeRun(AGENT);
+    expect(governor.recordRateLimit).toHaveBeenCalledWith({
+      status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.91, resetsAt: undefined,
+    });
+  });
+
+  it("calls the governor's reactive backoff when an assistant error reports rate_limit", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn(), recordRateLimit: vi.fn(), recordRateLimitError: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [{ type: "error", message: "assistant message reported error: rate_limit" }] }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+    });
+    await orchestrator.executeRun(AGENT);
+    expect(governor.recordRateLimitError).toHaveBeenCalledTimes(1);
+  });
 });

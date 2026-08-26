@@ -315,6 +315,7 @@ export class SdkRunner implements Runner {
         abortController: controller,
         canUseTool,
         mcpServers: { askHuman: askHumanServer },
+        ...(ctx.resume ? { resume: ctx.resume } : {}),
       },
     });
 

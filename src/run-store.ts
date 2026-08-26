@@ -50,10 +50,28 @@ export class RunStore {
     const transcript = join(dir, "transcript.jsonl");
     const startedAt = new Date();
 
+    // A resume (Task 13's `resumeRun`) reuses the SAME runId as the segment
+    // that was parked: this run's directory (and its result.json) may
+    // already exist from that earlier open()/close() pair. Seed the
+    // counters from it so the eventual close() below reports the TRUE
+    // cumulative total across both segments, not just the resumed one —
+    // otherwise close()'s writeFile silently overwrites result.json with
+    // only the new segment's numbers, and the Governor's daily-budget check
+    // (which sums costUsd across listRecent()'s result.json files) would
+    // undercount this run's real spend.
     let costUsd = 0;
     let inputTokens = 0;
     let outputTokens = 0;
     let turns = 0;
+    const existing = await readFile(join(dir, "result.json"), "utf8")
+      .then((raw) => JSON.parse(raw) as RunResult)
+      .catch(() => null);
+    if (existing) {
+      costUsd = existing.costUsd;
+      inputTokens = existing.inputTokens;
+      outputTokens = existing.outputTokens;
+      turns = existing.turns;
+    }
     let lastText = "";
 
     const writer: RunWriter = {

@@ -72,6 +72,19 @@ function main(): void {
     governor,
   });
 
+  // Reconcile any pending approval/question entries left over from before
+  // this process started (e.g. a restart while a run was parked). Expired
+  // entries are auto-denied by `reconcile` itself; still-active ones are
+  // just logged here for now — Task 15's control bot is what actually
+  // re-posts `active` entries to Discord so the owner can act on them again.
+  const pending = new PendingStore(DATA_DIR);
+  void pending.reconcile({ timeoutHours: config.governor.pendingTimeoutHours }).then(({ expired, active }) => {
+    for (const entry of expired) {
+      console.log(`[pending] expired (auto-denied): ${entry.id} for ${entry.agentName}`);
+    }
+    console.log(`[pending] ${active.length} awaiting a response after startup`);
+  });
+
   // Imported lazily so a boot failure above never starts a schedule.
   void import("./triggers/cron.js")
     .then(({ startCron }) => {

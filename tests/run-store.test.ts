@@ -90,4 +90,33 @@ describe("RunStore", () => {
     expect(recent[0]!.agent).toBe("apple");
     expect(recent[0]!.runId).toContain("05-00-00");
   });
+
+  it("accumulates cost/tokens/turns across a park-then-resume, instead of losing the pre-park segment", async () => {
+    const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+    const runId = newRunId("smoke", new Date("2026-08-26T07:00:00.000Z"));
+
+    // Segment 1: runs, accrues usage and a tool call, then parks.
+    const first = await store.open(runId, "smoke");
+    await first.append({ type: "tool_use", name: "Bash" });
+    await first.append({ type: "usage", inputTokens: 100, outputTokens: 20, costUsd: 0.01, durationMs: 500 });
+    await first.close({ status: "parked", summary: "" });
+
+    // Segment 2: the SAME runId is reopened (as resumeRun does) and accrues
+    // more usage before closing for good.
+    const second = await store.open(runId, "smoke");
+    await second.append({ type: "tool_use", name: "Read" });
+    await second.append({ type: "usage", inputTokens: 40, outputTokens: 10, costUsd: 0.005, durationMs: 300 });
+    const result = await second.close({ status: "success", summary: "done" });
+
+    // The final result must be the SUM of both segments, not just segment 2.
+    expect(result.costUsd).toBeCloseTo(0.015);
+    expect(result.inputTokens).toBe(140);
+    expect(result.outputTokens).toBe(30);
+    expect(result.turns).toBe(2);
+
+    const stored = await store.readResult(runId);
+    expect(stored.costUsd).toBeCloseTo(0.015);
+    expect(stored.inputTokens).toBe(140);
+    expect(stored.turns).toBe(2);
+  });
 });

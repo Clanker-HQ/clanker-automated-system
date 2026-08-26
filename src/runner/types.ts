@@ -20,6 +20,7 @@ export interface RunContext {
   runId: string;
   workspace: string;
   prompt: string;
+  resume?: string;
 }
 
 export interface Runner {

@@ -1,9 +1,10 @@
 import { mkdir, readFile } from "node:fs/promises";
+import type { PendingEntry } from "./control/pending.js";
 import type { Governor } from "./governor.js";
 import type { DiscordOutbox } from "./outbox/discord.js";
 import type { AgentDef } from "./registry.js";
 import { RunStore, newRunId, type RunResult, type RunStatus } from "./run-store.js";
-import type { Runner } from "./runner/types.js";
+import type { RunContext, Runner } from "./runner/types.js";
 
 export class Orchestrator {
   private readonly runner: Runner;
@@ -40,64 +41,103 @@ export class Orchestrator {
 
     try {
       const runId = newRunId(agent.name, now);
-      const writer = await this.store.open(runId, agent.name);
-
-      await mkdir(agent.workspace, { recursive: true });
-      const prompt = await readFile(agent.promptPath, "utf8");
-
-      const controller = new AbortController();
-      const timeoutMs = Math.max(1, Math.round(agent.run.timeoutMinutes * 60_000));
-      let status: RunStatus = "success";
-      let error: string | undefined;
-
-      const timer = setTimeout(() => {
-        status = "timeout";
-        controller.abort();
-      }, timeoutMs);
-
-      try {
-        const stream = this.runner.execute(
-          agent,
-          { runId, workspace: agent.workspace, prompt },
-          controller.signal,
-        );
-        for await (const event of stream) {
-          await writer.append(event);
-          // The same race the catch block below guards: once the timer has
-          // fired, "timeout" is the truthful classification and must win. A
-          // runner may still emit a terminal error event *caused by* the abort
-          // (SdkRunner maps the last message it pulled so the run's cost
-          // accounting is not lost) — that must not re-label the run "failed".
-          if (event.type === "error" && (status as RunStatus) !== "timeout") {
-            status = "failed";
-            error = event.message;
-          }
-        }
-      } catch (thrown) {
-        // `status` may already have been set to "timeout" by the setTimeout
-        // callback above, racing this catch block. TypeScript's control-flow
-        // narrowing cannot see across that closure boundary, so the comparison
-        // is cast back to the full RunStatus union rather than left to be
-        // (incorrectly) flagged as always-false.
-        if ((status as RunStatus) !== "timeout") {
-          status = "failed";
-          error = thrown instanceof Error ? thrown.message : String(thrown);
-        }
-        await writer.append({ type: "error", message: error ?? "aborted" });
-      } finally {
-        clearTimeout(timer);
-      }
-
-      if ((status as RunStatus) === "timeout") {
-        error = `Run exceeded its ${agent.run.timeoutMinutes} minute limit and was aborted`;
-      }
-
-      const result = await writer.close({ status, summary: "", ...(error ? { error } : {}) });
-      await this.report(agent, result, writer);
-      return result;
+      return await this.runAndRecord(agent, runId, { runId, workspace: agent.workspace, prompt: await readFile(agent.promptPath, "utf8") });
     } finally {
       this.governor.releaseSlot();
     }
+  }
+
+  async resumeRun(
+    entry: PendingEntry,
+    decision: { approved: boolean } | { answer: string },
+    agent: AgentDef,
+  ): Promise<RunResult | undefined> {
+    const admitted = await this.governor.admit(agent, "resume");
+    if (admitted.kind === "refuse") {
+      console.log(`[governor] refused resume of ${entry.runId}: ${admitted.reason}`);
+      return undefined;
+    }
+    const prompt = "approved" in decision
+      ? (decision.approved ? "Approved. Continue." : "Denied. Do not attempt that action; continue with anything else you can, or stop.")
+      : decision.answer;
+
+    try {
+      return await this.runAndRecord(agent, entry.runId, { runId: entry.runId, workspace: agent.workspace, prompt, resume: entry.sessionId });
+    } finally {
+      this.governor.releaseSlot();
+    }
+  }
+
+  private async runAndRecord(agent: AgentDef, runId: string, ctx: RunContext): Promise<RunResult> {
+    const writer = await this.store.open(runId, agent.name);
+
+    await mkdir(agent.workspace, { recursive: true });
+
+    const controller = new AbortController();
+    const timeoutMs = Math.max(1, Math.round(agent.run.timeoutMinutes * 60_000));
+    let status: RunStatus = "success";
+    let error: string | undefined;
+
+    const timer = setTimeout(() => {
+      status = "timeout";
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const stream = this.runner.execute(agent, ctx, controller.signal);
+      for await (const event of stream) {
+        await writer.append(event);
+        // The same race the catch block below guards: once the timer has
+        // fired, "timeout" is the truthful classification and must win. A
+        // runner may still emit a terminal error event *caused by* the abort
+        // (SdkRunner maps the last message it pulled so the run's cost
+        // accounting is not lost) — that must not re-label the run "failed".
+        if (event.type === "error" && (status as RunStatus) !== "timeout") {
+          status = "failed";
+          error = event.message;
+        }
+        if (event.type === "denied" && (status as RunStatus) !== "timeout") {
+          status = "denied";
+          error = event.reason;
+        }
+        if (event.type === "parked" && (status as RunStatus) !== "timeout") {
+          status = event.kind === "question" ? "question" : "parked";
+        }
+        // Feed the governor's shared rate-limit snapshot live, from every
+        // run's stream, not only the triggering agent's own admission check
+        // — it's one subscription-wide limit (spec §4.5).
+        if (event.type === "rate_limit_event") {
+          await this.governor.recordRateLimit({
+            status: event.status, rateLimitType: event.rateLimitType,
+            utilization: event.utilization, resetsAt: event.resetsAt,
+          });
+        }
+        if (event.type === "error" && event.message.includes("rate_limit")) {
+          await this.governor.recordRateLimitError();
+        }
+      }
+    } catch (thrown) {
+      // `status` may already have been set to "timeout" by the setTimeout
+      // callback above, racing this catch block. TypeScript's control-flow
+      // narrowing cannot see across that closure boundary, so the comparison
+      // is cast back to the full RunStatus union rather than left to be
+      // (incorrectly) flagged as always-false.
+      if ((status as RunStatus) !== "timeout") {
+        status = "failed";
+        error = thrown instanceof Error ? thrown.message : String(thrown);
+      }
+      await writer.append({ type: "error", message: error ?? "aborted" });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if ((status as RunStatus) === "timeout") {
+      error = `Run exceeded its ${agent.run.timeoutMinutes} minute limit and was aborted`;
+    }
+
+    const result = await writer.close({ status, summary: "", ...(error ? { error } : {}) });
+    await this.report(agent, result, writer);
+    return result;
   }
 
   private async report(
