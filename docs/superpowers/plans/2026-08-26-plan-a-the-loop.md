@@ -1209,6 +1209,13 @@ export interface FakeScript {
   throwAfter?: number;
   /** Yield nothing and wait until aborted — for exercising timeout handling. */
   hangForever?: boolean;
+  /**
+   * With hangForever: throw once aborted, as a real abortable async iterator
+   * does. Added in Task 6 to exercise the orchestrator's catch-block guard
+   * that keeps a timeout from being overwritten as a failure — the path the
+   * real SdkRunner takes, and previously untested.
+   */
+  throwOnAbort?: boolean;
 }
 
 export class FakeRunner implements Runner {
@@ -1589,9 +1596,15 @@ describe("Orchestrator.executeRun", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  // Two events with throwAfter: 1 — FakeRunner checks the throw condition BEFORE
+  // each yield and increments only after, so a single-event script yields once
+  // and exits the loop without ever throwing. The second event is never emitted.
   it("records a failure and still reports it", async () => {
     const { agent, orchestrator, fetchImpl } = harness({
-      events: [{ type: "assistant", text: "starting" }],
+      events: [
+        { type: "assistant", text: "starting" },
+        { type: "assistant", text: "never emitted" },
+      ],
       throwAfter: 1,
     });
     const result = await orchestrator.executeRun(agent);
