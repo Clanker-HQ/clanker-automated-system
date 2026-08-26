@@ -99,7 +99,13 @@ describe("RunStore", () => {
     const first = await store.open(runId, "smoke");
     await first.append({ type: "tool_use", name: "Bash" });
     await first.append({ type: "usage", inputTokens: 100, outputTokens: 20, costUsd: 0.01, durationMs: 500 });
-    await first.close({ status: "parked", summary: "" });
+    const firstResult = await first.close({ status: "parked", summary: "" });
+
+    // A real wall-clock gap between the park and the resume (e.g. a human
+    // approving after midnight, possibly a whole day later) — long enough
+    // that a re-seeded `startedAt` and an unseeded `new Date()` are
+    // observably different ISO timestamps.
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     // Segment 2: the SAME runId is reopened (as resumeRun does) and accrues
     // more usage before closing for good.
@@ -114,7 +120,18 @@ describe("RunStore", () => {
     expect(result.outputTokens).toBe(30);
     expect(result.turns).toBe(2);
 
+    // startedAt must be the ORIGINAL (segment 1) start time, not the resumed
+    // segment's — otherwise the Governor's daily-budget bucketing (keyed off
+    // startedAt's day) would attribute this run's summed cost to whatever
+    // day the resume happened on instead of the day it actually started.
+    expect(result.startedAt).toBe(firstResult.startedAt);
+    // durationMs must reflect the TRUE elapsed time across both segments
+    // (endedAt - the original startedAt), not just the resumed segment's.
+    expect(result.durationMs).toBe(new Date(result.endedAt).getTime() - new Date(result.startedAt).getTime());
+    expect(result.durationMs).toBeGreaterThan(0);
+
     const stored = await store.readResult(runId);
+    expect(stored.startedAt).toBe(firstResult.startedAt);
     expect(stored.costUsd).toBeCloseTo(0.015);
     expect(stored.inputTokens).toBe(140);
     expect(stored.turns).toBe(2);

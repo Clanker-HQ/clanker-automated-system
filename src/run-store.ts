@@ -48,21 +48,26 @@ export class RunStore {
     const dir = this.runDir(runId);
     await mkdir(dir, { recursive: true });
     const transcript = join(dir, "transcript.jsonl");
-    const startedAt = new Date();
 
     // A resume (Task 13's `resumeRun`) reuses the SAME runId as the segment
     // that was parked: this run's directory (and its result.json) may
     // already exist from that earlier open()/close() pair. Seed the
-    // counters from it so the eventual close() below reports the TRUE
-    // cumulative total across both segments, not just the resumed one —
-    // otherwise close()'s writeFile silently overwrites result.json with
-    // only the new segment's numbers, and the Governor's daily-budget check
-    // (which sums costUsd across listRecent()'s result.json files) would
-    // undercount this run's real spend.
+    // counters — and `startedAt` — from it so the eventual close() below
+    // reports the TRUE cumulative total across both segments, not just the
+    // resumed one — otherwise close()'s writeFile silently overwrites
+    // result.json with only the new segment's numbers, and the Governor's
+    // daily-budget check (which sums costUsd across listRecent()'s
+    // result.json files, bucketed by `startedAt`'s day) would undercount
+    // this run's real spend and/or attribute it to the wrong day: an
+    // unseeded `startedAt` would take on the resume's (possibly next-day)
+    // time instead of the original run's, silently moving day 1's spend
+    // into day 2's budget bucket. `durationMs` (endedAt - startedAt) also
+    // falls out correctly once `startedAt` is the true original start.
     let costUsd = 0;
     let inputTokens = 0;
     let outputTokens = 0;
     let turns = 0;
+    let startedAt = new Date();
     const existing = await readFile(join(dir, "result.json"), "utf8")
       .then((raw) => JSON.parse(raw) as RunResult)
       .catch(() => null);
@@ -71,6 +76,7 @@ export class RunStore {
       inputTokens = existing.inputTokens;
       outputTokens = existing.outputTokens;
       turns = existing.turns;
+      startedAt = new Date(existing.startedAt);
     }
     let lastText = "";
 
