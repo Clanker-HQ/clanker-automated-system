@@ -168,6 +168,7 @@ claude-agent-infrastructure/
    ├─ runs/<runId>/            # transcript.jsonl + result.json
    ├─ state/<agent>/           # notes an agent leaves its future self
    ├─ pending/<id>.json        # parked runs awaiting a human (§8.2)
+   ├─ config-overrides.json   # runtime settings set from Discord (§7.3.1)
    ├─ undelivered/             # outbox failures, never dropped
    └─ STOP                     # kill switch: presence halts everything
 ```
@@ -351,6 +352,8 @@ over (tier, grants, attempted effect) → allow | deny | park.
 | Daily budgets | Unnoticed slow bleed | Per-agent and global; a global breach pauses everything and alerts |
 | Circuit breaker | Endless failure loops | 3 consecutive failures disables the agent and alerts once |
 
+`config.yaml` supplies defaults:
+
 ```yaml
 governor:
   maxConcurrent: 2
@@ -358,17 +361,59 @@ governor:
   pendingTimeoutHours: 24
 
   # Local development: agents run almost always; the window is nominal.
-  quietHours: { from: "02:00", to: "03:00", timezone: UTC }
+  quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
 
   # Production (VPS): agents work overnight and stand down while the owner
   # is awake and using Claude interactively.
-  # quietHours: { from: "10:00", to: "22:00", timezone: <owner timezone> }
+  # quietHours: { from: "10:00", to: "22:00", timezone: Europe/Berlin }
 ```
 
-The production window deliberately reserves twelve hours a day for the owner's
-own use of the subscription. Agents are nocturnal by design; this is the single
-most effective protection against the failure mode where agents exhaust the
-shared rate limit during working hours.
+Timezones are always IANA zone names, never fixed offsets or abbreviations.
+`Europe/Berlin` carries the CET/CEST daylight-saving rules, so the window does
+not silently shift by an hour in October. A hardcoded `+02:00` would.
+
+The production window reserves twelve hours a day for the owner's own use of the
+subscription. Agents are nocturnal by design; this is the single most effective
+protection against the failure mode where agents exhaust the shared rate limit
+during working hours. It is expected to widen as the subscription plan or the
+observed consumption allows — hence §7.3.1.
+
+#### 7.3.1 Mutable operating parameters vs. the immutable boundary
+
+Two classes of setting, deliberately stored and changed differently.
+
+| | Runtime-mutable | Git-only |
+|---|---|---|
+| **Contains** | `quietHours`, `dailyBudgetUsd`, `maxConcurrent`, per-agent enable/disable | Grants, tiers, `permissions`, `capabilities`, agent definitions |
+| **Changed via** | A Discord command, taking effect immediately | A commit and a human merge (§3) |
+| **Stored in** | `data/config-overrides.json` | Git |
+| **Governs** | Pacing and cost | Authority |
+| **Cost of a wrong value** | Wasted time or quota — recoverable, and you want to correct it in seconds | Loss of control — the slowness is the safeguard |
+
+Precedence is override, then `config.yaml`, then built-in default. Overrides
+persist across restarts, are echoed to Discord when set, and are recorded in an
+audit log so the current configuration always has a traceable origin.
+
+Because the governor is consulted at trigger time rather than at schedule
+registration, a changed window takes effect on the very next trigger — no
+reload, no redeploy, no restart.
+
+```
+!quiet                     → show the current window
+!quiet 10:00-22:00         → set it
+!quiet off                 → disable quiet hours; agents run at any hour
+!budget 25                 → change the daily budget ceiling
+!concurrency 3             → change parallel run slots
+```
+
+`!quiet off` is expected to be used the moment the subscription plan allows
+agents to run continuously. Widening the window is a message from a phone, not a
+deployment.
+
+Under no circumstances does this mechanism extend to grants, tiers, or
+permissions. Anything that changes what an agent is *allowed to do* passes
+through git and a human merge, because that is the only path the privilege
+boundary in §3 can defend.
 
 **Kill switch:** the presence of `data/STOP` prevents new runs and aborts running
 ones. One file, usable over SSH in seconds.
@@ -395,7 +440,10 @@ The owner's only interface, and therefore core rather than deferred. It handles:
   in plain language derived from its tier and `grantRefs`. Approving merges to
   `main` and triggers a deploy.
 - **Agent questions** — free-text; the reply is injected into the resumed run.
-- **Commands** — `!runs`, `!stop`, `!resume`, `!disable <agent>`.
+- **Commands** — status and control: `!runs`, `!stop`, `!resume`,
+  `!disable <agent>`, `!enable <agent>`; and the runtime settings of §7.3.1:
+  `!quiet`, `!budget`, `!concurrency`. Settings commands echo the new value and
+  write to the audit log. No command can alter grants, tiers, or permissions.
 
 Every prompt carries its `pendingId`, so answers survive restarts and cannot be
 misrouted. Unanswered prompts expire after `pendingTimeoutHours` (default 24),
