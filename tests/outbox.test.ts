@@ -78,6 +78,15 @@ describe("formatRunMessage", () => {
     const text = formatRunMessage({ ...RESULT, status: "failed" }, tail);
     expect(text.length).toBeLessThanOrEqual(2000);
   });
+
+  it("renders the parked, question, and denied statuses with a distinct icon from failed", () => {
+    const parked = formatRunMessage({ ...RESULT, status: "parked" as never });
+    const question = formatRunMessage({ ...RESULT, status: "question" as never });
+    const denied = formatRunMessage({ ...RESULT, status: "denied" as never });
+    for (const text of [parked, question, denied]) {
+      expect(text).not.toContain("❌");
+    }
+  });
 });
 
 describe("DiscordOutbox", () => {

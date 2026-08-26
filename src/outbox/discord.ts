@@ -8,6 +8,7 @@ const DISCORD_LIMIT = 2000;
 const ICON: Record<string, string> = {
   success: "✅", failed: "❌", timeout: "⏱️",
   "budget-exceeded": "💸", killed: "🛑", interrupted: "⚠️",
+  parked: "⏸️", question: "❓", denied: "🚫",
 };
 
 export function formatRunMessage(result: RunResult, tail?: string[]): string {

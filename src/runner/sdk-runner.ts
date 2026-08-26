@@ -163,6 +163,17 @@ export function toRunEvents(message: unknown): RunEvent[] {
       return events;
     }
 
+    case "rate_limit_event": {
+      const info = (m.rate_limit_info as Record<string, unknown> | undefined) ?? {};
+      const status = info.status;
+      if (status !== "allowed" && status !== "allowed_warning" && status !== "rejected") return [];
+      const event: RunEvent = { type: "rate_limit_event", status };
+      if (typeof info.rateLimitType === "string") (event as Record<string, unknown>).rateLimitType = info.rateLimitType;
+      if (typeof info.utilization === "number") (event as Record<string, unknown>).utilization = info.utilization;
+      if (typeof info.resetsAt === "number") (event as Record<string, unknown>).resetsAt = info.resetsAt;
+      return [event];
+    }
+
     default:
       return [];
   }

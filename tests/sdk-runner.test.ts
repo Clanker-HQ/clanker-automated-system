@@ -142,6 +142,26 @@ describe("toRunEvents", () => {
       { type: "usage", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
     ]);
   });
+
+  it("maps a rate_limit_event message to a rate_limit_event RunEvent", () => {
+    const events = toRunEvents({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed_warning",
+        rateLimitType: "five_hour",
+        utilization: 0.91,
+        resetsAt: 1787766600,
+      },
+    });
+    expect(events).toEqual([
+      { type: "rate_limit_event", status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.91, resetsAt: 1787766600 },
+    ]);
+  });
+
+  it("maps a rate_limit_event with a minimal payload, defaulting the optional fields to undefined", () => {
+    const events = toRunEvents({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
+    expect(events).toEqual([{ type: "rate_limit_event", status: "allowed" }]);
+  });
 });
 
 // linkAbort exists because a listener attached to an AbortSignal that is

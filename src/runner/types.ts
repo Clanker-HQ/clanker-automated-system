@@ -5,7 +5,16 @@ export type RunEvent =
   | { type: "tool_use"; name: string }
   | { type: "tool_result"; name: string; ok: boolean }
   | { type: "usage"; inputTokens: number; outputTokens: number; costUsd: number; durationMs: number }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | {
+      type: "rate_limit_event";
+      status: "allowed" | "allowed_warning" | "rejected";
+      rateLimitType?: string;
+      utilization?: number;
+      resetsAt?: number;
+    }
+  | { type: "parked"; kind: "approval" | "question"; pendingId: string }
+  | { type: "denied"; reason: string };
 
 export interface RunContext {
   runId: string;

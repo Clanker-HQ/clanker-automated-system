@@ -3,7 +3,8 @@ import { join } from "node:path";
 import type { RunEvent } from "./runner/types.js";
 
 export type RunStatus =
-  | "success" | "failed" | "timeout" | "budget-exceeded" | "killed" | "interrupted";
+  | "success" | "failed" | "timeout" | "budget-exceeded" | "killed" | "interrupted"
+  | "parked" | "question" | "denied";
 
 export interface RunResult {
   runId: string;
