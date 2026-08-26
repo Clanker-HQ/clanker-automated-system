@@ -13,7 +13,15 @@ export type AgentDef = AgentYaml & {
 };
 
 export function parseAgent(source: string, yamlText: string): AgentYaml {
-  const result = AgentSchema.safeParse(parseYaml(yamlText) ?? {});
+  let raw: unknown;
+  try {
+    raw = parseYaml(yamlText);
+  } catch (error) {
+    throw new ValidationError(source, [
+      `is not valid YAML: ${(error as Error).message}`,
+    ]);
+  }
+  const result = AgentSchema.safeParse(raw ?? {});
   if (!result.success) throw formatZodError(source, result.error);
   return result.data;
 }
@@ -75,8 +83,21 @@ export function loadRegistry(opts: {
     try {
       agent = parseAgent(source, yamlText);
     } catch (error) {
-      lines.push(...(error as ValidationError).lines);
-      raw = (parseYaml(yamlText) ?? {}) as Record<string, unknown>;
+      if (error instanceof ValidationError) {
+        lines.push(...error.lines);
+      } else {
+        lines.push((error as Error).message);
+      }
+      // parseAgent already parsed this text once; a syntax error there would
+      // throw again here, so this fallback parse must not be allowed to
+      // escape uncaught — it would abandon every other agent in the
+      // registry. On any failure, raw simply stays {} and the checks below
+      // (all optional-field lookups) fall through with nothing extra to add.
+      try {
+        raw = (parseYaml(yamlText) ?? {}) as Record<string, unknown>;
+      } catch {
+        raw = {};
+      }
     }
 
     const rawTrigger = raw["trigger"] as Record<string, unknown> | undefined;

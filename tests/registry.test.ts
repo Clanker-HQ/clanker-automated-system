@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config.js";
+import { ValidationError } from "../src/errors.js";
 import { loadRegistry } from "../src/registry.js";
 import { parseAgent } from "../src/registry.js";
 
@@ -25,6 +26,17 @@ function scaffold(agentYaml: string, name = "smoke") {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "agent.yaml"), agentYaml);
   writeFileSync(join(dir, "prompt.md"), "Say hello.");
+  return { agentsDir: join(root, "agents"), dataDir: join(root, "data") };
+}
+
+function scaffoldMany(entries: { name: string; agentYaml: string }[]) {
+  const root = mkdtempSync(join(tmpdir(), "cai-"));
+  for (const { name, agentYaml } of entries) {
+    const dir = join(root, "agents", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "agent.yaml"), agentYaml);
+    writeFileSync(join(dir, "prompt.md"), "Say hello.");
+  }
   return { agentsDir: join(root, "agents"), dataDir: join(root, "data") };
 }
 
@@ -63,6 +75,19 @@ describe("parseAgent", () => {
   it("rejects a tool listed as both allowed and disallowed", () => {
     const yaml = AGENT.replace("disallowedTools: [Bash]", "disallowedTools: [Read]");
     expect(() => parseAgent("agent.yaml", yaml)).toThrow(/exactly one/);
+  });
+
+  it.each(["+02:00", "PST", "Not/AZone"])(
+    "rejects trigger.timezone %s as not a canonical IANA zone",
+    (tz) => {
+      const yaml = AGENT.replace("Europe/Berlin", tz);
+      expect(() => parseAgent("agent.yaml", yaml)).toThrow(/trigger\.timezone/);
+    },
+  );
+
+  it.each(["Europe/Berlin", "UTC"])("accepts trigger.timezone %s", (tz) => {
+    const yaml = AGENT.replace("Europe/Berlin", tz);
+    expect(parseAgent("agent.yaml", yaml).trigger.timezone).toBe(tz);
   });
 });
 
@@ -117,5 +142,36 @@ describe("loadRegistry", () => {
       expect(message).toContain("allowedTools");
       expect(message).toContain("trigger.schedule");
     }
+  });
+
+  it("reports a YAML syntax error without abandoning validation of other agents", () => {
+    const { agentsDir, dataDir } = scaffoldMany([
+      { name: "smoke", agentYaml: "name: [unclosed" },
+      {
+        name: "other",
+        agentYaml: AGENT.replace("name: smoke", "name: other").replace(
+          "[Read, Write]",
+          "[Browser]",
+        ),
+      },
+    ]);
+
+    let error: unknown;
+    try {
+      loadRegistry({ agentsDir, dataDir, config: CONFIG, env: ENV });
+    } catch (e) {
+      error = e;
+    }
+
+    // A raw YAMLParseError (no .lines) must not escape uncaught — it must
+    // be reported as a ValidationError like every other problem, and the
+    // "other" agent's own (unrelated) problem must still be checked and
+    // reported in the same pass rather than the loop being abandoned.
+    expect(error).toBeInstanceOf(ValidationError);
+    const message = (error as Error).message;
+    expect(message).toContain("smoke");
+    expect(message).toContain("not valid YAML");
+    expect(message).toContain("other");
+    expect(message).toContain("allowedTools");
   });
 });

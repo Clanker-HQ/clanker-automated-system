@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidTimeZone } from "./config.js";
 
 export const TOOLS = [
   "Read", "Write", "Edit", "Glob", "Grep", "Bash",
@@ -20,7 +21,14 @@ const CronTrigger = z
   .object({
     type: z.literal("cron"),
     schedule: z.string().min(1),
-    timezone: z.string(),
+    timezone: z.string().superRefine((v, ctx) => {
+      if (!isValidTimeZone(v)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `must be a canonical IANA zone name such as "Europe/Berlin" (or "UTC"); received ${JSON.stringify(v)}. Offsets ("+02:00") and abbreviations ("CEST", "PST") are rejected because they do not carry daylight-saving rules`,
+        });
+      }
+    }),
   })
   .strict();
 
