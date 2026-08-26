@@ -21,6 +21,7 @@ interface QueryParams {
     cwd: string;
     allowedTools: string[];
     disallowedTools: string[];
+    tools: string[];
     permissionMode: string;
     settingSources: unknown[];
     env: Record<string, string>;
@@ -211,5 +212,19 @@ describe("SdkRunner query options", () => {
     );
     controller.abort();
     expect(events.filter((e) => e.type === "usage")).toHaveLength(1);
+  });
+
+  it("passes the agent's allowedTools as the SDK's tools option, trimming what's loaded into the system prompt", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { params } = await run([RESULT_MESSAGE]);
+    expect(params.options.tools).toEqual(["Read", "Glob"]);
+  });
+
+  it("passes an empty tools array for an agent with no allowedTools, rather than falling back to every built-in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const bare = { ...AGENT, permissions: { allowedTools: [], disallowedTools: [] } } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(new SdkRunner().execute(bare, CTX, new AbortController().signal));
+    expect((queryMock.mock.calls[0]![0] as QueryParams).options.tools).toEqual([]);
   });
 });

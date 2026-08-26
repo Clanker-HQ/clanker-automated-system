@@ -203,6 +203,7 @@ export class SdkRunner implements Runner {
         cwd: ctx.workspace,
         allowedTools: agent.permissions.allowedTools,
         disallowedTools: agent.permissions.disallowedTools,
+        tools: agent.permissions.allowedTools,
         permissionMode: "default",
         settingSources: [],
         env: childEnv,
