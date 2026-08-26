@@ -126,6 +126,11 @@ describe("matchGrant", () => {
     const effect = detectOutwardEffect("Bash", { command: "git push github.com/someone-else/repo main" })!;
     expect(matchGrant([PUSH_SITE], effect)).toBeNull();
   });
+
+  it("does not match a target that merely contains an exact-pattern grant's text as a substring", () => {
+    const effect = detectOutwardEffect("Bash", { command: "git push github.com/me/site-backdoor main" })!;
+    expect(matchGrant([PUSH_SITE], effect)).toBeNull();
+  });
 });
 
 function agent(tier: string, grantRefs: string[] = [], approval = "notify") {

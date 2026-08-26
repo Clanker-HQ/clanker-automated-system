@@ -120,7 +120,7 @@ function globMatch(pattern: string, value: string): boolean {
 }
 
 export function matchGrant(grants: Grant[], effect: OutwardEffect): Grant | null {
-  return grants.find((g) => globMatch(grantTargetPattern(g), effect.target) || effect.target.includes(grantTargetPattern(g).replace(/\*/g, ""))) ?? null;
+  return grants.find((g) => globMatch(grantTargetPattern(g), effect.target)) ?? null;
 }
 
 export type Decision =
