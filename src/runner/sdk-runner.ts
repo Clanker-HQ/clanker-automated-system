@@ -212,46 +212,41 @@ export class SdkRunner implements Runner {
 
     let partial: PartialUsage = { inputTokens: 0, outputTokens: 0 };
     let sawTerminalUsage = false;
-    let wasAborted = signal.aborted;
 
+    // Invariant: a message already pulled off the stream is NEVER discarded,
+    // aborted or not — it may be the only place a run's token usage shows up.
+    // So every message is processed unconditionally (accumulate its usage,
+    // map it to events, yield those events); the abort signal is checked only
+    // AFTER processing, and only to decide whether to stop asking the stream
+    // for more messages. Checking signal.aborted BEFORE mapping a message
+    // that was already pulled would silently drop its usage/events, which is
+    // the exact bug this file exists to fix (see accumulateUsage's doc
+    // comment) — just for the specific message that races the abort.
     for await (const message of stream) {
-      const isNowAborted = signal.aborted;
-      const justAborted = !wasAborted && isNowAborted;
-
-      if (justAborted) {
-        // Signal just became aborted mid-stream, don't process this message.
-        if (!sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
-          yield {
-            type: "usage",
-            inputTokens: partial.inputTokens,
-            outputTokens: partial.outputTokens,
-            costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
-            durationMs: 0,
-          };
-        }
-        return;
-      }
-
-      wasAborted = isNowAborted;
       partial = accumulateUsage(partial, message);
       const events = toRunEvents(message);
       if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
       yield* events;
 
-      if (signal.aborted) {
-        // Signal is aborted after processing this message; try to emit synthesized
-        // usage if we haven't seen the terminal one yet.
-        if (!sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
-          yield {
-            type: "usage",
-            inputTokens: partial.inputTokens,
-            outputTokens: partial.outputTokens,
-            costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
-            durationMs: 0,
-          };
-        }
-        return;
-      }
+      if (signal.aborted) break;
+    }
+
+    // Fallback synthesis, reached either by the `break` above (aborted
+    // mid-loop, after the last-pulled message was fully processed) or by the
+    // stream simply ending on its own once aborted (the SDK may just stop
+    // yielding without ever handing back another message to trigger the
+    // check inside the loop) — either way, if the terminal `result` message
+    // never arrived but per-turn usage was accumulated, that's the only
+    // record of what the run actually spent. Single call site: this used to
+    // be duplicated at two points inside the loop.
+    if (!sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
+      yield {
+        type: "usage",
+        inputTokens: partial.inputTokens,
+        outputTokens: partial.outputTokens,
+        costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
+        durationMs: 0,
+      };
     }
   }
 }

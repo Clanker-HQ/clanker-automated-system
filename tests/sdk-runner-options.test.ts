@@ -176,9 +176,11 @@ describe("SdkRunner query options", () => {
           message: { content: "partial one", usage: { input_tokens: 400, output_tokens: 20 } },
         };
         controller.abort();
+        // Already pulled off the stream by the time abort() has run, so it
+        // must still be processed in full, not discarded.
         yield {
           type: "assistant",
-          message: { content: "never reached", usage: { input_tokens: 999, output_tokens: 999 } },
+          message: { content: "also processed", usage: { input_tokens: 999, output_tokens: 999 } },
         };
       })(),
     );
@@ -186,11 +188,12 @@ describe("SdkRunner query options", () => {
 
     expect(events).toEqual([
       { type: "assistant", text: "partial one" },
+      { type: "assistant", text: "also processed" },
       {
         type: "usage",
-        inputTokens: 400,
-        outputTokens: 20,
-        costUsd: estimateCostUsd("claude-haiku-4-5", 400, 20),
+        inputTokens: 1399,
+        outputTokens: 1019,
+        costUsd: estimateCostUsd("claude-haiku-4-5", 1399, 1019),
         durationMs: 0,
       },
     ]);
