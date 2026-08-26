@@ -2044,6 +2044,29 @@ function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * Propagate an abort from `signal` to `controller`.
+ *
+ * Exported so the already-aborted case is unit-testable: `SdkRunner.execute`
+ * itself cannot be exercised without a live SDK call.
+ */
+export function linkAbort(signal: AbortSignal, controller: AbortController): void {
+  if (signal.aborted) controller.abort();
+  else signal.addEventListener("abort", () => controller.abort(), { once: true });
+}
+
+// ⚠️ SUPERSEDED — the block below is WRONG and is kept only to show what was
+// replaced. `SDKMessage` has no standalone 'tool_use' / 'tool_result' / 'usage'
+// members (sdk.d.ts:4371): tool calls are content blocks inside an `assistant`
+// message, tool results inside a `user` message, and the terminal message is
+// `result`, carrying subtype / is_error / duration_ms / total_cost_usd / usage.
+// As written, every real run would have reported ZERO turns, and a run that
+// failed inside the SDK would have been recorded as a SUCCESS.
+//
+// The shipped `toRunEvents(message): RunEvent[]` in src/runner/sdk-runner.ts is
+// authoritative: it returns an array because one assistant message can carry
+// text and several tool_use blocks, and it returns [] for anything unknown.
+
 /** Maps one SDK message to a RunEvent, or null for messages we do not record. */
 export function toRunEvent(message: unknown): RunEvent | null {
   const m = message as Record<string, unknown>;
@@ -2080,7 +2103,11 @@ export class SdkRunner implements Runner {
   ): AsyncIterable<RunEvent> {
     const { childEnv } = resolveCredentials();
     const controller = new AbortController();
-    signal.addEventListener("abort", () => controller.abort(), { once: true });
+    // A listener attached to an ALREADY-aborted signal never fires, so checking
+    // `.aborted` first is required — otherwise a run aborted before its first
+    // tick is never told to stop and runs on past its deadline. Same pattern as
+    // FakeRunner. Extracted so it can be unit-tested without a live SDK call.
+    linkAbort(signal, controller);
 
     const stream = query({
       prompt: ctx.prompt,
