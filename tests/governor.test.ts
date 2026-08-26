@@ -84,9 +84,21 @@ describe("Governor.admit", () => {
   it("refuses once today's spend meets the daily budget, with alert: true", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const runStore = new RunStore(dir);
-    const writer = await runStore.open(newRunId("smoke", new Date("2026-08-26T08:00:00.000Z")), "smoke");
-    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 10, durationMs: 1 });
-    await writer.close({ status: "success", summary: "" });
+    // RunStore.open() stamps RunResult.startedAt from the real system clock
+    // (node:fs writer, `new Date()`), not from any date embedded in the runId
+    // string — so faking the system clock is the only way to make this run
+    // actually land "today" relative to the governor's fixed "today", rather
+    // than relying on this test coincidentally running on the real calendar
+    // date 2026-08-26.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T08:00:00.000Z"));
+    try {
+      const writer = await runStore.open(newRunId("smoke", new Date("2026-08-26T08:00:00.000Z")), "smoke");
+      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 10, durationMs: 1 });
+      await writer.close({ status: "success", summary: "" });
+    } finally {
+      vi.useRealTimers();
+    }
     const result = await build(dir).admit(agent(), "trigger");
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("budget"), alert: true });
   });
