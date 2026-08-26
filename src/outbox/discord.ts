@@ -15,7 +15,10 @@ export function formatRunMessage(result: RunResult, tail?: string[]): string {
   const header =
     `${ICON[result.status] ?? "•"} **${result.agent}** — ${result.status}\n` +
     `\`${result.runId}\`\n` +
-    `${result.turns} turns · ${seconds}s · $${result.costUsd.toFixed(4)} · ` +
+    // "tool calls", not "turns": the count is derived from tool_use events so
+    // that the real and fake runners stay consistent. The SDK's own num_turns
+    // is deliberately not read.
+    `${result.turns} tool calls · ${seconds}s · $${result.costUsd.toFixed(4)} · ` +
     `${result.inputTokens}in/${result.outputTokens}out\n`;
 
   const body = result.summary ? `\n${result.summary}\n` : "";
@@ -82,16 +85,27 @@ export class DiscordOutbox {
     const url = this.webhookFor(channelKey);
     const content = formatRunMessage(result, tail);
 
+    // Why the last attempt failed, so the undelivered file says what went
+    // wrong instead of leaving the owner to guess. The webhook URL is a
+    // secret and is never recorded — only the status code or error message.
+    let failure = "no delivery attempt was made";
+
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const response = await this.fetchImpl(url, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({
+            content,
+            // `content` embeds agent-authored text: without this a summary
+            // containing "@everyone" would ping the whole server.
+            allowed_mentions: { parse: [] },
+          }),
         });
         if (response.ok) return "delivered";
-      } catch {
-        // fall through to retry
+        failure = `Discord rejected the webhook with HTTP ${response.status} ${response.statusText}`.trim();
+      } catch (error) {
+        failure = `request failed: ${error instanceof Error ? error.message : String(error)}`;
       }
       if (attempt < 3) await this.sleep(attempt * 1000);
     }
@@ -100,7 +114,11 @@ export class DiscordOutbox {
     await mkdir(dir, { recursive: true });
     await writeFile(
       join(dir, `${result.runId}.json`),
-      JSON.stringify({ channelKey, content, result }, null, 2) + "\n",
+      JSON.stringify(
+        { channelKey, error: `after 3 attempts: ${failure}`, content, result },
+        null,
+        2,
+      ) + "\n",
     );
     return "undelivered";
   }

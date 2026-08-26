@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -44,6 +44,14 @@ describe("formatRunMessage", () => {
     expect(text).toContain("12.0s");
   });
 
+  // The count is derived from tool_use events, not from the SDK's num_turns —
+  // that keeps the real and fake runners consistent. Only the label was wrong.
+  it("labels the tool-call count for what it actually counts", () => {
+    const text = formatRunMessage(RESULT);
+    expect(text).toContain("3 tool calls");
+    expect(text).not.toContain("3 turns");
+  });
+
   it("includes the transcript tail on failure", () => {
     const failed = { ...RESULT, status: "failed" as const, summary: "" };
     const text = formatRunMessage(failed, [
@@ -80,6 +88,21 @@ describe("DiscordOutbox", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  // `content` embeds agent-authored text. Without allowed_mentions a summary
+  // containing "@everyone" would ping the whole server.
+  it("suppresses mentions so agent-authored text cannot ping the server", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(null, { status: 204 }),
+    );
+    const { instance } = outbox(fetchImpl as unknown as typeof fetch);
+    await instance.post("smoke", { ...RESULT, summary: "@everyone the tides are in" });
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
+    expect(body.allowed_mentions).toEqual({ parse: [] });
+    expect(body.content).toContain("@everyone");
+  });
+
   it("retries three times before giving up", async () => {
     const fetchImpl = vi.fn(async () => new Response("", { status: 500 })) as unknown as typeof fetch;
     const { instance } = outbox(fetchImpl);
@@ -94,6 +117,32 @@ describe("DiscordOutbox", () => {
     const dir = join(dataDir, "undelivered");
     expect(existsSync(dir)).toBe(true);
     expect(readdirSync(dir)).toHaveLength(1);
+  });
+
+  it("records why delivery failed, without ever writing the webhook URL", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const { instance, dataDir } = outbox(fetchImpl);
+    await instance.post("smoke", RESULT);
+
+    const file = join(dataDir, "undelivered", `${RESULT.runId}.json`);
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    expect(record.error).toContain("network down");
+    expect(readFileSync(file, "utf8")).not.toContain("discord.test");
+  });
+
+  it("records an HTTP rejection reason when the webhook answers but refuses", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response("", { status: 400 }),
+    ) as unknown as typeof fetch;
+    const { instance, dataDir } = outbox(fetchImpl);
+    await instance.post("smoke", RESULT);
+
+    const record = JSON.parse(
+      readFileSync(join(dataDir, "undelivered", `${RESULT.runId}.json`), "utf8"),
+    );
+    expect(record.error).toContain("400");
   });
 
   it("throws for a channel key absent from config", async () => {
