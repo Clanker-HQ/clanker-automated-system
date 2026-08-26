@@ -3,26 +3,43 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { formatZodError } from "./errors.js";
 
+/**
+ * True only for canonical IANA zone names.
+ *
+ * `new Intl.DateTimeFormat({ timeZone })` is NOT a sufficient check: it accepts
+ * "+02:00", "PST", "EST", and "Etc/GMT-2", none of which carry daylight-saving
+ * rules. The canonical list is the real test — but "UTC" is legitimately absent
+ * from it, so it is allowed explicitly.
+ */
+const CANONICAL_ZONES: ReadonlySet<string> = new Set([
+  ...Intl.supportedValuesOf("timeZone"),
+  "UTC",
+]);
+
 export function isValidTimeZone(tz: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
+  return CANONICAL_ZONES.has(tz);
 }
 
-const TimeOfDay = z
-  .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be a 24-hour time such as "22:00"');
+const TimeOfDay = z.string().superRefine((v, ctx) => {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `must be a 24-hour time such as "22:00"; received ${JSON.stringify(v)}`,
+    });
+  }
+});
 
 export const QuietHoursSchema = z
   .object({
     from: TimeOfDay,
     to: TimeOfDay,
-    timezone: z.string().refine(isValidTimeZone, {
-      message:
-        'must be an IANA zone name such as "Europe/Berlin". Offsets ("+02:00") and abbreviations ("CEST") are rejected because they do not carry daylight-saving rules',
+    timezone: z.string().superRefine((v, ctx) => {
+      if (!isValidTimeZone(v)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `must be a canonical IANA zone name such as "Europe/Berlin" (or "UTC"); received ${JSON.stringify(v)}. Offsets ("+02:00") and abbreviations ("CEST", "PST") are rejected because they do not carry daylight-saving rules`,
+        });
+      }
     }),
   })
   .strict();
