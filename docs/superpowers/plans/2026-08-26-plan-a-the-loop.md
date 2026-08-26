@@ -373,6 +373,7 @@ The `as const` arrays are the single source of truth for both runtime validation
 
 ```ts
 import { z } from "zod";
+import { isValidTimeZone } from "./config.js";
 
 export const TOOLS = [
   "Read", "Write", "Edit", "Glob", "Grep", "Bash",
@@ -390,11 +391,21 @@ const NOT_YET: Record<string, string> = {
   autonomous: "Plan B (tiers and grant enforcement)",
 };
 
+// `croner` silently accepts timezone "+02:00" and "PST" at construction AND at
+// nextRun(), and defers a bogus zone's error to trigger time — so the schedule
+// check below cannot be relied on to validate the zone. Reuse Task 1's check.
 const CronTrigger = z
   .object({
     type: z.literal("cron"),
     schedule: z.string().min(1),
-    timezone: z.string(),
+    timezone: z.string().superRefine((tz, ctx) => {
+      if (!isValidTimeZone(tz)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `must be a canonical IANA zone name such as "Europe/Berlin" (or "UTC"); received ${JSON.stringify(tz)}. Offsets ("+02:00") and abbreviations ("PST") are rejected because they do not carry daylight-saving rules`,
+        });
+      }
+    }),
   })
   .strict();
 
@@ -641,8 +652,17 @@ export type AgentDef = AgentYaml & {
   workspace: string;
 };
 
+/** Always throws ValidationError — never a raw YAMLParseError, which has no `.lines`. */
 export function parseAgent(source: string, yamlText: string): AgentYaml {
-  const result = AgentSchema.safeParse(parseYaml(yamlText) ?? {});
+  let raw: unknown;
+  try {
+    raw = parseYaml(yamlText) ?? {};
+  } catch (error) {
+    throw new ValidationError(source, [
+      `is not valid YAML: ${(error as Error).message}`,
+    ]);
+  }
+  const result = AgentSchema.safeParse(raw);
   if (!result.success) throw formatZodError(source, result.error);
   return result.data;
 }
@@ -691,7 +711,11 @@ export function loadRegistry(opts: {
     try {
       agent = parseAgent(source, readFileSync(yamlPath, "utf8"));
     } catch (error) {
-      failures.push(error as ValidationError);
+      failures.push(
+        error instanceof ValidationError
+          ? error
+          : new ValidationError(source, [`could not be read: ${(error as Error).message}`]),
+      );
       continue;
     }
 
@@ -739,10 +763,21 @@ export function loadRegistry(opts: {
 }
 ```
 
+> **Correction, applied during execution.** The `continue` above is a defect:
+> an agent with both a schema fault (unknown tool) and a semantic fault (bad
+> cron) reports only the first, which the test `reports every problem at once
+> rather than only the first` requires it not to do. The shipped
+> `src/registry.ts` falls back to the raw parsed YAML for the semantic checks
+> when schema parsing fails, so both are reported in one pass. **The committed
+> implementation is authoritative over this code block**; it was verified by
+> review against a missing `trigger`, a non-string `schedule`, an absent
+> `outbox`, and top-level YAML that is not an object.
+
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `npm test -- tests/registry.test.ts`
-Expected: PASS, 12 tests.
+Expected: PASS — every `it` block in the file above, including both `it.each`
+groups expanded.
 
 - [ ] **Step 6: Write `scripts/emit-schema.ts`**
 
