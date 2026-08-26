@@ -45,9 +45,24 @@ describe("formatRunMessage", () => {
   });
 
   it("includes the transcript tail on failure", () => {
+    const failed = { ...RESULT, status: "failed" as const, summary: "" };
+    const text = formatRunMessage(failed, [
+      '{"type":"assistant","text":"UNIQUE_TAIL_MARKER"}',
+    ]);
+    expect(text).toContain("UNIQUE_TAIL_MARKER");
+  });
+
+  it("includes error details when provided", () => {
     const failed = { ...RESULT, status: "failed" as const, error: "boom" };
-    const text = formatRunMessage(failed, ['{"type":"error","message":"boom"}']);
-    expect(text).toContain("boom");
+    const text = formatRunMessage(failed);
+    expect(text).toContain("**Error:** boom");
+  });
+
+  it("does not include tail for successful runs", () => {
+    const text = formatRunMessage(RESULT, [
+      '{"type":"assistant","text":"SHOULD_NOT_APPEAR"}',
+    ]);
+    expect(text).not.toContain("SHOULD_NOT_APPEAR");
   });
 
   it("stays within the Discord 2000-character limit", () => {
