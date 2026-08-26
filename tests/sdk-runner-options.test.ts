@@ -9,7 +9,7 @@ import type { RunEvent } from "../src/runner/types.js";
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
 
-const { SdkRunner } = await import("../src/runner/sdk-runner.js");
+const { SdkRunner, estimateCostUsd } = await import("../src/runner/sdk-runner.js");
 
 interface QueryParams {
   prompt: string;
@@ -161,5 +161,52 @@ describe("SdkRunner query options", () => {
     expect(events).toEqual([
       { type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200 },
     ]);
+  });
+
+  it("emits a synthesized usage event from partial per-turn usage when aborted before the terminal result message", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const controller = new AbortController();
+
+    const events: RunEvent[] = [];
+    const iterable = new SdkRunner().execute(AGENT, CTX, controller.signal);
+    queryMock.mockReturnValue(
+      (async function* () {
+        yield {
+          type: "assistant",
+          message: { content: "partial one", usage: { input_tokens: 400, output_tokens: 20 } },
+        };
+        controller.abort();
+        yield {
+          type: "assistant",
+          message: { content: "never reached", usage: { input_tokens: 999, output_tokens: 999 } },
+        };
+      })(),
+    );
+    for await (const event of iterable) events.push(event);
+
+    expect(events).toEqual([
+      { type: "assistant", text: "partial one" },
+      {
+        type: "usage",
+        inputTokens: 400,
+        outputTokens: 20,
+        costUsd: estimateCostUsd("claude-haiku-4-5", 400, 20),
+        durationMs: 0,
+      },
+    ]);
+  });
+
+  it("does not synthesize a second usage event when the terminal result message already provided one", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const controller = new AbortController();
+    const { events } = await run(
+      [
+        { type: "assistant", message: { content: "a", usage: { input_tokens: 5, output_tokens: 1 } } },
+        RESULT_MESSAGE,
+      ],
+      controller.signal,
+    );
+    controller.abort();
+    expect(events.filter((e) => e.type === "usage")).toHaveLength(1);
   });
 });

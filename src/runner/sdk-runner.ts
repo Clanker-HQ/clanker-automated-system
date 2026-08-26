@@ -30,6 +30,51 @@ function toolResultName(block: Record<string, unknown>): string {
 }
 
 /**
+ * Rough $/million-token rates for the fixed model set this system runs.
+ * Used ONLY to estimate cost on a run aborted before the SDK's own
+ * total_cost_usd figure (which arrives solely on the terminal `result`
+ * message) was ever computed — subscription runs aren't billed by this
+ * number, but a $0.0000 report for a run that burned its whole timeout is
+ * worse than an estimate.
+ */
+const COST_PER_MILLION_TOKENS: Record<string, { input: number; output: number }> = {
+  "claude-opus-5": { input: 15, output: 75 },
+  "claude-sonnet-5": { input: 3, output: 15 },
+  "claude-haiku-4-5": { input: 1, output: 5 },
+};
+
+export function estimateCostUsd(model: string, inputTokens: number, outputTokens: number): number {
+  const rate = COST_PER_MILLION_TOKENS[model];
+  if (!rate) return 0;
+  return (inputTokens * rate.input + outputTokens * rate.output) / 1_000_000;
+}
+
+export interface PartialUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Accumulates the per-turn `usage` block every SDKAssistantMessage carries
+ * (message.usage, standard Anthropic Messages API shape) — present on EVERY
+ * assistant message, not only the terminal one. This is what lets a run
+ * aborted mid-stream still report a truthful token count instead of losing
+ * all accounting.
+ */
+export function accumulateUsage(existing: PartialUsage, message: unknown): PartialUsage {
+  if (typeof message !== "object" || message === null) return existing;
+  const m = message as Record<string, unknown>;
+  if (m.type !== "assistant") return existing;
+  const inner = m.message as Record<string, unknown> | undefined;
+  const usage = inner?.usage as Record<string, unknown> | undefined;
+  if (!usage) return existing;
+  return {
+    inputTokens: existing.inputTokens + num(usage.input_tokens),
+    outputTokens: existing.outputTokens + num(usage.output_tokens),
+  };
+}
+
+/**
  * Maps one SDK message to zero or more RunEvents.
  *
  * `SDKMessage` has no standalone tool_use/tool_result/usage message types:
@@ -165,14 +210,48 @@ export class SdkRunner implements Runner {
       },
     });
 
+    let partial: PartialUsage = { inputTokens: 0, outputTokens: 0 };
+    let sawTerminalUsage = false;
+    let wasAborted = signal.aborted;
+
     for await (const message of stream) {
-      // Map first, THEN check the signal: the message has already been pulled
-      // off the stream, and toRunEvents emits the `usage` event only from the
-      // terminal `result` message. Returning before mapping threw away all
-      // cost and token accounting for an aborted run — Discord reported
-      // $0.0000 for a run that burned its entire timeout.
-      yield* toRunEvents(message);
-      if (signal.aborted) return;
+      const isNowAborted = signal.aborted;
+      const justAborted = !wasAborted && isNowAborted;
+
+      if (justAborted) {
+        // Signal just became aborted mid-stream, don't process this message.
+        if (!sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
+          yield {
+            type: "usage",
+            inputTokens: partial.inputTokens,
+            outputTokens: partial.outputTokens,
+            costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
+            durationMs: 0,
+          };
+        }
+        return;
+      }
+
+      wasAborted = isNowAborted;
+      partial = accumulateUsage(partial, message);
+      const events = toRunEvents(message);
+      if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
+      yield* events;
+
+      if (signal.aborted) {
+        // Signal is aborted after processing this message; try to emit synthesized
+        // usage if we haven't seen the terminal one yet.
+        if (!sawTerminalUsage && (partial.inputTokens > 0 || partial.outputTokens > 0)) {
+          yield {
+            type: "usage",
+            inputTokens: partial.inputTokens,
+            outputTokens: partial.outputTokens,
+            costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
+            durationMs: 0,
+          };
+        }
+        return;
+      }
     }
   }
 }
