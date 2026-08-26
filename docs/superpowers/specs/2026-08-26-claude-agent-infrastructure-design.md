@@ -1,8 +1,8 @@
 # Claude Agent Infrastructure — Design
 
 **Date:** 2026-08-26
-**Status:** Approved, ready for implementation planning
-**Scope:** Sub-project 1 of 3 — the core runtime and host
+**Status:** Approved in outline; revised after the autonomy requirement
+**Scope:** Sub-project 1 of 3 — core runtime, control channel, and deployment
 
 ---
 
@@ -11,138 +11,214 @@
 A self-hosted platform that runs Claude agents unattended on a server, billed
 against a Claude subscription rather than the API.
 
-The platform's real job is **making experiments cheap**. Adding an agent must
-cost one folder and two files. If trying an idea requires touching plumbing,
-few ideas get tried, and the platform has failed regardless of how well it runs
-the agents it already has.
+**The owner does not write configuration.** Agent definitions are authored by
+Claude locally and deployed, or proposed by an agent on the server and approved
+by the owner. Every artefact in this system is therefore designed to be written
+and validated by a machine, and read by a human only when something needs a
+decision.
+
+The owner's entire interface is Discord: approvals, answers to agent questions,
+and reports.
 
 ### Success criteria
 
 1. An agent runs on a schedule with no human present and reports to Discord.
-2. Adding a new agent is creating a directory with `agent.yaml` and `prompt.md`.
+2. A new agent can be created without the owner editing a file.
 3. No `ANTHROPIC_API_KEY` anywhere; authentication is the Claude subscription.
-4. A runaway agent is stopped by budget, turn, or time limits without human action.
-5. The whole pipeline is testable without consuming meaningful subscription quota.
-6. `docker compose up` is the run command on both Windows and the VPS.
+4. An agent cannot increase its own privileges by any path.
+5. A runaway agent is stopped by budget, turn, or time limits without human action.
+6. A run awaiting approval survives a server restart and resumes on approval.
+7. The whole pipeline is testable without consuming meaningful subscription quota.
 
 ### Explicit non-goals for v1
 
 No web dashboard. No database — JSON files on disk are correct at this scale.
-No multi-user support. No automatic retry of failed runs. No resuming an
-interrupted run mid-flight. No deploy pipeline.
+No multi-user support. No automatic retry of failed runs. No continuous
+autonomous workers.
 
 ---
 
-## 2. Decisions and rationale
+## 2. Operating model
 
-### 2.1 Authentication — subscription, via a swappable provider
+Two planes, separated by who may write to them.
+
+| | Control plane | Data plane |
+|---|---|---|
+| **Contains** | Agent definitions, grants, global config | Workspaces, transcripts, run records, agent output |
+| **Written by** | Claude locally, or agents via proposal branches | Agents, freely |
+| **Made live by** | A human merge, always | Nothing — it is already live |
+| **Lives in** | Git | The `data/` volume |
+
+The owner's actions are limited to three: approving a proposed agent, approving
+an irreversible action, and answering an agent's question. All three happen in
+Discord as a tap or a short reply.
+
+---
+
+## 3. The privilege boundary
+
+**The threat.** Agent definitions declare capabilities. If an agent can author
+agent definitions, an agent can grant itself capabilities — not maliciously, but
+because writing itself a deploy token is the shortest path to a goal it was
+given. Every safeguard in this design lives inside those files, so an agent that
+can edit them holds the key to its own sandbox.
+
+This must be structurally impossible. Instructions are suggestions to a system
+this open-ended; only mechanism is binding.
+
+### Three locks
+
+**Lock 1 — the server runs only `main`.** The supervisor deploys from a git
+checkout and refuses to load agent definitions from any other ref. An agent may
+write a complete, valid agent definition and push it to `proposal/*`; it cannot
+make it run. Merging is a human action, surfaced as a Discord approval carrying
+a plain-language summary of what the proposed agent would be able to do.
+
+**Lock 2 — grants are not in `agent.yaml`.** Credentialed powers live in
+`grants.yaml`, which the registry loads separately and which agent-authored
+commits may not modify. A merged agent definition referencing a grant that does
+not exist in `grants.yaml` fails validation at boot. Authoring an agent and
+authorising it are two different acts requiring two different writes.
+
+**Lock 3 — secrets never enter a workspace.** Grant credentials live in the
+supervisor's environment. The runner performs granted effects *on behalf of* an
+agent; the agent receives a result, never a token. An agent that reads every
+file it can reach still finds no credentials.
+
+### Consequence
+
+The worst outcome from a fully compromised or badly confused agent is: it
+consumes its budget, makes a mess inside its own workspace, and pushes a
+proposal branch nobody merges. That is a recoverable afternoon, not an incident.
+
+---
+
+## 4. Decisions and rationale
+
+### 4.1 Authentication — subscription, via a swappable provider
 
 `claude setup-token` mints a long-lived OAuth token tied to a Claude
 subscription. Exposed to the container as `CLAUDE_CODE_OAUTH_TOKEN`, the Agent
 SDK uses it and no API billing occurs.
 
-**Terms-of-service boundary.** The Agent SDK documentation states that Anthropic
-does not permit third-party developers to offer claude.ai login or rate limits
-*to their products' users* without prior approval. Running agents for oneself on
-one's own subscription is the intended use of `setup-token` and is not affected.
-The line is crossed only if end users' actions come to trigger Claude calls on
-this subscription.
+**Terms-of-service boundary.** Anthropic does not permit third-party developers
+to offer claude.ai login or rate limits *to their products' users* without prior
+approval. Running agents for oneself on one's own subscription is the intended
+use of `setup-token`. The line is crossed only if end users' actions come to
+trigger Claude calls on this subscription; the owner has confirmed no such
+product is planned. Credential resolution is nonetheless isolated in one module
+so a move to API-key billing stays a configuration change.
 
-The project owner has confirmed no such product is planned. The design still
-isolates credential resolution in a single provider module, so a future move to
-API-key billing is a configuration change rather than a rewrite.
-
-### 2.2 Rejected: Managed Agents
+### 4.2 Rejected: Managed Agents
 
 Anthropic's Managed Agents product with scheduled deployments does what this
-platform does, with Anthropic hosting the loop and the sandbox — less code to
-own. It bills against the API, which violates the primary requirement. Rejected
-on that ground alone. Worth revisiting if billing ever moves to the API.
+platform does, with Anthropic hosting the loop and the sandbox. It bills against
+the API, which violates the primary requirement. Worth revisiting only if
+billing ever moves to the API.
 
-### 2.3 Rejected: one container per run
+### 4.3 Rejected: one container per run
 
-Spawning a fresh container per agent run gives kernel-level isolation, but
-requires Docker socket access from the supervisor — equivalent to host root —
-plus an image pipeline and slow cold starts. Disproportionate for a single
-operator running their own agents. The `Runner` interface (§5.1) is the seam
-where this could be adopted later without touching anything else.
+Kernel-level isolation per run requires Docker socket access from the
+supervisor — equivalent to host root — plus an image pipeline and slow cold
+starts. Disproportionate for one operator running their own agents. The `Runner`
+interface (§7.1) is the seam where this could be adopted later.
 
-### 2.4 Chosen: one container, one supervisor, agents as folders
+### 4.4 Chosen: one container, one supervisor, agents as folders
 
 The container is the security boundary. Within it, agents are separated by
 workspace directory, per-agent tool permissions, and capability tiers.
-TypeScript, because the Agent SDK wraps the Node-based Claude Code binary and
-one language runtime in the image is enough.
+TypeScript, because the Agent SDK wraps the Node-based Claude Code binary.
 
 ---
 
-## 3. Repository layout
+## 5. Repository layout
 
 ```
 claude-agent-infrastructure/
 ├─ docker-compose.yml
 ├─ Dockerfile                  # FROM mcr.microsoft.com/playwright:v1.x-noble
 ├─ .env.example                # documents required keys; .env is gitignored
-├─ config.yaml                 # global governor settings, Discord channel map
+├─ config.yaml                 # governor settings, Discord channel map
+├─ grants.yaml                 # HUMAN-ONLY: credentialed powers (Lock 2)
+├─ schema/
+│  ├─ agent.schema.json        # JSON Schema — authoring agents validate first
+│  └─ capabilities.json        # machine-readable menu of legal tools and tiers
 ├─ src/
-│  ├─ index.ts                 # boot: validate config, start triggers
+│  ├─ index.ts                 # boot: validate everything, then start triggers
 │  ├─ registry.ts              # discover + validate agents/*/agent.yaml
 │  ├─ runner/
 │  │  ├─ types.ts              # Runner interface, RunEvent union
-│  │  ├─ sdk-runner.ts         # THE seam — only file that imports the SDK
+│  │  ├─ sdk-runner.ts         # THE seam — only file importing the SDK
 │  │  ├─ fake-runner.ts        # canned event streams for tests
 │  │  └─ credentials.ts        # swappable: subscription token | API key
 │  ├─ governor.ts              # admission control, budgets, breaker
 │  ├─ grants.ts                # tier + grant enforcement (security boundary)
+│  ├─ control/
+│  │  ├─ bot.ts                # Discord bot: approvals, questions, commands
+│  │  ├─ pending.ts            # durable park/resume queue
+│  │  └─ deploy.ts             # git pull, validate, reload; merge on approval
 │  ├─ outbox/discord.ts
-│  ├─ triggers/cron.ts         # v1
-│  └─ triggers/webhook.ts      # v2, same interface
-├─ agents/
-│  └─ <agent-name>/
-│     ├─ agent.yaml
-│     └─ prompt.md
+│  └─ triggers/cron.ts
+├─ agents/<agent-name>/
+│  ├─ agent.yaml
+│  └─ prompt.md
 ├─ docs/superpowers/specs/
 └─ data/                       # named docker volume, gitignored
    ├─ workspaces/<agent>/      # persists across runs
    ├─ runs/<runId>/            # transcript.jsonl + result.json
    ├─ state/<agent>/           # notes an agent leaves its future self
+   ├─ pending/<id>.json        # parked runs awaiting a human (§8.2)
    ├─ undelivered/             # outbox failures, never dropped
    └─ STOP                     # kill switch: presence halts everything
 ```
 
 ---
 
-## 4. The agent definition
+## 6. The agent definition — machine-first
 
-An agent is a directory containing exactly two required files.
+Two files per agent. Neither is written by the owner.
 
-`prompt.md` is the task in plain English. Nothing else.
+`prompt.md` is the task in plain English.
 
-`agent.yaml`:
+`agent.yaml` is governed by `schema/agent.schema.json`. Because its authors are
+language models rather than people, three properties matter more than brevity:
+
+**Schema-validated before commit.** An authoring agent validates against the
+JSON Schema and fixes its own mistakes without a round trip through a human.
+
+**A machine-readable capability menu.** `schema/capabilities.json` enumerates
+every legal tool name, tier, trigger type, and grant kind. An authoring agent
+reads what is possible rather than guessing and failing at boot.
+
+**Validation errors written for a model.** Errors state the offending path, the
+legal values, and the fix — `permissions.allowedTools[2]: "Browser" is not a
+tool. Legal values: [...]. For browser control set capabilities.browser.enabled`
+— not `invalid config`. The reader is an agent that must self-correct.
 
 ```yaml
 name: daily-digest              # must match directory name
 enabled: true
+authoredBy: claude-local        # claude-local | agent:<name>  (provenance)
 
 trigger:
-  type: cron                    # v1: cron. v2: webhook, manual
+  type: cron
   schedule: "0 7 * * *"
   timezone: UTC
 
 run:
   model: claude-opus-5          # claude-haiku-4-5 for dev/smoke agents
-  effort: medium                # low | medium | high | xhigh | max
+  effort: medium
   maxTurns: 40
   timeoutMinutes: 15
-  maxBudgetUsd: 1.00            # enforced by the SDK
+  maxBudgetUsd: 1.00
 
 permissions:
   allowedTools: [Read, Write, Edit, Glob, Grep, WebSearch, WebFetch]
   disallowedTools: [Bash]
 
 tier: sandboxed                 # readonly | sandboxed | granted | autonomous
-approval: notify                # auto | notify | approve
-grants: []                      # required and enforced when tier is granted+
+approval: approve               # DEFAULT. auto | notify | approve
+grantRefs: []                   # ids from grants.yaml; never inline definitions
 
 capabilities:
   browser:
@@ -151,35 +227,39 @@ capabilities:
     exclusiveSlot: true
 
 outbox:
-  discord: research             # channel key resolved from config.yaml
-  notifyOn: [success, failure]
+  discord: research
+  notifyOn: [success, failure, parked]
 ```
 
-**Model choice.** `claude-opus-5` is the default for real work. Dev and smoke
-agents use `claude-haiku-4-5` to minimise quota consumption while exercising the
-plumbing. Note that Haiku 4.5 has a 200K context window rather than 1M — it is
-for testing infrastructure, not for long research runs.
+`authoredBy` records provenance so a proposal's approval message can say who
+wrote it. `grantRefs` holds ids only — grant bodies live in `grants.yaml`,
+enforcing Lock 2 at the schema level rather than by convention.
+
+**Model choice.** `claude-opus-5` for real work; `claude-haiku-4-5` for dev and
+smoke agents, to minimise quota consumption while exercising the plumbing. Haiku
+4.5 has a 200K context window rather than 1M — it tests infrastructure, not long
+research runs.
 
 **Validation happens at boot, not at trigger time.** A malformed cron
-expression, an unknown tool name, or a grant referencing an undefined secret
-fails `docker compose up` loudly. Silent per-trigger skips produce agents that
-appear healthy and never run.
+expression, an unknown tool, or a `grantRef` with no matching grant fails
+startup loudly. Silent per-trigger skips produce agents that look healthy and
+never run.
 
 ---
 
-## 5. Components
+## 7. Components
 
-### 5.1 Runner — the SDK seam
+### 7.1 Runner — the SDK seam
 
 ```ts
 interface Runner {
-  execute(agent: AgentDef, runId: string, signal: AbortSignal):
+  execute(agent: AgentDef, run: RunContext, signal: AbortSignal):
     AsyncIterable<RunEvent>;
 }
 ```
 
-`SdkRunner` is the only module importing `@anthropic-ai/claude-agent-sdk`. It
-maps an `AgentDef` onto `query()` options:
+`SdkRunner` is the only module importing `@anthropic-ai/claude-agent-sdk`,
+mapping an `AgentDef` onto `query()` options:
 
 | agent.yaml | SDK option |
 |---|---|
@@ -189,29 +269,28 @@ maps an `AgentDef` onto `query()` options:
 | `permissions.*` | `allowedTools`, `disallowedTools` |
 | workspace path | `cwd` |
 | `capabilities.browser` | `mcpServers.playwright` |
-| `tier`, `grants`, `approval` | `canUseTool` + `hooks.PreToolUse` |
+| `tier`, `grantRefs`, `approval` | `canUseTool` + `hooks.PreToolUse` |
+| resuming a parked run | `resume`, `sessionId` |
 
 `settingSources` is set explicitly rather than left to default, so a run's
-behaviour depends only on the agent definition and not on stray files in the
-image.
+behaviour depends only on its definition and not on stray files in the image.
 
-`FakeRunner` replays canned `RunEvent` streams. Everything downstream is tested
-against it at zero quota cost, including paths that cannot be summoned on demand
-from a real agent: budget exceeded, timeout, denied grant, outbox down.
+`FakeRunner` replays canned `RunEvent` streams, so everything downstream is
+tested at zero quota cost — including paths that cannot be summoned on demand:
+budget exceeded, timeout, denied grant, parked-then-resumed, outbox down.
 
-### 5.2 Capability tiers and grants — the security boundary
+### 7.2 Capability tiers and grants — the security boundary
 
 | Tier | Permits | Forbids |
 |---|---|---|
 | `readonly` | Read, search, web fetch, report | All writes |
 | `sandboxed` | Full freedom inside its workspace: bash, packages, local git commits | Any outward effect |
-| `granted` | `sandboxed` plus enumerated grants | Anything not enumerated |
-| `autonomous` | `granted` without per-action reporting | — |
+| `granted` | `sandboxed` plus effects matching its `grantRefs` | Anything not enumerated |
+| `autonomous` | `granted` without per-action approval | Anything not enumerated |
 
-Outside power is **enumerated, never general**:
+`grants.yaml`, human-controlled:
 
 ```yaml
-tier: granted
 grants:
   - id: push-site
     kind: git-push
@@ -225,43 +304,35 @@ grants:
     secret: NETLIFY_HOOK
 ```
 
-This yields three properties: an agent's outward powers are readable from its
-file; grants are revocable individually; and each grant maps to a credential
-scoped to it, so a failure's blast radius is that grant rather than an account.
+An agent's outward powers are readable from two files; grants are revocable
+individually; each maps to a credential scoped to it, so a failure's blast
+radius is that grant rather than an account. Per Lock 3, the runner executes
+granted effects on the agent's behalf and returns only results.
 
-**Approval modes.** `auto` proceeds and logs. `notify` proceeds and posts to
-Discord as it happens — the recommended setting while learning to trust an
-agent. `approve` pauses the run pending a Discord answer; it requires the
-Discord bot from sub-project 2. In v1, `approval: approve` is **rejected by
-registry validation at boot** with a message naming sub-project 2, consistent
-with §4's rule that configuration errors fail loudly at startup rather than
-surfacing mid-run.
+**Approval modes.** `approve` is the default and the owner's chosen posture: the
+agent parks, Discord asks, a tap resumes or denies. `notify` proceeds while
+posting as it happens. `auto` proceeds silently, reserved for `autonomous`-tier
+agents that have earned it.
 
 **Browser capability.** Playwright MCP is opt-in per agent and started only for
-agents declaring it. It is available at any tier, but what it may carry depends
-on the tier:
+agents declaring it. Available at any tier, but what it may carry depends on
+tier:
 
 | Tier | Browser configuration |
 |---|---|
 | `sandboxed` and below | `--headless --isolated`, no stored credentials, logged out |
-| `granted` and above | May additionally use `--storage-state` or `--secrets`, and only for credentials named in a grant |
+| `granted` and above | May use `--storage-state` or `--secrets`, only for credentials named in a grant |
 
-The distinction matters because a browser holding a live login can act as the
-account owner on that site, which is an outward effect and therefore belongs
-behind an enumerated grant. A logged-out isolated browser is a read-and-explore
-tool and needs no grant.
-
-Playwright's own documentation states that `--allowed-origins` and
-`--blocked-origins` are *not* a security boundary; they are treated here as
-guardrails against mistakes, not as defence. Pin the package version rather than
-tracking `@latest`.
+A browser holding a live login can act as the account owner on that site — an
+outward effect, and therefore behind a grant. A logged-out isolated browser is a
+read-and-explore tool needing none. Playwright's documentation states that
+`--allowed-origins` and `--blocked-origins` are *not* a security boundary; they
+are guardrails against mistakes, not defence. Pin the package version.
 
 Grant enforcement receives the most thorough tests in the project: table-driven
-over (tier, grants, attempted effect) → allow | deny | notify.
+over (tier, grants, attempted effect) → allow | deny | park.
 
-### 5.3 Governor — admission control
-
-Four limits are configuration the SDK enforces; three are ours.
+### 7.3 Governor — admission control
 
 | Mechanism | Prevents | Implementation |
 |---|---|---|
@@ -269,17 +340,16 @@ Four limits are configuration the SDK enforces; three are ours.
 | `maxTurns` | Tool-call loops | SDK |
 | `timeoutMinutes` | Wedged processes | `abortController` |
 | `allowedTools` | Misuse of unnecessary tools | SDK — absent from context |
-| Concurrency cap | Simultaneous wake-ups | Queue; default 2 slots; browser agents take an exclusive slot |
+| Concurrency cap | Simultaneous wake-ups | Queue; 2 slots; browser agents take an exclusive slot |
 | Daily budgets | Unnoticed slow bleed | Per-agent and global; a global breach pauses everything and alerts |
 | Circuit breaker | Endless failure loops | 3 consecutive failures disables the agent and alerts once |
-
-Global configuration:
 
 ```yaml
 governor:
   maxConcurrent: 2
   dailyBudgetUsd: 10
   quietHours: { from: "09:00", to: "18:00", timezone: UTC }
+  pendingTimeoutHours: 24
 ```
 
 **Kill switch:** the presence of `data/STOP` prevents new runs and aborts running
@@ -287,33 +357,57 @@ ones. One file, usable over SSH in seconds.
 
 **Subscription rate limits.** Agents share one rate limit with the owner's
 interactive Claude Code use, and no API reports the remaining allowance. Three
-mitigations: track estimated cost and tokens per run and enforce daily budgets
-against those; on a rate-limit error, pause the scheduler globally, alert, and
-retry with exponential backoff; and defer to the human during `quietHours`, when
-scheduled agents wait. The third matters most — agents consuming the allowance
-during the owner's working hours is the failure that would cause abandonment.
+mitigations: track estimated cost and tokens per run, enforcing daily budgets
+against those; on a rate-limit error, pause globally, alert, and retry with
+exponential backoff; and defer to the human during `quietHours`. The third
+matters most — agents consuming the allowance during the owner's working hours
+is the failure that would cause abandonment.
 
-### 5.4 Outbox
+**Parked runs hold no slot.** A run awaiting approval has exited (§8.2); it
+consumes nothing while it waits.
+
+### 7.4 Control channel — the Discord bot
+
+The owner's only interface, and therefore core rather than deferred. It handles:
+
+- **Action approvals** — an agent wants an irreversible effect; the message
+  states the agent, the effect, the grant it invokes, and why. Approve or deny.
+- **Proposal approvals** — an agent wrote a new agent definition on a
+  `proposal/*` branch; the message summarises what it would be permitted to do,
+  in plain language derived from its tier and `grantRefs`. Approving merges to
+  `main` and triggers a deploy.
+- **Agent questions** — free-text; the reply is injected into the resumed run.
+- **Commands** — `!runs`, `!stop`, `!resume`, `!disable <agent>`.
+
+Every prompt carries its `pendingId`, so answers survive restarts and cannot be
+misrouted. Unanswered prompts expire after `pendingTimeoutHours` (default 24),
+resolving as **deny**, reported as such. Silence never authorises anything.
+
+### 7.5 Outbox
 
 Discord incoming webhooks, one channel per agent, mapped by key in `config.yaml`
 with URLs in `.env`. Messages report what the agent did, what it cost, which
-outside effects it touched, and the run ID. Failures retry three times, then
-write to `data/undelivered/`. A result is never lost because the outbox was
-unavailable.
+effects it touched, and the run id. Failures retry three times, then write to
+`data/undelivered/`. A result is never lost because the outbox was unavailable.
+
+Webhooks are used for reporting and the bot for interaction, because webhooks
+cannot receive replies.
 
 ---
 
-## 6. Run lifecycle
+## 8. Run lifecycle
+
+### 8.1 Normal path
 
 ```
 trigger fires
   → governor admission (concurrency, budgets, quiet hours, breaker, STOP)
       → refused: log reason, alert only if actionable
-  → prepare: runId = <agent>-<ISO timestamp>, ensure workspace,
-             read prompt.md, inject state/<agent>/notes.md if present
+  → prepare: runId, ensure workspace, read prompt.md,
+             inject state/<agent>/notes.md if present
   → execute via Runner
       → stream every event, appending to transcript.jsonl as it arrives
-      → attempted outside effect → grants check → allow | deny | notify
+      → attempted outside effect → grants check → allow | deny | park
   → finish: success | failed | timeout | budget-exceeded | denied | killed
   → record result.json { status, cost, tokens, duration, turns, effects[] }
   → outbox
@@ -323,58 +417,99 @@ trigger fires
 agent dies at 3am, the transcript up to the moment of death is the artefact that
 explains why. Post-hoc logging loses precisely the run most worth reading.
 
-### Failure handling
+### 8.2 Park and resume
+
+An approval may take hours. A run must not hold a live session and a concurrency
+slot while it waits, so approval **parks** the run rather than blocking it:
+
+```
+agent attempts an effect requiring approval
+  → write data/pending/<id>.json { runId, agentName, sessionId,
+                                   effect, grantRef, askedAt }
+  → run exits with status "parked"; slot released; nothing consumed
+  → bot posts the approval prompt to Discord
+  ⏸  (server may restart freely; pending state is on disk)
+  → owner taps approve / deny, or the request expires as deny
+  → governor admits a resume run
+  → Runner resumes with { resume: sessionId } and the decision injected
+  → run continues from where it stopped
+```
+
+This is why `sessionId` and `resume` appear in §7.1. It is the difference
+between a system that survives the owner being asleep and one that does not.
+
+Pending entries are reconciled at boot: any whose run is gone is re-posted, and
+any past its timeout resolves as deny.
+
+### 8.3 Failure handling
 
 | Failure | Response |
 |---|---|
 | Agent error or timeout | Record, post with last 20 transcript lines, count toward breaker |
 | Rate limited | Global backoff, alert, automatic resume |
 | OAuth token expired or revoked | Halt everything, loud alert — nothing functions without it, and failing loudly beats every agent failing mysteriously |
-| Discord unreachable | Retry 3×, then `data/undelivered/` |
-| Supervisor crash | `restart: unless-stopped`; in-flight runs marked `interrupted` at boot |
+| Discord webhook unreachable | Retry 3×, then `data/undelivered/` |
+| **Discord bot unreachable** | **Nothing requiring approval may proceed.** Parked runs stay parked; alert via webhook if that path still works |
+| Supervisor crash | `restart: unless-stopped`; in-flight runs marked `interrupted`; pending reconciled at boot |
+| Deploy validation fails | Keep running the previous `main`; report the failure. A bad merge never takes the platform down |
 
 ---
 
-## 7. Testing strategy
+## 9. Testing strategy
 
 | Layer | Approach |
 |---|---|
-| `registry` | Valid and malformed `agent.yaml`; reject unknown tools, bad cron, undefined grant secrets |
+| `registry` | Valid and malformed `agent.yaml`; reject unknown tools, bad cron, `grantRefs` with no grant. Assert error messages name the path, legal values, and the fix |
+| `grants` | Table-driven over (tier, grants, effect) → allow / deny / park. The security boundary; most thorough coverage |
+| **Privilege boundary** | **Adversarial: an agent-authored commit that edits `grants.yaml`, sets `tier: autonomous`, or inlines a grant must fail. One test per lock in §3** |
 | `governor` | Pure functions — admission, budgets, quiet hours, breaker. Deterministic, no I/O |
-| `grants` | Table-driven over (tier, grants, effect). The security boundary; most thorough coverage |
+| `pending` | Park, restart, reconcile, resume, expire-as-deny. Simulated restart between park and resume |
 | `outbox` | Local HTTP stub; retry and `undelivered/` fallback |
-| End-to-end | `FakeRunner` through the full pipeline, including every failure path |
+| End-to-end | `FakeRunner` through the full pipeline, every failure path included |
 | Smoke | One real agent on `claude-haiku-4-5`, run manually — proves auth and the SDK work |
 
 ---
 
-## 8. Deployment
+## 10. Deployment
 
 **Phase 1 — local Windows.** Docker Desktop; `claude setup-token` writes the
 OAuth token into `.env`; `docker compose up`. First agent on a 5-minute cron to
 observe the loop, then moved to its real schedule.
 
 **Phase 2 — VPS.** A Hetzner CX22 (~€4/month) or DigitalOcean's $6 droplet is
-ample; inference happens on Anthropic's servers, so the box only runs Node and
-holds files. Install Docker, copy the project, `docker compose up -d`. `.env` is
-recreated on the server rather than travelling with the repository.
+ample; inference happens on Anthropic's servers, so the box runs Node and holds
+files. Install Docker, clone the repository, create `.env`, `docker compose up -d`.
+
+**Deploying a change** is `git push` locally, then the supervisor's `git pull`,
+validate, reload — triggered by a Discord command or a merge approval. Validation
+failure keeps the previous `main` running. Rollback is `git revert`.
 
 Three properties built in from the first commit:
 
-1. `.env` is gitignored before any commit, with `.env.example` documenting keys.
+1. `.env` is gitignored, with `.env.example` documenting keys.
 2. `data/` is a named Docker volume, surviving `docker compose down`.
-3. `npm run runs` prints the last 20 runs with status and cost.
+3. `!runs` in Discord shows the last 20 runs with status and cost.
 
 ---
 
-## 9. Roadmap beyond this spec
+## 11. Roadmap beyond this spec
 
-**Sub-project 2 — trigger adapters.** Webhook trigger; a Discord bot enabling
-`approval: approve` and two-way chat; a manual trigger CLI.
+**Sub-project 2 — the builder agent.** An agent that writes agent definitions,
+validates them against the schema, pushes to `proposal/*`, and requests approval.
+This is what makes the system self-extending, and it is deliberately built
+*after* the privilege boundary is tested, never before.
 
-**Sub-project 3 — control plane.** Only once more than two agents run: run
-history browsing, cost trends, enabling and disabling agents without redeploy.
+**Sub-project 3 — control plane.** Once more than a few agents run: run history
+browsing, cost trends, enabling and disabling without a deploy.
 
-**Deferred deliberately.** Continuous autonomous workers, which can exhaust a
-rate limit or make a mess unsupervised, and are far safer to build after simpler
-agents have been observed behaving.
+**Deferred deliberately.** Continuous autonomous workers and `auto` approval
+mode, both of which are safe only for agents with an observed track record.
+
+## 12. Honest expectations
+
+Autonomy arrives gradually. Early agents will fail in boring, constant ways —
+a half-finished deploy, a loop that runs an hour achieving nothing, an agent
+confidently doing the wrong thing. The design's job is not to prevent that; it
+is to make failure **cheap and visible** rather than expensive and silent. Every
+mechanism here — budgets, parking, the privilege boundary, streamed transcripts
+— exists to make the first year of failures survivable and legible.
