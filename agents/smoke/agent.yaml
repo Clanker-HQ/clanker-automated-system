@@ -1,0 +1,30 @@
+name: smoke
+enabled: true
+authoredBy: claude-local
+
+trigger:
+  type: cron
+  # 06:00 daily — inside the overnight window the production quiet-hours
+  # setting reserves for agents (spec 7.3). Was every-minute during fake-runner
+  # verification; never leave that on with a real runner.
+  schedule: "0 6 * * *"
+  timezone: Europe/Berlin
+
+run:
+  model: claude-haiku-4-5
+  effort: low
+  maxTurns: 6
+  timeoutMinutes: 3
+  maxBudgetUsd: 0.10
+
+permissions:
+  allowedTools: [Read, Write]
+  disallowedTools: [Bash]
+
+tier: sandboxed
+approval: notify
+grantRefs: []
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]

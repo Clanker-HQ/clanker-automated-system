@@ -1,0 +1,14 @@
+services:
+  supervisor:
+    build: .
+    env_file: .env
+    volumes:
+      - agent-data:/app/data
+      # Read-only: the supervisor reads its own definitions but cannot rewrite
+      # them. First physical expression of the privilege boundary (spec §3).
+      - ./agents:/app/agents:ro
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+
+volumes:
+  agent-data:
