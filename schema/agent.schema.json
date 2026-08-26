@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "enabled": {
+      "default": true,
+      "type": "boolean"
+    },
+    "authoredBy": {
+      "default": "claude-local",
+      "type": "string"
+    },
+    "trigger": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "cron"
+        },
+        "schedule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "schedule",
+        "timezone"
+      ],
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "enum": [
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-haiku-4-5"
+          ]
+        },
+        "effort": {
+          "default": "medium",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "maxTurns": {
+          "default": 40,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 200
+        },
+        "timeoutMinutes": {
+          "default": 15,
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 180
+        },
+        "maxBudgetUsd": {
+          "default": 1,
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 20
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "additionalProperties": false
+    },
+    "permissions": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "allowedTools": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "Read",
+              "Write",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Bash",
+              "WebSearch",
+              "WebFetch",
+              "TodoWrite",
+              "Task"
+            ]
+          }
+        },
+        "disallowedTools": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "Read",
+              "Write",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Bash",
+              "WebSearch",
+              "WebFetch",
+              "TodoWrite",
+              "Task"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "tier": {
+      "default": "sandboxed",
+      "type": "string",
+      "enum": [
+        "readonly",
+        "sandboxed",
+        "granted",
+        "autonomous"
+      ]
+    },
+    "approval": {
+      "default": "notify",
+      "type": "string",
+      "enum": [
+        "auto",
+        "notify",
+        "approve"
+      ]
+    },
+    "grantRefs": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "browser": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "blockedOrigins": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclusiveSlot": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "outbox": {
+      "type": "object",
+      "properties": {
+        "discord": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notifyOn": {
+          "default": [
+            "success",
+            "failure"
+          ],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure",
+              "parked"
+            ]
+          }
+        }
+      },
+      "required": [
+        "discord"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "name",
+    "trigger",
+    "run",
+    "outbox"
+  ],
+  "additionalProperties": false
+}

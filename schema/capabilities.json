@@ -1,0 +1,53 @@
+{
+  "description": "The complete menu of legal values for an agent.yaml. Read this before authoring one.",
+  "tools": [
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "Bash",
+    "WebSearch",
+    "WebFetch",
+    "TodoWrite",
+    "Task"
+  ],
+  "tiers": [
+    "readonly",
+    "sandboxed",
+    "granted",
+    "autonomous"
+  ],
+  "approvalModes": [
+    "auto",
+    "notify",
+    "approve"
+  ],
+  "models": [
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5"
+  ],
+  "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "triggerTypes": [
+    "cron"
+  ],
+  "notYetAvailable": {
+    "tier: granted / autonomous": "Plan B (tiers and grant enforcement)",
+    "approval: auto / approve": "Plan B (control channel)",
+    "grantRefs": "Plan B (tiers and grant enforcement)",
+    "capabilities.browser.enabled": "Plan C (browser capability)",
+    "trigger.type: webhook": "Plan B (trigger adapters)"
+  },
+  "neverPermitted": [
+    "creating accounts or identities of any kind",
+    "registering domains",
+    "adding or using payment methods"
+  ]
+}

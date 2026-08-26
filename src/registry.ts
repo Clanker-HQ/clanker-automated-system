@@ -1,0 +1,132 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { Cron } from "croner";
+import { parse as parseYaml } from "yaml";
+import { AgentSchema, type AgentYaml } from "./agent-schema.js";
+import type { Config } from "./config.js";
+import { ValidationError, combineValidationErrors, formatZodError } from "./errors.js";
+
+export type AgentDef = AgentYaml & {
+  dir: string;
+  promptPath: string;
+  workspace: string;
+};
+
+export function parseAgent(source: string, yamlText: string): AgentYaml {
+  const result = AgentSchema.safeParse(parseYaml(yamlText) ?? {});
+  if (!result.success) throw formatZodError(source, result.error);
+  return result.data;
+}
+
+function isValidCron(expression: string, timezone: string): boolean {
+  try {
+    const probe = new Cron(expression, { timezone, paused: true });
+    probe.stop();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+export function loadRegistry(opts: {
+  agentsDir: string;
+  dataDir: string;
+  config: Config;
+  env?: NodeJS.ProcessEnv;
+}): AgentDef[] {
+  const env = opts.env ?? process.env;
+  const known = Object.keys(opts.config.discord.channels);
+  const failures: ValidationError[] = [];
+  const agents: AgentDef[] = [];
+
+  const dirs = existsSync(opts.agentsDir)
+    ? readdirSync(opts.agentsDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort()
+    : [];
+
+  for (const dirName of dirs) {
+    const dir = join(opts.agentsDir, dirName);
+    const source = join(dirName, "agent.yaml");
+    const yamlPath = join(dir, "agent.yaml");
+    const promptPath = join(dir, "prompt.md");
+    const lines: string[] = [];
+
+    if (!existsSync(yamlPath)) {
+      failures.push(new ValidationError(source, ["file is missing"]));
+      continue;
+    }
+
+    const yamlText = readFileSync(yamlPath, "utf8");
+
+    // A schema problem (caught by parseAgent) and a semantic problem (bad
+    // cron, unknown outbox channel, name/directory mismatch) can both be
+    // present in the same file. If a schema error short-circuited the rest
+    // of these checks, the model fixing it would only learn of the next
+    // problem on its next round trip — so on failure we fall back to the
+    // raw YAML to keep checking everything else, instead of bailing out.
+    let agent: AgentYaml | undefined;
+    let raw: Record<string, unknown> = {};
+    try {
+      agent = parseAgent(source, yamlText);
+    } catch (error) {
+      lines.push(...(error as ValidationError).lines);
+      raw = (parseYaml(yamlText) ?? {}) as Record<string, unknown>;
+    }
+
+    const rawTrigger = raw["trigger"] as Record<string, unknown> | undefined;
+    const rawOutbox = raw["outbox"] as Record<string, unknown> | undefined;
+    const name = agent?.name ?? asString(raw["name"]);
+    const schedule = agent?.trigger.schedule ?? asString(rawTrigger?.["schedule"]);
+    const timezone = agent?.trigger.timezone ?? asString(rawTrigger?.["timezone"]);
+    const discord = agent?.outbox.discord ?? asString(rawOutbox?.["discord"]);
+
+    if (name !== undefined && name !== dirName) {
+      lines.push(`name: "${name}" must match its directory "${dirName}"`);
+    }
+    if (!existsSync(promptPath)) {
+      lines.push(`prompt.md is missing. Every agent needs its task in prompt.md`);
+    }
+    if (schedule !== undefined && timezone !== undefined && !isValidCron(schedule, timezone)) {
+      lines.push(
+        `trigger.schedule: "${schedule}" is not a valid cron expression. Use five fields, e.g. "0 7 * * *" for 07:00 daily`,
+      );
+    }
+    if (discord !== undefined) {
+      if (!known.includes(discord)) {
+        lines.push(
+          `outbox.discord: "${discord}" is not defined in config.yaml. Known channels: ${known.join(", ") || "(none)"}`,
+        );
+      } else {
+        const varName = opts.config.discord.channels[discord]!;
+        if (!env[varName]) {
+          lines.push(
+            `outbox.discord: channel "${discord}" maps to environment variable ${varName}, which is unset. Add it to .env`,
+          );
+        }
+      }
+    }
+
+    if (lines.length > 0 || !agent) {
+      failures.push(new ValidationError(source, lines));
+      continue;
+    }
+
+    agents.push({
+      ...agent,
+      dir,
+      promptPath,
+      workspace: join(opts.dataDir, "workspaces", agent.name),
+    });
+  }
+
+  if (failures.length > 0) {
+    throw combineValidationErrors("agent definitions", failures);
+  }
+  return agents;
+}
