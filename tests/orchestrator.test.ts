@@ -84,6 +84,13 @@ describe("Orchestrator.executeRun", () => {
     expect(result.status).toBe("timeout");
   });
 
+  it("records a timeout as timeout even when the runner throws on abort", async () => {
+    const { agent, orchestrator } = harness({ events: [], hangForever: true, throwOnAbort: true });
+    const result = await orchestrator.executeRun(agent);
+    expect(result.status).toBe("timeout");
+    expect(result.error).toContain("minute limit");
+  });
+
   it("suppresses reporting when the status is not in notifyOn", async () => {
     const { agent, orchestrator, fetchImpl } = harness(
       { events: [{ type: "assistant", text: "ok" }] },

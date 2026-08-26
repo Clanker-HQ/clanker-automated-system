@@ -7,6 +7,8 @@ export interface FakeScript {
   throwAfter?: number;
   /** Yield nothing and wait until aborted — for exercising timeout handling. */
   hangForever?: boolean;
+  /** With hangForever: throw once aborted, as a real abortable iterator would. */
+  throwOnAbort?: boolean;
 }
 
 export class FakeRunner implements Runner {
@@ -22,6 +24,11 @@ export class FakeRunner implements Runner {
         if (signal.aborted) return resolve();
         signal.addEventListener("abort", () => resolve(), { once: true });
       });
+      if (this.script.throwOnAbort) {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        throw error;
+      }
       return;
     }
 
