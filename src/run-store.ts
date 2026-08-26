@@ -103,10 +103,13 @@ export class RunStore {
     const root = join(this.dataDir, "runs");
     const dirs = await readdir(root).catch(() => [] as string[]);
     const results: RunResult[] = [];
-    for (const runId of dirs.sort().reverse().slice(0, limit)) {
+    // Read all results first, then sort by time (not by directory name which sorts by agent name)
+    for (const runId of dirs) {
       const result = await this.readResult(runId).catch(() => null);
       if (result) results.push(result);
     }
-    return results;
+    // Sort by startedAt descending (most recent first)
+    results.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+    return results.slice(0, limit);
   }
 }

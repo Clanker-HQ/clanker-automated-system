@@ -74,4 +74,20 @@ describe("RunStore", () => {
     expect(recent).toHaveLength(2);
     expect(recent[0]!.runId).toContain("02-00-00");
   });
+
+  it("lists recent runs across agents, ordered by time not name", async () => {
+    const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+    // Create runs in opposite alphabetical order to their timestamps
+    const zebra1 = await store.open(newRunId("zebra", new Date("2026-08-26T01:00:00.000Z")), "zebra");
+    await zebra1.close({ status: "success", summary: "" });
+
+    const apple5 = await store.open(newRunId("apple", new Date("2026-08-26T05:00:00.000Z")), "apple");
+    await apple5.close({ status: "success", summary: "" });
+
+    // Recent(1) must return the most recent by time (apple at 05:00), not by name
+    const recent = await store.listRecent(1);
+    expect(recent).toHaveLength(1);
+    expect(recent[0]!.agent).toBe("apple");
+    expect(recent[0]!.runId).toContain("05-00-00");
+  });
 });
