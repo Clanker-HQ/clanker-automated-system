@@ -24,9 +24,6 @@ writeFileSync(
       efforts: EFFORTS,
       triggerTypes: ["cron"],
       notYetAvailable: {
-        "tier: granted / autonomous": "Plan B (tiers and grant enforcement)",
-        "approval: auto / approve": "Plan B (control channel)",
-        grantRefs: "Plan B (tiers and grant enforcement)",
         "capabilities.browser.enabled": "Plan C (browser capability)",
         "trigger.type: webhook": "Plan B (trigger adapters)",
       },

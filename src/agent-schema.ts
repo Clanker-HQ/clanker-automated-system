@@ -25,12 +25,6 @@ const READONLY_TOOLS: readonly string[] = [
   "Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite",
 ];
 
-/** Tiers and features this plan cannot enforce yet, and the plan that delivers each. */
-const NOT_YET: Record<string, string> = {
-  granted: "Plan B (tiers and grant enforcement)",
-  autonomous: "Plan B (tiers and grant enforcement)",
-};
-
 const CronTrigger = z
   .object({
     type: z.literal("cron"),
@@ -95,14 +89,6 @@ export const AgentSchema = z
   })
   .strict()
   .superRefine((agent, ctx) => {
-    const unavailable = NOT_YET[agent.tier];
-    if (unavailable) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["tier"],
-        message: `tier "${agent.tier}" requires grant enforcement, which is delivered in ${unavailable}. Use "sandboxed" or "readonly" until then`,
-      });
-    }
     if (agent.tier === "readonly") {
       const forbidden = agent.permissions.allowedTools.filter(
         (t) => !READONLY_TOOLS.includes(t),
@@ -114,20 +100,6 @@ export const AgentSchema = z
           message: `tool(s) ${forbidden.join(", ")} cannot be granted to a "readonly" agent, which forbids all writes. Legal tools for tier "readonly": ${READONLY_TOOLS.join(", ")}. Remove them, or use tier: sandboxed if the agent needs to write`,
         });
       }
-    }
-    if (agent.approval !== "notify") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["approval"],
-        message: `approval "${agent.approval}" requires the Discord control bot, delivered in Plan B (control channel). Use "notify" until then`,
-      });
-    }
-    if (agent.grantRefs.length > 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["grantRefs"],
-        message: `grants are delivered in Plan B (tiers and grant enforcement). Use an empty list until then`,
-      });
     }
     if (agent.capabilities.browser.enabled) {
       ctx.addIssue({

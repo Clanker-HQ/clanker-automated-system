@@ -62,9 +62,10 @@ describe("parseAgent", () => {
     }
   });
 
-  it("rejects a tier whose enforcement is not yet built, naming the plan", () => {
-    const yaml = AGENT + "tier: granted\n";
-    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/Plan B/);
+  it("accepts tier: granted now that enforcement exists, still rejecting an unknown tier value", () => {
+    const yaml = AGENT + "tier: granted\ngrantRefs: [test-echo]\napproval: approve\n";
+    expect(() => parseAgent("agent.yaml", yaml)).not.toThrow();
+    expect(parseAgent("agent.yaml", yaml).tier).toBe("granted");
   });
 
   it("rejects browser capability, naming the plan", () => {
