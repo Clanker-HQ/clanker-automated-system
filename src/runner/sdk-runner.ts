@@ -166,8 +166,13 @@ export class SdkRunner implements Runner {
     });
 
     for await (const message of stream) {
-      if (signal.aborted) return;
+      // Map first, THEN check the signal: the message has already been pulled
+      // off the stream, and toRunEvents emits the `usage` event only from the
+      // terminal `result` message. Returning before mapping threw away all
+      // cost and token accounting for an aborted run — Discord reported
+      // $0.0000 for a run that burned its entire timeout.
       yield* toRunEvents(message);
+      if (signal.aborted) return;
     }
   }
 }

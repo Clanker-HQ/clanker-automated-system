@@ -62,7 +62,12 @@ export class Orchestrator {
       );
       for await (const event of stream) {
         await writer.append(event);
-        if (event.type === "error") {
+        // The same race the catch block below guards: once the timer has
+        // fired, "timeout" is the truthful classification and must win. A
+        // runner may still emit a terminal error event *caused by* the abort
+        // (SdkRunner maps the last message it pulled so the run's cost
+        // accounting is not lost) — that must not re-label the run "failed".
+        if (event.type === "error" && (status as RunStatus) !== "timeout") {
           status = "failed";
           error = event.message;
         }
