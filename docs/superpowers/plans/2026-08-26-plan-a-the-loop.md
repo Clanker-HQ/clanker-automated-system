@@ -1315,10 +1315,27 @@ describe("formatRunMessage", () => {
     expect(text).toContain("12.0s");
   });
 
+  // The marker must be unique to the tail: asserting on the error text instead
+  // would pass even if formatRunMessage ignored its tail argument entirely,
+  // because `error` is rendered separately as the **Error:** line.
   it("includes the transcript tail on failure", () => {
+    const failed = { ...RESULT, status: "failed" as const, summary: "" };
+    const text = formatRunMessage(failed, [
+      '{"type":"assistant","text":"UNIQUE_TAIL_MARKER"}',
+    ]);
+    expect(text).toContain("UNIQUE_TAIL_MARKER");
+  });
+
+  it("renders the error line separately from the tail", () => {
     const failed = { ...RESULT, status: "failed" as const, error: "boom" };
-    const text = formatRunMessage(failed, ['{"type":"error","message":"boom"}']);
-    expect(text).toContain("boom");
+    expect(formatRunMessage(failed)).toContain("boom");
+  });
+
+  it("omits the tail on a successful run even when one is supplied", () => {
+    const text = formatRunMessage(RESULT, [
+      '{"type":"assistant","text":"UNIQUE_TAIL_MARKER"}',
+    ]);
+    expect(text).not.toContain("UNIQUE_TAIL_MARKER");
   });
 
   it("stays within the Discord 2000-character limit", () => {
@@ -1330,14 +1347,14 @@ describe("formatRunMessage", () => {
 
 describe("DiscordOutbox", () => {
   it("delivers on the first attempt", async () => {
-    const fetchImpl = vi.fn(async () => new Response("", { status: 204 })) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof fetch;
     const { instance } = outbox(fetchImpl);
     await expect(instance.post("smoke", RESULT)).resolves.toBe("delivered");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("retries three times before giving up", async () => {
-    const fetchImpl = vi.fn(async () => new Response("", { status: 500 })) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 500 })) as unknown as typeof fetch;
     const { instance } = outbox(fetchImpl);
     await expect(instance.post("smoke", RESULT)).resolves.toBe("undelivered");
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -1480,7 +1497,7 @@ export class DiscordOutbox {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm test -- tests/outbox.test.ts`
-Expected: PASS, 8 tests.
+Expected: PASS — every it-block in the file above.
 
 - [ ] **Step 5: Commit**
 
@@ -1543,7 +1560,7 @@ function harness(script: FakeScript, agentOverrides: Partial<AgentDef> = {}) {
     ...agentOverrides,
   } as unknown as AgentDef;
 
-  const fetchImpl = vi.fn(async () => new Response("", { status: 204 })) as unknown as typeof fetch;
+  const fetchImpl = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof fetch;
   const orchestrator = new Orchestrator({
     runner: new FakeRunner(script),
     store: new RunStore(dataDir),
