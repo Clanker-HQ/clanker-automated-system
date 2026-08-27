@@ -5,6 +5,7 @@ import type { DiscordOutbox } from "./outbox/discord.js";
 import type { AgentDef } from "./registry.js";
 import { RunStore, newRunId, type RunResult, type RunStatus } from "./run-store.js";
 import type { RunContext, Runner } from "./runner/types.js";
+import type { ApprovedGrantsStore } from "./state/approved-grants.js";
 import type { BreakerStore } from "./state/breaker.js";
 
 export class Orchestrator {
@@ -14,6 +15,7 @@ export class Orchestrator {
   private readonly dataDir: string;
   private readonly governor: Governor;
   private readonly breaker: BreakerStore;
+  private readonly approvedGrants: ApprovedGrantsStore;
   private readonly onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
 
   constructor(opts: {
@@ -23,6 +25,7 @@ export class Orchestrator {
     dataDir: string;
     governor: Governor;
     breaker: BreakerStore;
+    approvedGrants: ApprovedGrantsStore;
     /**
      * Announces a park/question the moment it happens, rather than leaving the
      * operator to discover it at the next process restart. Optional so tests
@@ -37,6 +40,7 @@ export class Orchestrator {
     this.dataDir = opts.dataDir;
     this.governor = opts.governor;
     this.breaker = opts.breaker;
+    this.approvedGrants = opts.approvedGrants;
     this.onParked = opts.onParked;
   }
 
@@ -97,8 +101,25 @@ export class Orchestrator {
       ? (decision.approved ? "Approved. Continue." : "Denied. Do not attempt that action; continue with anything else you can, or stop.")
       : decision.answer;
 
+    // Persist the approval BEFORE reading the accumulated list back, so that
+    // if THIS resume is itself an approval, the newly-approved grant is
+    // included in what gets passed to the resumed run — not just what was
+    // approved on previous resumes. This is what stops the park -> resume ->
+    // retry -> park loop: the resumed agent can retry the same outward
+    // effect and have canUseTool bypass the park path this time.
+    if ("approved" in decision && decision.approved && entry.grantRef) {
+      await this.approvedGrants.approve(entry.runId, entry.grantRef);
+    }
+    const approvedGrantRefs = await this.approvedGrants.read(entry.runId);
+
     try {
-      return await this.runAndRecord(agent, entry.runId, { runId: entry.runId, workspace: agent.workspace, prompt, resume: entry.sessionId });
+      return await this.runAndRecord(agent, entry.runId, {
+        runId: entry.runId,
+        workspace: agent.workspace,
+        prompt,
+        resume: entry.sessionId,
+        approvedGrantRefs,
+      });
     } finally {
       this.governor.releaseSlot();
     }

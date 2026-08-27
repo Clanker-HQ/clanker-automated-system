@@ -9,6 +9,7 @@ import { Orchestrator } from "../src/orchestrator.js";
 import { DiscordOutbox } from "../src/outbox/discord.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
+import { ApprovedGrantsStore } from "../src/state/approved-grants.js";
 import { BreakerStore } from "../src/state/breaker.js";
 import { RateLimitTracker } from "../src/state/rate-limit.js";
 import { FakeRunner } from "../src/runner/fake-runner.js";
@@ -94,8 +95,9 @@ function harness(
     dataDir,
     governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
     breaker: new BreakerStore(dataDir),
+    approvedGrants: new ApprovedGrantsStore(dataDir),
   });
-  return { agent, orchestrator, dataDir, fetchImpl };
+  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants: new ApprovedGrantsStore(dataDir) };
 }
 
 /** The URL and parsed JSON body of one recorded webhook POST. */
@@ -257,6 +259,7 @@ describe("Orchestrator.executeRun", () => {
       dataDir,
       governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
       breaker: new BreakerStore(dataDir),
+      approvedGrants: new ApprovedGrantsStore(dataDir),
     });
 
     const result = await orchestrator.executeRun(agent);
@@ -278,7 +281,7 @@ describe("Orchestrator.executeRun", () => {
     const executeSpy = vi.spyOn(runner, "execute");
     const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-")));
     const outbox = { post: vi.fn(), postAlert: vi.fn().mockResolvedValue("delivered") };
-    const orchestrator = new Orchestrator({ runner, store, outbox: outbox as never, dataDir: store["dataDir"] as never, governor: governor as never, breaker: new BreakerStore(store["dataDir"] as never) });
+    const orchestrator = new Orchestrator({ runner, store, outbox: outbox as never, dataDir: store["dataDir"] as never, governor: governor as never, breaker: new BreakerStore(store["dataDir"] as never), approvedGrants: new ApprovedGrantsStore(store["dataDir"] as never) });
 
     const result = await orchestrator.executeRun(AGENT);
 
@@ -293,6 +296,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [] }), store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
 
     await orchestrator.executeRun(AGENT);
@@ -308,6 +312,7 @@ describe("Orchestrator.executeRun", () => {
       runner: new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
 
     await orchestrator.executeRun(AGENT);
@@ -321,6 +326,7 @@ describe("Orchestrator.executeRun", () => {
       runner: new FakeRunner({ events: [{ type: "assistant", text: "a" }], throwAfter: 0 }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
 
     await orchestrator.executeRun(AGENT);
@@ -334,6 +340,7 @@ describe("Orchestrator.executeRun", () => {
       runner: new FakeRunner({ events: [{ type: "parked", kind: "approval", pendingId: "p1" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
     const result = await orchestrator.executeRun(AGENT);
     expect(result?.status).toBe("parked");
@@ -347,6 +354,7 @@ describe("Orchestrator.executeRun", () => {
       runner: new FakeRunner({ events: [{ type: "parked", kind: "question", pendingId: "p1" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
     const result = await orchestrator.executeRun(AGENT);
     expect(result?.status).toBe("question");
@@ -359,6 +367,7 @@ describe("Orchestrator.executeRun", () => {
       runner: new FakeRunner({ events: [{ type: "denied", reason: "no grant matches" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
     const result = await orchestrator.executeRun(AGENT);
     expect(result?.status).toBe("denied");
@@ -373,6 +382,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner, store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
 
     await orchestrator.resumeRun(
@@ -396,6 +406,7 @@ describe("Orchestrator.executeRun", () => {
       ] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
     await orchestrator.executeRun(AGENT);
     expect(governor.recordRateLimit).toHaveBeenCalledWith({
@@ -410,6 +421,7 @@ describe("Orchestrator.executeRun", () => {
       runner: new FakeRunner({ events: [{ type: "error", message: "assistant message reported error: rate_limit" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
     await orchestrator.executeRun(AGENT);
     expect(governor.recordRateLimitError).toHaveBeenCalledTimes(1);
@@ -425,6 +437,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner, store, outbox: outbox as never, dataDir: "unused",
       governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
     });
 
     const result = await orchestrator.resumeRun(
@@ -453,6 +466,7 @@ describe("Orchestrator's onParked announcement hook", () => {
       dataDir,
       governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
       breaker: new BreakerStore(dataDir),
+      approvedGrants: new ApprovedGrantsStore(dataDir),
       ...(onParked ? { onParked } : {}),
     });
     return orchestrator;
@@ -506,6 +520,73 @@ describe("Orchestrator's onParked announcement hook", () => {
 });
 
 /**
+ * Covers the actual bug: an agent parks for approval, a human approves, the
+ * resumed run retries the exact same outward effect. Without persisting the
+ * approval and threading it back into the resumed run's RunContext,
+ * SdkRunner's canUseTool has no memory of the approval and parks again from
+ * scratch — approve -> resume -> retry -> park, forever. These tests go
+ * through a REAL ApprovedGrantsStore (via `harness`), the same way "a real
+ * circuit breaker" below proves the breaker is actually wired, not just
+ * unit-tested in isolation.
+ */
+describe("Orchestrator.resumeRun grant approval persistence", () => {
+  it("persists an approved grant and forwards it in the resumed run's RunContext", async () => {
+    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    const { agent, orchestrator, approvedGrants } = harness({ events: [] }, {}, runner);
+
+    await orchestrator.resumeRun(
+      { id: "p1", runId: "smoke-persist", agentName: agent.name, sessionId: "sess-abc", kind: "approval", effect: "network call", grantRef: "test-echo", askedAt: new Date().toISOString() },
+      { approved: true },
+      agent,
+    );
+
+    expect(await approvedGrants.read("smoke-persist")).toEqual(["test-echo"]);
+    const ctxArg = executeSpy.mock.calls[0]![1] as { approvedGrantRefs?: string[] };
+    expect(ctxArg.approvedGrantRefs).toContain("test-echo");
+  });
+
+  // The exact scenario that was looping live: two resumes of the SAME run,
+  // approving a different grant each time. The second resume must see BOTH
+  // — proof that approvals accumulate across multiple park/resume cycles
+  // within one run, not just the most recent one.
+  it("accumulates approvals across sequential resumes of the same run", async () => {
+    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    const { agent, orchestrator, approvedGrants } = harness({ events: [] }, {}, runner);
+
+    await orchestrator.resumeRun(
+      { id: "p1", runId: "smoke-loop", agentName: agent.name, sessionId: "sess-1", kind: "approval", effect: "x", grantRef: "a", askedAt: new Date().toISOString() },
+      { approved: true },
+      agent,
+    );
+    await orchestrator.resumeRun(
+      { id: "p2", runId: "smoke-loop", agentName: agent.name, sessionId: "sess-2", kind: "approval", effect: "y", grantRef: "b", askedAt: new Date().toISOString() },
+      { approved: true },
+      agent,
+    );
+
+    expect(await approvedGrants.read("smoke-loop")).toEqual(["a", "b"]);
+    expect(executeSpy.mock.calls).toHaveLength(2);
+    const secondCtx = executeSpy.mock.calls[1]![1] as { approvedGrantRefs?: string[] };
+    expect(secondCtx.approvedGrantRefs).toEqual(["a", "b"]);
+  });
+
+  it("does not persist anything when the resume decision is a denial", async () => {
+    const runner = new FakeRunner({ events: [{ type: "assistant", text: "ok" }] });
+    const { agent, orchestrator, approvedGrants } = harness({ events: [] }, {}, runner);
+
+    await orchestrator.resumeRun(
+      { id: "p1", runId: "smoke-deny", agentName: agent.name, sessionId: "sess-1", kind: "approval", effect: "x", grantRef: "a", askedAt: new Date().toISOString() },
+      { approved: false },
+      agent,
+    );
+
+    expect(await approvedGrants.read("smoke-deny")).toEqual([]);
+  });
+});
+
+/**
  * The circuit breaker was fully built and unit-tested, and Governor.admit read
  * it — but nothing in production ever called recordResult, so
  * consecutiveFailures was permanently 0 and the breaker could never trip. Every
@@ -534,13 +615,14 @@ describe("Orchestrator + a real circuit breaker", () => {
       breaker,
     });
     const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn().mockResolvedValue("delivered") } as never;
-    const orchestrator = new Orchestrator({ runner: new FakeRunner(script), store, outbox, dataDir, governor, breaker });
+    const approvedGrants = new ApprovedGrantsStore(dataDir);
+    const orchestrator = new Orchestrator({ runner: new FakeRunner(script), store, outbox, dataDir, governor, breaker, approvedGrants });
 
     /** A second orchestrator over the SAME store/governor/breaker, running a different script. */
     const withScript = (other: FakeScript) =>
-      new Orchestrator({ runner: new FakeRunner(other), store, outbox, dataDir, governor, breaker });
+      new Orchestrator({ runner: new FakeRunner(other), store, outbox, dataDir, governor, breaker, approvedGrants });
 
-    return { agent, orchestrator, breaker, governor, withScript };
+    return { agent, orchestrator, breaker, governor, approvedGrants, withScript };
   }
 
   /** Two events with throwAfter: 1 — FakeRunner only throws on the iteration after the count, so a single-event script would never fail. */

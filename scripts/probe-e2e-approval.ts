@@ -27,6 +27,7 @@ import { DiscordOutbox } from "../src/outbox/discord.js";
 import { type AgentDef, loadRegistry } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
 import { SdkRunner } from "../src/runner/sdk-runner.js";
+import { ApprovedGrantsStore } from "../src/state/approved-grants.js";
 import { BreakerStore } from "../src/state/breaker.js";
 import { RateLimitTracker } from "../src/state/rate-limit.js";
 
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
     const runStore = new RunStore(DATA_DIR);
     const overrides = new ConfigOverridesStore(DATA_DIR);
     const breaker = new BreakerStore(DATA_DIR);
+    const approvedGrants = new ApprovedGrantsStore(DATA_DIR);
     const governor = new Governor({
       dataDir: DATA_DIR, config, store: runStore, overrides,
       rateLimits: new RateLimitTracker(DATA_DIR), breaker,
@@ -78,6 +80,7 @@ async function main(): Promise<void> {
       dataDir: DATA_DIR,
       governor,
       breaker,
+      approvedGrants,
       onParked: async (pendingId, kind) => {
         console.log(`\n[probe] run parked (${kind}), pending id: ${pendingId}`);
         if (!bot) return;

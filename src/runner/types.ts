@@ -21,6 +21,15 @@ export interface RunContext {
   workspace: string;
   prompt: string;
   resume?: string;
+  /**
+   * Ids of grants already approved by a human earlier in THIS run (across
+   * park/resume cycles). `canUseTool` in SdkRunner checks this before
+   * parking again for the same grant — without it, a resumed agent that
+   * retries the exact outward effect it was just approved for parks again,
+   * looping approve -> resume -> retry -> park forever. Absent on a fresh
+   * (non-resumed) run, where there is nothing yet to have approved.
+   */
+  approvedGrantRefs?: string[];
 }
 
 export interface Runner {

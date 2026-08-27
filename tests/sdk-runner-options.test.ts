@@ -350,4 +350,60 @@ describe("SdkRunner grant enforcement", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ sessionId: "sess-mid-stream", kind: "approval", grantRef: "test-echo" });
   });
+
+  // The bug this fix addresses: a human approves a grant, the resumed run
+  // retries the exact same outward effect, and without this bypass
+  // canUseTool parks AGAIN from scratch — looping approve -> resume -> retry
+  // -> park forever. ctx.approvedGrantRefs carries what was already approved
+  // earlier in this same run; canUseTool must consult it before parking.
+  it("allows a matching-grant effect straight through, without parking, when the grant is already in ctx.approvedGrantRefs", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    const resumeCtx = { ...CTX, approvedGrantRefs: ["test-echo"] };
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+
+    const events = await collect(
+      sdkRunnerWith([TEST_ECHO], dir).execute(granted, resumeCtx, new AbortController().signal),
+    );
+
+    const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> } };
+    const decision = await params.options.canUseTool("WebFetch", { url: "https://httpbin.org/post" }, { signal: new AbortController().signal, toolUseID: "t1" });
+
+    expect(decision).toEqual({ behavior: "allow" });
+    expect(await new PendingStore(dir).list()).toEqual([]);
+    expect(events.some((e) => e.type === "parked")).toBe(false);
+  });
+
+  // Confirms the original park behaviour is untouched when approvedGrantRefs
+  // is absent (a fresh, non-resumed run) or present but doesn't cover the
+  // grant that matched — the bypass above must not become a blanket allow.
+  it("still parks and writes a pending entry when approvedGrantRefs is absent", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> } };
+
+    const decision = await params.options.canUseTool("WebFetch", { url: "https://httpbin.org/post" }, { signal: new AbortController().signal, toolUseID: "t1" });
+
+    expect(decision).toMatchObject({ behavior: "deny", interrupt: true });
+    expect(await new PendingStore(dir).list()).toHaveLength(1);
+  });
+
+  it("still parks when approvedGrantRefs is present but does not include the matched grant", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    const ctxWithOtherApproval = { ...CTX, approvedGrantRefs: ["some-other-grant"] };
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, ctxWithOtherApproval, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> } };
+
+    const decision = await params.options.canUseTool("WebFetch", { url: "https://httpbin.org/post" }, { signal: new AbortController().signal, toolUseID: "t1" });
+
+    expect(decision).toMatchObject({ behavior: "deny", interrupt: true });
+    expect(await new PendingStore(dir).list()).toHaveLength(1);
+  });
 });

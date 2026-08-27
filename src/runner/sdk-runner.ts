@@ -244,6 +244,18 @@ export class SdkRunner implements Runner {
         return { behavior: "deny", message: decision.reason, interrupt: true };
       }
 
+      // A human already approved this exact grant earlier in this same run
+      // (possibly in a previous park/resume cycle) — bypass the park path
+      // entirely. Without this, a resumed agent that retries the outward
+      // effect it was just approved for re-parks from scratch every time,
+      // looping approve -> resume -> retry -> park forever. This is a pure
+      // runtime override living here (where `ctx` is in scope), not in
+      // `decide()`, which stays a static, per-call decision function with no
+      // knowledge of approval history.
+      if (ctx.approvedGrantRefs?.includes(decision.grantRef)) {
+        return { behavior: "allow" };
+      }
+
       // Abort first — synchronously, before the disk write — so the
       // underlying agent process is told to stop as soon as possible rather
       // than after `pending.create()`'s await widens the window in which the

@@ -16,6 +16,7 @@ import { buildRunner } from "./runner/build-runner.js";
 import { resolveCredentials } from "./runner/credentials.js";
 import { SdkRunner } from "./runner/sdk-runner.js";
 import type { Runner } from "./runner/types.js";
+import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
 
@@ -80,6 +81,7 @@ function main(): void {
   const runStore = new RunStore(DATA_DIR);
   const overrides = new ConfigOverridesStore(DATA_DIR);
   const breaker = new BreakerStore(DATA_DIR);
+  const approvedGrants = new ApprovedGrantsStore(DATA_DIR);
   const governor = new Governor({
     dataDir: DATA_DIR, config, store: runStore, overrides,
     rateLimits: new RateLimitTracker(DATA_DIR), breaker,
@@ -110,6 +112,7 @@ function main(): void {
     dataDir: DATA_DIR,
     governor,
     breaker,
+    approvedGrants,
     onParked: async (pendingId, kind) => {
       if (!bot) return;
       const entry = await pending.get(pendingId);
