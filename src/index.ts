@@ -7,6 +7,7 @@ import { DiscordJsTransport } from "./control/discord-transport.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
+import { makeWebhookHandler } from "./control/webhook-wiring.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
@@ -31,6 +32,21 @@ function mustEnv(name: string): string {
   return v;
 }
 
+/**
+ * `Number(undefined)` is `NaN` and `Number("")`/`Number("smtp")` are also
+ * `NaN` or nonsensical — none of that is a `ValidationError` today, so a
+ * typo'd `WEBHOOK_PORT` would silently bind an OS-assigned ephemeral port
+ * instead of failing boot the way every other misconfigured value does.
+ */
+function parsePort(name: string, raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new ValidationError(".env", [`${name} must be a valid port number (1-65535); received ${JSON.stringify(raw)}`]);
+  }
+  return n;
+}
+
 function main(): void {
   let config: Config;
   let agents: AgentDef[];
@@ -40,6 +56,7 @@ function main(): void {
   let ownerId: string;
   let githubToken: string;
   let webhookSecret: string;
+  let webhookPort: number;
   let github: GithubApiTransport;
 
   try {
@@ -58,6 +75,7 @@ function main(): void {
     // loudly, not surface as a crash the first time a webhook fires.
     githubToken = mustEnv("GITHUB_PR_TOKEN");
     webhookSecret = mustEnv("GITHUB_WEBHOOK_SECRET");
+    webhookPort = parsePort("WEBHOOK_PORT", process.env.WEBHOOK_PORT, 8787);
     github = new GithubApiTransport({ token: githubToken });
     runner = buildRunner({ grants, pending: new PendingStore(DATA_DIR), github });
     if (runner instanceof SdkRunner) {
@@ -155,31 +173,20 @@ function main(): void {
   void reconcileAndConnectBot({ pending, bot, timeoutHours: config.governor.pendingTimeoutHours });
 
   const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
-  webhookReceiver.onEvent(async (event) => {
-    const agent = agents.find((a) => a.trigger.type === "webhook" && a.trigger.repo === event.repo && a.trigger.event === event.event);
-    if (!agent) return;
-    // Pre-fetch the PR's actual content here, once, before the run starts —
-    // the alternative (giving the agent its own "getPullRequest" tool and
-    // trusting it to call it first) risks it reviewing the wrong PR or
-    // skipping the fetch. This also captures the head SHA and changed-files
-    // list at the moment of triggering, which the agent hands back into
-    // mergePR unchanged — mergePR's own stale-SHA check (Task 7) is what
-    // catches a commit landing after this snapshot was taken, not this step.
-    const pr = await github.getPullRequest(event.repo, event.pullRequestNumber);
-    const promptContext = [
-      `Reviewing pull request #${pr.number} in ${pr.repo}.`,
-      `Title: ${pr.title}`,
-      `Description: ${pr.body || "(none)"}`,
-      `Head SHA: ${pr.headSha}`,
-      `Changed files: ${pr.changedFiles.join(", ")}`,
-      `Diff:\n${pr.diff}`,
-    ].join("\n\n");
-    await orchestrator.executeRun(agent, new Date(), promptContext);
-  });
-  const webhookPort = Number(process.env.WEBHOOK_PORT ?? 8787);
-  void webhookReceiver.listen(webhookPort).then(() => {
-    console.log(`[boot] webhook receiver listening on :${webhookPort}`);
-  });
+  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, orchestrator }));
+  void webhookReceiver.listen(webhookPort).then(
+    () => {
+      console.log(`[boot] webhook receiver listening on :${webhookPort}`);
+    },
+    (error: unknown) => {
+      // Matches reconcileAndConnectBot's posture just above (log and carry
+      // on, don't crash the process): a failed bind here means PR-review
+      // webhooks won't arrive, but cron-triggered agents and the Discord
+      // bot are unaffected and shouldn't go down with it.
+      console.error(`\n[boot] Failed to start the webhook receiver on port ${webhookPort}. No PR review webhooks will be received.\n`);
+      console.error(error instanceof Error ? error.message : String(error));
+    },
+  );
 
   // Imported lazily so a boot failure above never starts a schedule.
   void import("./triggers/cron.js")

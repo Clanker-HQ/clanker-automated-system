@@ -8,6 +8,7 @@ import { BreakerStore } from "../src/state/breaker.js";
 import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { WebhookReceiver } from "../src/control/webhook-receiver.js";
+import { makeWebhookHandler } from "../src/control/webhook-wiring.js";
 import { Governor } from "../src/governor.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
@@ -31,8 +32,14 @@ function prPayload(repo: string, number: number, action = "opened"): string {
  * over a real (temp-dir) RunStore/BreakerStore, with a FakeRunner standing
  * in for SdkRunner, since this test's job is the webhook->agent resolution
  * and admission path, not the merge-gating logic (already covered at the
- * SdkRunner unit level in Tasks 7-8). */
-function buildSystem() {
+ * SdkRunner unit level in Tasks 7-8).
+ *
+ * Uses the real `makeWebhookHandler` (src/control/webhook-wiring.ts) rather
+ * than a hand-reimplementation of index.ts's onEvent closure — that's the
+ * exact function index.ts itself calls, extracted out precisely so it can
+ * be exercised for real here instead of by a copy that could quietly drift
+ * from what actually ships. */
+function buildSystem(agentOverrides: Partial<AgentDef> = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-webhook-wiring-"));
   const promptPath = join(dataDir, "prompt.md");
   writeFileSync(promptPath, "Review the PR.");
@@ -43,6 +50,7 @@ function buildSystem() {
     trigger: { type: "webhook", repo: "owner/repo", event: "pull_request" },
     run: { model: "claude-sonnet-5", effort: "high", maxTurns: 60, maxBudgetUsd: 3, timeoutMinutes: 30 },
     outbox: { discord: "smoke", notifyOn: [] },
+    ...agentOverrides,
   } as unknown as AgentDef;
 
   const store = new RunStore(dataDir);
@@ -67,13 +75,7 @@ function buildSystem() {
 
   const agents = [prReviewerAgent];
   const receiver = new WebhookReceiver({ secret: SECRET });
-  receiver.onEvent(async (event) => {
-    const agent = agents.find((a) => a.trigger.type === "webhook" && a.trigger.repo === event.repo && a.trigger.event === event.event);
-    if (!agent) return;
-    const pr = await github.getPullRequest(event.repo, event.pullRequestNumber);
-    const promptContext = `Reviewing PR #${pr.number} in ${pr.repo}. Head SHA: ${pr.headSha}. Changed files: ${pr.changedFiles.join(", ")}.`;
-    await orchestrator.executeRun(agent, new Date(), promptContext);
-  });
+  receiver.onEvent(makeWebhookHandler({ agents, github, orchestrator }));
 
   return { receiver, executeSpy, dataDir, github };
 }
@@ -95,6 +97,21 @@ describe("webhook -> agent resolution", () => {
     const ctxArg = executeSpy.mock.calls[0]![1] as { prompt: string };
     expect(ctxArg.prompt).toContain("Head SHA: sha-1");
     expect(ctxArg.prompt).toContain("src/index.ts");
+    // The prompt-injection boundary (Important #6): PR-authored content must
+    // be fenced off, not spliced in as if it were part of the instructions.
+    expect(ctxArg.prompt).toContain("--- BEGIN UNTRUSTED PR CONTENT ---");
+    expect(ctxArg.prompt).toContain("--- END UNTRUSTED PR CONTENT ---");
+  });
+
+  it("does not trigger any run for a disabled webhook agent, even for a matching repo/event", async () => {
+    const { receiver, executeSpy } = buildSystem({ enabled: false });
+    const body = prPayload("owner/repo", 7);
+
+    const result = await receiver.handleRequest(body, sign(body));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(result.status).toBe(202); // the HTTP layer still accepts the event...
+    expect(executeSpy).not.toHaveBeenCalled(); // ...but the disabled agent never runs
   });
 
   it("does not trigger any run for a repo with no matching webhook-triggered agent", async () => {
