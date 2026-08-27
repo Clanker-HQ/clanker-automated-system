@@ -99,8 +99,11 @@ describe("webhook -> agent resolution", () => {
     expect(ctxArg.prompt).toContain("src/index.ts");
     // The prompt-injection boundary (Important #6): PR-authored content must
     // be fenced off, not spliced in as if it were part of the instructions.
-    expect(ctxArg.prompt).toContain("--- BEGIN UNTRUSTED PR CONTENT ---");
-    expect(ctxArg.prompt).toContain("--- END UNTRUSTED PR CONTENT ---");
+    // The markers carry a per-run nonce (final review's Important #3), so
+    // match by shape rather than by a fixed literal string.
+    const beginMatch = /^--- BEGIN (UNTRUSTED-[0-9a-f-]{36}) ---$/m.exec(ctxArg.prompt);
+    expect(beginMatch, "expected a nonce-bearing BEGIN fence marker").not.toBeNull();
+    expect(ctxArg.prompt).toContain(`--- END ${beginMatch![1]!} ---`);
   });
 
   it("does not trigger any run for a disabled webhook agent, even for a matching repo/event", async () => {
