@@ -101,6 +101,19 @@ export const AgentSchema = z
         });
       }
     }
+    // Same argument as READONLY_TOOLS above, applied to grants. `decide()`
+    // denies every outward effect for these two tiers *before* it ever
+    // consults grantRefs, so a grant listed here can never authorise
+    // anything — leaving it accepted would make `grantRefs: [deploy-prod]`
+    // on a readonly agent read as a capability it does not have. A silent
+    // lie rather than a boundary.
+    if ((agent.tier === "readonly" || agent.tier === "sandboxed") && agent.grantRefs.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["grantRefs"],
+        message: `grant(s) ${agent.grantRefs.join(", ")} cannot be listed on a "${agent.tier}" agent: that tier denies every outward effect before grants are consulted, so these refs would never authorise anything. Remove them, or use tier: granted if the agent genuinely needs those effects`,
+      });
+    }
     if (agent.capabilities.browser.enabled) {
       ctx.addIssue({
         code: "custom",

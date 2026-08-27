@@ -74,7 +74,7 @@ grants:
   });
 });
 
-import { decide, detectOutwardEffect, matchGrant } from "../src/grants.js";
+import { decide, detectOutwardEffect, matchGrant, validateGrantRefs } from "../src/grants.js";
 
 const TEST_ECHO = parseGrants(
   "grants.yaml",
@@ -90,9 +90,26 @@ describe("detectOutwardEffect", () => {
   it("recognises git push inside a Bash command", () => {
     const effect = detectOutwardEffect("Bash", { command: "git push github.com/me/site main" });
     expect(effect).toEqual({
+      kind: "git-push",
       description: "git push (git push github.com/me/site main)",
       target: "github.com/me/site",
     });
+  });
+
+  // Bare `git push` — pushing to the configured upstream — is the commonest
+  // real-world form, and it used to match nothing at all: no captured
+  // argument meant no detected effect, at every tier.
+  it("recognises a bare `git push` with no remote argument, with a sentinel target", () => {
+    const effect = detectOutwardEffect("Bash", { command: "git push" });
+    expect(effect).not.toBeNull();
+    expect(effect!.kind).toBe("git-push");
+    expect(effect!.target).toBeTruthy();
+    expect(effect!.target.length).toBeGreaterThan(0);
+  });
+
+  it("denies a bare `git push` for a granted agent, because no grant can match the sentinel", () => {
+    const result = decide(agent("granted", ["push-site"]), [PUSH_SITE], "Bash", { command: "git push" });
+    expect(result.kind).toBe("deny");
   });
 
   it("does not flag a local git commit", () => {
@@ -104,11 +121,53 @@ describe("detectOutwardEffect", () => {
     expect(detectOutwardEffect("Bash", { command: "curl http://localhost:3000" })).toBeNull();
   });
 
+  // The localhost exemption used to scan the WHOLE command string, so the
+  // mere substring "localhost" anywhere in it — a query parameter, a header —
+  // made a call to a real external host read as safe at every tier.
+  it("does not exempt a call to a real host that merely mentions localhost elsewhere in the command", () => {
+    const query = detectOutwardEffect("Bash", { command: "curl https://evil.example.com/?ref=localhost" });
+    expect(query).not.toBeNull();
+    expect(query!.kind).toBe("http");
+    expect(query!.target).toBe("https://evil.example.com/?ref=localhost");
+
+    const header = detectOutwardEffect("Bash", { command: 'curl -H "Origin: localhost" https://evil.example.com' });
+    expect(header).not.toBeNull();
+    expect(header!.target).toBe("https://evil.example.com");
+
+    const loopbackish = detectOutwardEffect("Bash", { command: "curl https://127.0.0.1.evil.example.com/x" });
+    expect(loopbackish).not.toBeNull();
+  });
+
+  it("still exempts genuinely local curls", () => {
+    expect(detectOutwardEffect("Bash", { command: "curl http://localhost:3000/anything" })).toBeNull();
+    expect(detectOutwardEffect("Bash", { command: "curl http://127.0.0.1:8080" })).toBeNull();
+    expect(detectOutwardEffect("Bash", { command: "curl http://[::1]:8080/health" })).toBeNull();
+    expect(detectOutwardEffect("Bash", { command: "wget http://localhost:9000/file" })).toBeNull();
+  });
+
+  it("fails closed when curl carries no parseable URL at all", () => {
+    const effect = detectOutwardEffect("Bash", { command: "curl $TARGET_URL" });
+    expect(effect).not.toBeNull();
+    expect(effect!.kind).toBe("http");
+  });
+
+  it("treats a curl to several hosts as outward if any one of them is not local", () => {
+    const effect = detectOutwardEffect("Bash", { command: "curl http://localhost:3000 https://evil.example.com" });
+    expect(effect).not.toBeNull();
+    expect(effect!.target).toBe("https://evil.example.com");
+  });
+
   it("recognises WebFetch as always an outward effect, keyed by its url", () => {
     expect(detectOutwardEffect("WebFetch", { url: "https://httpbin.org/post" })).toEqual({
+      kind: "http",
       description: "fetch https://httpbin.org/post",
       target: "https://httpbin.org/post",
     });
+  });
+
+  it("classifies npm publish and gh create as provision effects", () => {
+    expect(detectOutwardEffect("Bash", { command: "npm publish" })!.kind).toBe("provision");
+    expect(detectOutwardEffect("Bash", { command: "gh repo create me/thing" })!.kind).toBe("provision");
   });
 
   it("returns null for a tool with no outward-effect pattern, like Read", () => {
@@ -130,6 +189,96 @@ describe("matchGrant", () => {
   it("does not match a target that merely contains an exact-pattern grant's text as a substring", () => {
     const effect = detectOutwardEffect("Bash", { command: "git push github.com/me/site-backdoor main" })!;
     expect(matchGrant([PUSH_SITE], effect)).toBeNull();
+  });
+
+  // Target equality is not authority: the pair (kind, target) is. A git-push
+  // grant whose remote happens to be written as a URL must not authorise an
+  // HTTP call to that URL, and vice versa.
+  it("does not let a git-push grant authorise an http effect with the same target string", () => {
+    const pushByUrl = parseGrants(
+      "grants.yaml",
+      'grants:\n  - id: push-url\n    kind: git-push\n    remote: "https://httpbin.org/post"\n    branches: [main]\n    secret: X\n',
+    )[0]!;
+    const httpEffect = detectOutwardEffect("WebFetch", { url: "https://httpbin.org/post" })!;
+    expect(httpEffect.kind).toBe("http");
+    expect(matchGrant([pushByUrl], httpEffect)).toBeNull();
+  });
+
+  it("does not let an http grant authorise a git-push effect with the same target string", () => {
+    const httpToRemote = parseGrants(
+      "grants.yaml",
+      'grants:\n  - id: http-remote\n    kind: http\n    method: POST\n    urlPattern: "github.com/me/site"\n    secret: X\n',
+    )[0]!;
+    const pushEffect = detectOutwardEffect("Bash", { command: "git push github.com/me/site main" })!;
+    expect(pushEffect.kind).toBe("git-push");
+    expect(matchGrant([httpToRemote], pushEffect)).toBeNull();
+    // ...and the right-kind grant still matches, so the check isn't blanket-denying.
+    expect(matchGrant([PUSH_SITE], pushEffect)).toBe(PUSH_SITE);
+  });
+
+  it("does not let a provision grant authorise an http effect with a matching scope", () => {
+    const provision = parseGrants(
+      "grants.yaml",
+      'grants:\n  - id: new-repo\n    kind: provision\n    resource: github-repo\n    scope: "https://httpbin.org/post"\n    limit: { perDay: 3 }\n    secret: X\n',
+    )[0]!;
+    const httpEffect = detectOutwardEffect("WebFetch", { url: "https://httpbin.org/post" })!;
+    expect(matchGrant([provision], httpEffect)).toBeNull();
+  });
+});
+
+describe("validateGrantRefs", () => {
+  it("accepts refs that name a real grant", () => {
+    expect(() =>
+      validateGrantRefs([{ name: "smoke", grantRefs: ["test-echo"] }], [TEST_ECHO]),
+    ).not.toThrow();
+  });
+
+  it("accepts an agent with no grantRefs at all", () => {
+    expect(() => validateGrantRefs([{ name: "smoke", grantRefs: [] }], [])).not.toThrow();
+  });
+
+  // A typo boots cleanly today and then silently denies every effect the agent
+  // was configured to be allowed, because decide() cannot tell "no grant" from
+  // "a grant whose name was mistyped".
+  it("rejects an unknown ref, naming the agent, the ref, and the known ids", () => {
+    expect(() =>
+      validateGrantRefs([{ name: "smoke", grantRefs: ["test-eco"] }], [TEST_ECHO]),
+    ).toThrow(ValidationError);
+
+    try {
+      validateGrantRefs([{ name: "smoke", grantRefs: ["test-eco"] }], [TEST_ECHO]);
+    } catch (e) {
+      const message = (e as Error).message;
+      expect(message).toContain("smoke");
+      expect(message).toContain("test-eco");
+      expect(message).toContain("test-echo");
+    }
+  });
+
+  it("reports every unknown ref across every agent at once", () => {
+    try {
+      validateGrantRefs(
+        [
+          { name: "a", grantRefs: ["nope-1"] },
+          { name: "b", grantRefs: ["test-echo", "nope-2"] },
+        ],
+        [TEST_ECHO],
+      );
+      throw new Error("expected a ValidationError");
+    } catch (e) {
+      expect((e as ValidationError).lines).toHaveLength(2);
+      expect((e as Error).message).toContain("nope-1");
+      expect((e as Error).message).toContain("nope-2");
+    }
+  });
+
+  it("says '(none)' rather than an empty list when grants.yaml has no grants", () => {
+    try {
+      validateGrantRefs([{ name: "smoke", grantRefs: ["anything"] }], []);
+      throw new Error("expected a ValidationError");
+    } catch (e) {
+      expect((e as Error).message).toContain("(none)");
+    }
   });
 });
 

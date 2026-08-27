@@ -72,6 +72,38 @@ describe("parseAgent", () => {
     expect(() => parseAgent("agent.yaml", AGENT + "tier: bogus\n")).toThrow();
   });
 
+  // Task 16 lifted the blanket "grantRefs are not available yet" rejection —
+  // correctly for granted/autonomous, but too broadly: decide() denies every
+  // outward effect for readonly/sandboxed BEFORE it consults grantRefs, so a
+  // grant listed on those tiers can never authorise anything. Same argument
+  // the schema already makes for a readonly agent's allowedTools: a silent lie
+  // rather than a boundary.
+  it("rejects grantRefs on a readonly agent, explaining that the tier can never use one", () => {
+    const yaml =
+      AGENT.replace("allowedTools: [Read, Write]", "allowedTools: [Read]").replace(
+        "disallowedTools: [Bash]",
+        "disallowedTools: [Write]",
+      ) + "tier: readonly\ngrantRefs: [test-echo]\n";
+    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/grantRefs/);
+    try {
+      parseAgent("agent.yaml", yaml);
+    } catch (e) {
+      const message = (e as Error).message;
+      expect(message).toContain("test-echo");
+      expect(message).toContain("readonly");
+      expect(message).toContain("tier: granted");
+    }
+  });
+
+  it("rejects grantRefs on a sandboxed agent for the same reason", () => {
+    const yaml = AGENT + "tier: sandboxed\ngrantRefs: [test-echo]\n";
+    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/grantRefs/);
+  });
+
+  it("accepts an empty grantRefs list on readonly and sandboxed", () => {
+    expect(() => parseAgent("agent.yaml", AGENT + "tier: sandboxed\ngrantRefs: []\n")).not.toThrow();
+  });
+
   it("rejects browser capability, naming the plan", () => {
     const yaml = AGENT + "capabilities: { browser: { enabled: true } }\n";
     expect(() => parseAgent("agent.yaml", yaml)).toThrow(/Plan C/);

@@ -68,35 +68,88 @@ export function loadGrants(path: string): Grant[] {
   return parseGrants(path, readFileSync(path, "utf8"));
 }
 
+/**
+ * `kind` is the effect's *family*, and it must line up with the family of the
+ * grant that authorises it. Without it, `matchGrant` compared nothing but
+ * target strings — so a `git-push` grant whose `remote` happened to be written
+ * as a URL could authorise an outbound HTTP call to that same URL, and a
+ * wildcard `http` grant could authorise a push. Target equality is not
+ * authority; the pair (kind, target) is.
+ */
 export interface OutwardEffect {
+  kind: "http" | "git-push" | "provision";
   description: string;
   target: string;
 }
 
-const OUTWARD_HOST_PATTERN = /https?:\/\/\S+/;
+const OUTWARD_HOST_PATTERN = /https?:\/\/\S+/g;
+
+/** The target recorded for a `git push` with no explicit remote argument. */
+export const DEFAULT_UPSTREAM_TARGET = "(default upstream)";
+
+// Node's URL keeps the brackets on an IPv6 hostname ("http://[::1]/" ->
+// "[::1]"), so both spellings are listed rather than assumed.
+const LOCAL_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * True only when the *hostname* of a parsed URL is loopback.
+ *
+ * The predecessor of this function tested `/localhost|127\.0\.0\.1/` against
+ * the whole command string, so `curl https://evil.example.com/?ref=localhost`
+ * and `curl -H "Origin: localhost" https://evil.example.com` both read as
+ * "local" and escaped detection entirely, at every tier. Parsing the URL and
+ * reading `.hostname` is the only check that cannot be spoofed by putting the
+ * word "localhost" somewhere else in the command. An unparseable URL is not
+ * local (fail closed).
+ */
+function isLocalUrl(url: string): boolean {
+  try {
+    return LOCAL_HOSTNAMES.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
 
 export function detectOutwardEffect(toolName: string, input: Record<string, unknown>): OutwardEffect | null {
   if (toolName === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
-    const push = command.match(/\bgit\s+push\s+(\S+)/);
-    if (push) return { description: `git push (${command.trim()})`, target: push[1]! };
+    // Bare `git push` — no remote argument, pushing to the configured upstream
+    // — is the commonest real-world form, and requiring a captured argument
+    // meant it was detected as nothing at all. It now reports a sentinel
+    // target that no grant pattern will match, so it fails closed.
+    if (/\bgit\s+push\b/.test(command)) {
+      const remote = command.match(/\bgit\s+push\s+(\S+)/)?.[1];
+      return {
+        kind: "git-push",
+        description: `git push (${command.trim()})`,
+        target: remote ?? DEFAULT_UPSTREAM_TARGET,
+      };
+    }
 
-    if (/\b(curl|wget)\b/.test(command) && !/localhost|127\.0\.0\.1/.test(command)) {
-      const url = command.match(OUTWARD_HOST_PATTERN);
-      return { description: `network call (${command.trim()})`, target: url?.[0] ?? command.trim() };
+    if (/\b(curl|wget)\b/.test(command)) {
+      const urls = command.match(OUTWARD_HOST_PATTERN) ?? [];
+      const outward = urls.filter((u) => !isLocalUrl(u));
+      // Exempt only when at least one URL was found and every one of them is
+      // genuinely loopback. No parseable URL at all → still an outward effect.
+      if (urls.length > 0 && outward.length === 0) return null;
+      return {
+        kind: "http",
+        description: `network call (${command.trim()})`,
+        target: outward[0] ?? command.trim(),
+      };
     }
     if (/\bnpm\s+publish\b/.test(command)) {
-      return { description: `npm publish (${command.trim()})`, target: "npm-publish" };
+      return { kind: "provision", description: `npm publish (${command.trim()})`, target: "npm-publish" };
     }
     if (/\bgh\s+(repo\s+create|release\s+create|pr\s+create)\b/.test(command)) {
-      return { description: `gh (${command.trim()})`, target: "gh-provision" };
+      return { kind: "provision", description: `gh (${command.trim()})`, target: "gh-provision" };
     }
     return null;
   }
 
   if (toolName === "WebFetch") {
     const url = typeof input.url === "string" ? input.url : "";
-    return url ? { description: `fetch ${url}`, target: url } : null;
+    return url ? { kind: "http", description: `fetch ${url}`, target: url } : null;
   }
 
   return null;
@@ -120,7 +173,39 @@ function globMatch(pattern: string, value: string): boolean {
 }
 
 export function matchGrant(grants: Grant[], effect: OutwardEffect): Grant | null {
-  return grants.find((g) => globMatch(grantTargetPattern(g), effect.target)) ?? null;
+  // The kind check comes first deliberately: a grant only authorises effects of
+  // its own family, however well the target strings happen to line up.
+  return grants.find((g) => g.kind === effect.kind && globMatch(grantTargetPattern(g), effect.target)) ?? null;
+}
+
+/**
+ * Cross-checks every agent's `grantRefs` against the ids actually present in
+ * grants.yaml.
+ *
+ * Nothing else does: `decide()` filters the grant list by `grantRefs` and a
+ * typo simply produces an empty list, so a misspelled ref boots cleanly and
+ * then silently denies every effect the agent was meant to be allowed. Boot is
+ * the only place that can tell the difference between "no grant" and "a grant
+ * whose name was mistyped".
+ */
+export function validateGrantRefs(
+  agents: readonly { name: string; grantRefs: readonly string[] }[],
+  grants: readonly Grant[],
+  source = "agent definitions",
+): void {
+  const known = grants.map((g) => g.id);
+  const lines: string[] = [];
+  for (const agent of agents) {
+    for (const ref of agent.grantRefs) {
+      if (!known.includes(ref)) {
+        lines.push(
+          `${agent.name}: grantRefs contains "${ref}", which is not the id of any grant in grants.yaml. ` +
+            `Known grant ids: ${known.join(", ") || "(none)"}`,
+        );
+      }
+    }
+  }
+  if (lines.length > 0) throw new ValidationError(source, lines);
 }
 
 export type Decision =
