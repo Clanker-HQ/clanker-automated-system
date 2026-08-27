@@ -1,3 +1,4 @@
+import type { GithubTransport } from "../control/github-transport.js";
 import type { PendingStore } from "../control/pending.js";
 import type { Grant } from "../grants.js";
 import { FakeRunner } from "./fake-runner.js";
@@ -16,7 +17,7 @@ import type { Runner } from "./types.js";
  * supervisor.
  */
 export function buildRunner(
-  opts: { grants: Grant[]; pending: PendingStore },
+  opts: { grants: Grant[]; pending: PendingStore; github?: GithubTransport },
   env: NodeJS.ProcessEnv = process.env,
 ): Runner {
   if (env.RUNNER === "fake") {

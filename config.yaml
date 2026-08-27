@@ -13,3 +13,9 @@ discord:
     smoke: DISCORD_WEBHOOK_SMOKE   # webhook URL — routine reports (outbox)
   botChannels:
     smoke: DISCORD_CHANNEL_ID_SMOKE   # numeric Discord channel id, for the bot
+
+# github:
+#   prToken: GITHUB_PR_TOKEN   # (documented here for discoverability; the
+#                               # env var itself is read directly, not via
+#                               # a config.yaml key, since it's a single
+#                               # global credential, not per-channel)

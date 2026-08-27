@@ -4,7 +4,9 @@ import { ConfigOverridesStore, resolveGovernorSettings } from "./config-override
 import { DiscordBot } from "./control/bot.js";
 import { reconcileAndConnectBot } from "./control/boot-wiring.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
+import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
+import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
@@ -36,6 +38,9 @@ function main(): void {
   let credentialMode: string | undefined;
   let botToken: string;
   let ownerId: string;
+  let githubToken: string;
+  let webhookSecret: string;
+  let github: GithubApiTransport;
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
@@ -46,7 +51,15 @@ function main(): void {
     // silently denies every effect the agent was configured to be allowed.
     const grants: Grant[] = loadGrants(join(ROOT, "grants.yaml"));
     validateGrantRefs(agents, grants);
-    runner = buildRunner({ grants, pending: new PendingStore(DATA_DIR) });
+    // A fine-grained PAT for the dedicated bot GitHub account, and the shared
+    // secret that lets WebhookReceiver tell a genuine GitHub event apart from
+    // a forged one. Resolved here, with the same boot-failure formatting as
+    // every other required credential below — a missing token must fail boot
+    // loudly, not surface as a crash the first time a webhook fires.
+    githubToken = mustEnv("GITHUB_PR_TOKEN");
+    webhookSecret = mustEnv("GITHUB_WEBHOOK_SECRET");
+    github = new GithubApiTransport({ token: githubToken });
+    runner = buildRunner({ grants, pending: new PendingStore(DATA_DIR), github });
     if (runner instanceof SdkRunner) {
       // Resolved once, here, rather than only inside SdkRunner.execute: that
       // body does not run until the orchestrator's first next(), so a missing
@@ -140,6 +153,33 @@ function main(): void {
   });
 
   void reconcileAndConnectBot({ pending, bot, timeoutHours: config.governor.pendingTimeoutHours });
+
+  const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
+  webhookReceiver.onEvent(async (event) => {
+    const agent = agents.find((a) => a.trigger.type === "webhook" && a.trigger.repo === event.repo && a.trigger.event === event.event);
+    if (!agent) return;
+    // Pre-fetch the PR's actual content here, once, before the run starts —
+    // the alternative (giving the agent its own "getPullRequest" tool and
+    // trusting it to call it first) risks it reviewing the wrong PR or
+    // skipping the fetch. This also captures the head SHA and changed-files
+    // list at the moment of triggering, which the agent hands back into
+    // mergePR unchanged — mergePR's own stale-SHA check (Task 7) is what
+    // catches a commit landing after this snapshot was taken, not this step.
+    const pr = await github.getPullRequest(event.repo, event.pullRequestNumber);
+    const promptContext = [
+      `Reviewing pull request #${pr.number} in ${pr.repo}.`,
+      `Title: ${pr.title}`,
+      `Description: ${pr.body || "(none)"}`,
+      `Head SHA: ${pr.headSha}`,
+      `Changed files: ${pr.changedFiles.join(", ")}`,
+      `Diff:\n${pr.diff}`,
+    ].join("\n\n");
+    await orchestrator.executeRun(agent, new Date(), promptContext);
+  });
+  const webhookPort = Number(process.env.WEBHOOK_PORT ?? 8787);
+  void webhookReceiver.listen(webhookPort).then(() => {
+    console.log(`[boot] webhook receiver listening on :${webhookPort}`);
+  });
 
   // Imported lazily so a boot failure above never starts a schedule.
   void import("./triggers/cron.js")

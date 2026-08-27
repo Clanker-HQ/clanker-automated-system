@@ -1,0 +1,27 @@
+name: pr-reviewer
+enabled: true
+authoredBy: claude-local
+
+trigger:
+  type: webhook
+  repo: "owner/repo"   # replace with the real repo once it exists
+  event: pull_request
+
+run:
+  model: claude-sonnet-5
+  effort: high
+  maxTurns: 60
+  timeoutMinutes: 30
+  maxBudgetUsd: 3.00
+
+permissions:
+  allowedTools: [Read, Write, Edit, Glob, Grep, Bash, Task]
+  disallowedTools: []
+
+tier: autonomous
+approval: auto
+grantRefs: [infra-repo]
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]
