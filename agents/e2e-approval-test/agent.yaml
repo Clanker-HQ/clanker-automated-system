@@ -1,0 +1,30 @@
+name: e2e-approval-test
+# Manual test agent for exercising the full grant/park/Discord-approval/
+# resume chain end to end. Not scheduled — enabled: false keeps it out of
+# the real cron loop; trigger it directly via scripts/probe-e2e-approval.ts.
+enabled: false
+authoredBy: claude-local
+
+trigger:
+  type: cron
+  schedule: "0 0 29 2 *"
+  timezone: Europe/Berlin
+
+run:
+  model: claude-haiku-4-5
+  effort: low
+  maxTurns: 5
+  timeoutMinutes: 3
+  maxBudgetUsd: 0.50
+
+permissions:
+  allowedTools: [Bash]
+  disallowedTools: []
+
+tier: granted
+approval: notify
+grantRefs: [test-echo]
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]
