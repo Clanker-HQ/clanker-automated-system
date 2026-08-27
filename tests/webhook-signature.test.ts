@@ -30,4 +30,8 @@ describe("verifyGithubSignature", () => {
   it("rejects a malformed signature header (no sha256= prefix)", () => {
     expect(verifyGithubSignature('{"action":"opened"}', "not-a-real-signature", "shhh")).toBe(false);
   });
+
+  it("rejects a sha256= header with incorrect digest length", () => {
+    expect(verifyGithubSignature('{"action":"opened"}', "sha256=deadbeef", "shhh")).toBe(false);
+  });
 });
