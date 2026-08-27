@@ -5,6 +5,7 @@ import type { DiscordOutbox } from "./outbox/discord.js";
 import type { AgentDef } from "./registry.js";
 import { RunStore, newRunId, type RunResult, type RunStatus } from "./run-store.js";
 import type { RunContext, Runner } from "./runner/types.js";
+import type { BreakerStore } from "./state/breaker.js";
 
 export class Orchestrator {
   private readonly runner: Runner;
@@ -12,6 +13,8 @@ export class Orchestrator {
   private readonly outbox: DiscordOutbox;
   private readonly dataDir: string;
   private readonly governor: Governor;
+  private readonly breaker: BreakerStore;
+  private readonly onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
 
   constructor(opts: {
     runner: Runner;
@@ -19,12 +22,22 @@ export class Orchestrator {
     outbox: DiscordOutbox;
     dataDir: string;
     governor: Governor;
+    breaker: BreakerStore;
+    /**
+     * Announces a park/question the moment it happens, rather than leaving the
+     * operator to discover it at the next process restart. Optional so tests
+     * (and any embedding without a control surface) need not supply one; a
+     * failure inside it is caught and logged, never allowed to fail the run.
+     */
+    onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
   }) {
     this.runner = opts.runner;
     this.store = opts.store;
     this.outbox = opts.outbox;
     this.dataDir = opts.dataDir;
     this.governor = opts.governor;
+    this.breaker = opts.breaker;
+    this.onParked = opts.onParked;
   }
 
   async executeRun(agent: AgentDef, now: Date = new Date()): Promise<RunResult | undefined> {
@@ -41,7 +54,14 @@ export class Orchestrator {
 
     try {
       const runId = newRunId(agent.name, now);
-      return await this.runAndRecord(agent, runId, { runId, workspace: agent.workspace, prompt: await readFile(agent.promptPath, "utf8") });
+      const result = await this.runAndRecord(agent, runId, { runId, workspace: agent.workspace, prompt: await readFile(agent.promptPath, "utf8") });
+      // Only a *trigger* feeds the breaker. A resume is a human deliberately
+      // pushing an already-parked run forward, and Governor.admit already
+      // skips the breaker check entirely for kind === "resume" — counting its
+      // outcome here would let the operator's own intervention trip the very
+      // switch that gates automatic runs.
+      await this.breaker.recordResult(agent.name, result.status);
+      return result;
     } finally {
       this.governor.releaseSlot();
     }
@@ -52,6 +72,22 @@ export class Orchestrator {
     decision: { approved: boolean } | { answer: string },
     agent: AgentDef,
   ): Promise<RunResult | undefined> {
+    // An entry with no session id has nothing to resume. PendingStore records
+    // an empty sessionId when the SDK stream ended before it ever carried a
+    // session_id; passing that through would make SdkRunner drop the `resume`
+    // option and start a *fresh, contextless* session whose only prompt is
+    // "Approved. Continue." — and because runAndRecord reuses the original
+    // runId, nothing afterwards would look wrong. Refuse it instead, in the
+    // same shape as a governor refusal so the caller's existing
+    // undefined-means-refused handling covers this too.
+    if (!entry.sessionId) {
+      console.error(
+        `[orchestrator] cannot resume pending entry ${entry.id} (run ${entry.runId}, agent "${entry.agentName}"): ` +
+          `it has no sessionId, so there is no session to continue. Resuming would silently start a new, contextless run`,
+      );
+      return undefined;
+    }
+
     const admitted = await this.governor.admit(agent, "resume");
     if (admitted.kind === "refuse") {
       console.log(`[governor] refused resume of ${entry.runId}: ${admitted.reason}`);
@@ -102,6 +138,21 @@ export class Orchestrator {
         }
         if (event.type === "parked" && (status as RunStatus) !== "timeout") {
           status = event.kind === "question" ? "question" : "parked";
+          // Announce it now. Before this hook existed, postApproval/postQuestion
+          // were only ever called by boot reconciliation, so a run that parked
+          // during live operation reached the operator no earlier than the next
+          // process restart. Deliberately fire-and-report: a Discord outage must
+          // never turn a parked run into a failed one.
+          if (this.onParked) {
+            try {
+              await this.onParked(event.pendingId, event.kind);
+            } catch (err) {
+              console.error(
+                `[orchestrator] failed to announce parked run ${runId} (pending ${event.pendingId})`,
+                err,
+              );
+            }
+          }
         }
         // Feed the governor's shared rate-limit snapshot live, from every
         // run's stream, not only the triggering agent's own admission check

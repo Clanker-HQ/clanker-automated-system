@@ -3,10 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../src/config.js";
+import { ConfigOverridesStore } from "../src/config-overrides.js";
+import { Governor } from "../src/governor.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { DiscordOutbox } from "../src/outbox/discord.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
+import { BreakerStore } from "../src/state/breaker.js";
+import { RateLimitTracker } from "../src/state/rate-limit.js";
 import { FakeRunner } from "../src/runner/fake-runner.js";
 import type { FakeScript } from "../src/runner/fake-runner.js";
 import type { Runner } from "../src/runner/types.js";
@@ -89,6 +93,7 @@ function harness(
     }),
     dataDir,
     governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
+    breaker: new BreakerStore(dataDir),
   });
   return { agent, orchestrator, dataDir, fetchImpl };
 }
@@ -251,6 +256,7 @@ describe("Orchestrator.executeRun", () => {
       outbox,
       dataDir,
       governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
+      breaker: new BreakerStore(dataDir),
     });
 
     const result = await orchestrator.executeRun(agent);
@@ -272,7 +278,7 @@ describe("Orchestrator.executeRun", () => {
     const executeSpy = vi.spyOn(runner, "execute");
     const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-")));
     const outbox = { post: vi.fn(), postAlert: vi.fn().mockResolvedValue("delivered") };
-    const orchestrator = new Orchestrator({ runner, store, outbox: outbox as never, dataDir: store["dataDir"] as never, governor: governor as never });
+    const orchestrator = new Orchestrator({ runner, store, outbox: outbox as never, dataDir: store["dataDir"] as never, governor: governor as never, breaker: new BreakerStore(store["dataDir"] as never) });
 
     const result = await orchestrator.executeRun(AGENT);
 
@@ -286,7 +292,7 @@ describe("Orchestrator.executeRun", () => {
     const outbox = { post: vi.fn(), postAlert: vi.fn().mockResolvedValue("delivered") };
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [] }), store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
 
     await orchestrator.executeRun(AGENT);
@@ -301,7 +307,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
 
     await orchestrator.executeRun(AGENT);
@@ -314,7 +320,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [{ type: "assistant", text: "a" }], throwAfter: 0 }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
 
     await orchestrator.executeRun(AGENT);
@@ -327,7 +333,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [{ type: "parked", kind: "approval", pendingId: "p1" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
     const result = await orchestrator.executeRun(AGENT);
     expect(result?.status).toBe("parked");
@@ -340,7 +346,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [{ type: "parked", kind: "question", pendingId: "p1" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
     const result = await orchestrator.executeRun(AGENT);
     expect(result?.status).toBe("question");
@@ -352,7 +358,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [{ type: "denied", reason: "no grant matches" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
     const result = await orchestrator.executeRun(AGENT);
     expect(result?.status).toBe("denied");
@@ -366,7 +372,7 @@ describe("Orchestrator.executeRun", () => {
     const executeSpy = vi.spyOn(runner, "execute");
     const orchestrator = new Orchestrator({
       runner, store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
 
     await orchestrator.resumeRun(
@@ -389,7 +395,7 @@ describe("Orchestrator.executeRun", () => {
         { type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 },
       ] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
     await orchestrator.executeRun(AGENT);
     expect(governor.recordRateLimit).toHaveBeenCalledWith({
@@ -403,9 +409,188 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [{ type: "error", message: "assistant message reported error: rate_limit" }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
-      outbox: outbox as never, dataDir: "unused", governor: governor as never,
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
     });
     await orchestrator.executeRun(AGENT);
     expect(governor.recordRateLimitError).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to resume a pending entry with no sessionId, without touching the runner", async () => {
+    const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const runner = new FakeRunner({ events: [{ type: "assistant", text: "should never run" }] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-")));
+    const orchestrator = new Orchestrator({
+      runner, store, outbox: outbox as never, dataDir: "unused",
+      governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+    });
+
+    const result = await orchestrator.resumeRun(
+      { id: "p-nosession", runId: "smoke-1", agentName: AGENT.name, sessionId: "", kind: "approval", effect: "x", grantRef: "g", askedAt: new Date().toISOString() },
+      { approved: true },
+      AGENT,
+    );
+
+    expect(result).toBeUndefined();
+    expect(executeSpy).not.toHaveBeenCalled();
+    // Not even admitted: no slot is taken and nothing is recorded.
+    expect(governor.admit).not.toHaveBeenCalled();
+    await expect(store.listRecent(10)).resolves.toEqual([]);
+    expect(stderrSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("p-nosession");
+    stderrSpy.mockRestore();
+  });
+});
+
+describe("Orchestrator's onParked announcement hook", () => {
+  function parkHarness(events: FakeScript["events"], onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>) {
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-orch-park-"));
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events }),
+      store: new RunStore(dataDir),
+      outbox: { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() } as never,
+      dataDir,
+      governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
+      breaker: new BreakerStore(dataDir),
+      ...(onParked ? { onParked } : {}),
+    });
+    return orchestrator;
+  }
+
+  it("calls onParked with the pending id and kind the moment a run parks for approval", async () => {
+    const onParked = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = parkHarness([{ type: "parked", kind: "approval", pendingId: "pending-42" }], onParked);
+    const result = await orchestrator.executeRun(AGENT);
+    expect(onParked).toHaveBeenCalledTimes(1);
+    expect(onParked).toHaveBeenCalledWith("pending-42", "approval");
+    expect(result?.status).toBe("parked");
+  });
+
+  it("calls onParked with kind 'question' for a question park", async () => {
+    const onParked = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = parkHarness([{ type: "parked", kind: "question", pendingId: "pending-q" }], onParked);
+    await orchestrator.executeRun(AGENT);
+    expect(onParked).toHaveBeenCalledWith("pending-q", "question");
+  });
+
+  // A resumed run can park again into a *new* pending entry (an agent that
+  // asks a second question). The hook lives in runAndRecord, which both paths
+  // share, so this must announce too.
+  it("also announces a park that happens on the resume path", async () => {
+    const onParked = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = parkHarness([{ type: "parked", kind: "question", pendingId: "pending-second" }], onParked);
+    await orchestrator.resumeRun(
+      { id: "p1", runId: "smoke-1", agentName: AGENT.name, sessionId: "sess-abc", kind: "question", question: "which?", askedAt: new Date().toISOString() },
+      { answer: "this one" },
+      AGENT,
+    );
+    expect(onParked).toHaveBeenCalledWith("pending-second", "question");
+  });
+
+  it("does not fail the run when the announcement itself throws", async () => {
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onParked = vi.fn().mockRejectedValue(new Error("discord is down"));
+    const orchestrator = parkHarness([{ type: "parked", kind: "approval", pendingId: "pending-x" }], onParked);
+    const result = await orchestrator.executeRun(AGENT);
+    expect(result?.status).toBe("parked");
+    expect(result?.error).toBeUndefined();
+    expect(stderrSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("pending-x");
+    stderrSpy.mockRestore();
+  });
+
+  it("runs fine with no onParked hook supplied at all", async () => {
+    const orchestrator = parkHarness([{ type: "parked", kind: "approval", pendingId: "pending-none" }]);
+    await expect(orchestrator.executeRun(AGENT)).resolves.toMatchObject({ status: "parked" });
+  });
+});
+
+/**
+ * The circuit breaker was fully built and unit-tested, and Governor.admit read
+ * it — but nothing in production ever called recordResult, so
+ * consecutiveFailures was permanently 0 and the breaker could never trip. Every
+ * other orchestrator test above stubs the governor with vi.fn(), which is
+ * exactly why that gap was invisible; this block wires a REAL BreakerStore and
+ * a REAL Governor so the loop is closed end to end.
+ */
+describe("Orchestrator + a real circuit breaker", () => {
+  function realHarness(script: FakeScript) {
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-orch-real-"));
+    const promptPath = join(dataDir, "prompt.md");
+    writeFileSync(promptPath, "Do the thing.");
+    const agent = {
+      name: "smoke", enabled: true, dir: dataDir, promptPath,
+      workspace: join(dataDir, "workspaces", "smoke"),
+      run: NORMAL_TIMEOUT,
+      outbox: { discord: "smoke", notifyOn: [] },
+    } as unknown as AgentDef;
+
+    const store = new RunStore(dataDir);
+    const breaker = new BreakerStore(dataDir);
+    const governor = new Governor({
+      dataDir, config: CONFIG, store,
+      overrides: new ConfigOverridesStore(dataDir),
+      rateLimits: new RateLimitTracker(dataDir),
+      breaker,
+    });
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn().mockResolvedValue("delivered") } as never;
+    const orchestrator = new Orchestrator({ runner: new FakeRunner(script), store, outbox, dataDir, governor, breaker });
+
+    /** A second orchestrator over the SAME store/governor/breaker, running a different script. */
+    const withScript = (other: FakeScript) =>
+      new Orchestrator({ runner: new FakeRunner(other), store, outbox, dataDir, governor, breaker });
+
+    return { agent, orchestrator, breaker, governor, withScript };
+  }
+
+  /** Two events with throwAfter: 1 — FakeRunner only throws on the iteration after the count, so a single-event script would never fail. */
+  const FAILING: FakeScript = {
+    events: [{ type: "assistant", text: "starting" }, { type: "assistant", text: "unreachable" }],
+    throwAfter: 1,
+  };
+
+  it("trips after three consecutive failed triggered runs, and the governor then refuses the next one", async () => {
+    const { agent, orchestrator, breaker, governor } = realHarness(FAILING);
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    expect(await breaker.isTripped(agent.name)).toBe(false);
+
+    await orchestrator.executeRun(agent);
+    expect(await breaker.isTripped(agent.name)).toBe(true);
+
+    // The whole point: a tripped breaker actually stops the next trigger.
+    await expect(governor.admit(agent, "trigger")).resolves.toMatchObject({ kind: "refuse" });
+    expect(await orchestrator.executeRun(agent)).toBeUndefined();
+  });
+
+  it("clears the failure count again once a run succeeds", async () => {
+    const { agent, orchestrator, breaker, withScript } = realHarness(FAILING);
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+
+    // One success resets the streak, so two further failures still don't trip.
+    await withScript({ events: [{ type: "assistant", text: "fine" }] }).executeRun(agent);
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    expect(await breaker.isTripped(agent.name)).toBe(false);
+  });
+
+  it("does not count a resume toward tripping the breaker", async () => {
+    const { agent, orchestrator, breaker } = realHarness(FAILING);
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+
+    // A failing *resume* between them must not be the third strike.
+    await orchestrator.resumeRun(
+      { id: "p1", runId: "smoke-resume", agentName: agent.name, sessionId: "sess-abc", kind: "approval", effect: "x", grantRef: "g", askedAt: new Date().toISOString() },
+      { approved: true },
+      agent,
+    );
+    expect(await breaker.isTripped(agent.name)).toBe(false);
+
+    await orchestrator.executeRun(agent);
+    expect(await breaker.isTripped(agent.name)).toBe(true);
   });
 });

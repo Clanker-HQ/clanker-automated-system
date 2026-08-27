@@ -7,7 +7,7 @@ import { DiscordJsTransport } from "./control/discord-transport.js";
 import { PendingStore } from "./control/pending.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
-import { loadGrants } from "./grants.js";
+import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
 import { Orchestrator } from "./orchestrator.js";
 import { DiscordOutbox } from "./outbox/discord.js";
 import { type AgentDef, loadRegistry } from "./registry.js";
@@ -34,11 +34,18 @@ function main(): void {
   let runner: Runner;
   let credentialMode: string | undefined;
   let botToken: string;
+  let ownerId: string;
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
     agents = loadRegistry({ agentsDir: join(ROOT, "agents"), dataDir: DATA_DIR, config });
-    runner = buildRunner({ grants: loadGrants(join(ROOT, "grants.yaml")), pending: new PendingStore(DATA_DIR) });
+    // Hoisted out of buildRunner's argument list so the same list can be
+    // cross-checked against every agent's grantRefs: a typo there is otherwise
+    // indistinguishable at runtime from "this agent has no grants", and
+    // silently denies every effect the agent was configured to be allowed.
+    const grants: Grant[] = loadGrants(join(ROOT, "grants.yaml"));
+    validateGrantRefs(agents, grants);
+    runner = buildRunner({ grants, pending: new PendingStore(DATA_DIR) });
     if (runner instanceof SdkRunner) {
       // Resolved once, here, rather than only inside SdkRunner.execute: that
       // body does not run until the orchestrator's first next(), so a missing
@@ -52,6 +59,12 @@ function main(): void {
     // is constructed below — a missing token must fail boot the same way a
     // missing config.yaml or grants.yaml does, not crash with a raw stack.
     botToken = mustEnv("DISCORD_BOT_TOKEN");
+    // The single account allowed to approve/deny/answer or run admin
+    // commands. Resolved here, with the same boot-failure formatting as the
+    // token above: without it the bot would accept a human decision from
+    // anyone who can see the channel, which is the one thing the whole
+    // tier/grant system exists to require a *specific* human for.
+    ownerId = mustEnv("DISCORD_OWNER_ID");
   } catch (error) {
     if (error instanceof ValidationError) {
       console.error(`\n[boot] Configuration is invalid. Nothing was started.\n`);
@@ -80,12 +93,30 @@ function main(): void {
     );
   });
 
+  const pending = new PendingStore(DATA_DIR);
+
+  // The orchestrator needs the bot (to announce a live park) and the bot needs
+  // the orchestrator (to resume one), so one of the two references has to be
+  // late-bound. The hook below is the smaller half: it is only ever called
+  // from inside a running agent's event stream, long after both objects are
+  // constructed, so the `if (!bot)` guard is a formality rather than a real
+  // window.
+  let bot: DiscordBot | undefined;
+
   const orchestrator = new Orchestrator({
     runner,
     store: runStore,
     outbox: new DiscordOutbox({ config, dataDir: DATA_DIR }),
     dataDir: DATA_DIR,
     governor,
+    breaker,
+    onParked: async (pendingId, kind) => {
+      if (!bot) return;
+      const entry = await pending.get(pendingId);
+      if (!entry) return;
+      if (kind === "approval") await bot.postApproval(entry);
+      else await bot.postQuestion(entry);
+    },
   });
 
   // Reconcile any pending approval/question entries left over from before
@@ -93,11 +124,9 @@ function main(): void {
   // connect the Discord bot. reconcileAndConnectBot runs reconciliation
   // unconditionally — independent of whether the bot manages to connect —
   // and only re-posts still-active entries once a connection succeeds.
-  const pending = new PendingStore(DATA_DIR);
-
-  const bot = new DiscordBot({
+  bot = new DiscordBot({
     transport: new DiscordJsTransport({ token: botToken }),
-    pending, orchestrator, agents,
+    pending, orchestrator, agents, ownerId,
     channelFor: (agentName) => {
       const agentDef = agents.find((a) => a.name === agentName);
       const key = agentDef?.outbox.discord ?? "";

@@ -21,7 +21,7 @@ function setup() {
     transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
     channelFor: () => "smoke-channel",
     store: new RunStore(dataDir), overrides: new ConfigOverridesStore(dataDir),
-    breaker: new BreakerStore(dataDir), dataDir,
+    breaker: new BreakerStore(dataDir), dataDir, ownerId: "owner",
   });
   return { dataDir, pending, transport, bot };
 }
