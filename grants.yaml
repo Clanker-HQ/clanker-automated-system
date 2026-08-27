@@ -19,3 +19,18 @@ grants:
     kind: github-pr
     repos: "*"
     secret: GITHUB_PR_TOKEN
+
+  # Backs agents/research's grantRefs. Read-only web access (WebFetch to
+  # arbitrary URLs) is a deliberately broad, low-risk grant: reading a public
+  # page carries none of the "spend money / do something irreversible"
+  # character the owner reserves for personal approval, unlike a git-push or
+  # provision grant. `method`/`secret` are schema-required fields, checked
+  # for well-formedness at boot only and not otherwise consulted at match
+  # time (see the existing test-echo grant, and README's documented caveat
+  # about method/branches/limit.perDay) — WEB_READ_TOKEN does not need to be
+  # set in .env.
+  - id: web-read
+    kind: http
+    method: GET
+    urlPattern: "*"
+    secret: WEB_READ_TOKEN

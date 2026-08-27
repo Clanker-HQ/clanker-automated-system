@@ -1,0 +1,29 @@
+name: research
+enabled: true
+authoredBy: claude-local
+description: >-
+  Researches a topic on the open web — market opportunities, technical
+  questions, whether an idea is any good — and writes up findings.
+  Read-and-report only: no code changes, no publishing, no spending.
+
+trigger:
+  type: dispatched
+
+run:
+  model: claude-haiku-4-5
+  effort: medium
+  maxTurns: 30
+  timeoutMinutes: 20
+  maxBudgetUsd: 2.00
+
+permissions:
+  allowedTools: [WebSearch, WebFetch, Write]
+  disallowedTools: []
+
+tier: granted
+approval: auto
+grantRefs: [web-read]
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]
