@@ -56,11 +56,11 @@ running from `main`, agent definitions validated at boot, grants loaded
 separately) is unchanged and still holds.
 
 ```
-PR opened/synchronized on GitHub
+PR opened / synchronized / reopened on GitHub
+  → GitHub fires a `pull_request` webhook immediately, in PARALLEL with CI —
+    the webhook is NOT gated on CI's result (see the note below)
   → GitHub Actions runs npm test + typecheck (a workflow this design adds —
     no CI exists yet, since no GitHub repo exists yet either)
-      → red: nothing else happens; PR sits there, visibly broken
-      → green: GitHub fires a webhook
   → Webhook receiver (new) verifies GitHub's signature, resolves the event to
     a "webhook"-triggered run of the pr-reviewer agent — governed by the same
     Governor as every other agent (budget, concurrency, quiet hours, breaker)
@@ -72,9 +72,26 @@ PR opened/synchronized on GitHub
     PR's code (§6)
       → Critical/Important finding survives adversarial verification: PR
         stays open, comments posted, nothing merges
-      → clean: merge, after re-checking the PR's head SHA hasn't moved since
-        review started
+      → clean: call the merge API, after re-checking the PR's head SHA hasn't
+        moved since review started
+          → CI red (or still running): GitHub's own branch protection refuses
+            the merge; the pipeline reports the refusal and the PR stays open
+          → CI green: merged
 ```
+
+**Where CI-gating actually happens.** The trigger deliberately fires on the
+PR event itself rather than on a `check_suite`-completion event, so the
+review starts immediately and runs concurrently with CI instead of waiting
+for it. Nothing in this system's own trigger logic inspects CI's pass/fail
+state. What guarantees a test-breaking PR cannot merge is **GitHub branch
+protection's "require status checks to pass before merging"** on `main`,
+configured against the CI workflow's check: GitHub's merge API itself refuses
+a merge whose required checks haven't passed, for any actor including this
+pipeline's bot identity. That refusal surfaces through
+`mergePullRequest` as an ordinary `{merged: false, reason: ...}` — the same
+path a stale-SHA refusal takes — so the pipeline reports it and the PR stays
+open. This puts the CI gate in the one place a bug in this codebase cannot
+remove, which is the same reasoning as Lock 4's Wall 2 (§3).
 
 ---
 
@@ -86,12 +103,55 @@ still hold and are not weakened by this design. This adds a fourth,
 specific to this pipeline:
 
 **Lock 4 — the pipeline cannot touch its own safety rails.** A fixed set of
-files defines the rules that constrain every agent in this system:
-`src/governor.ts`, `src/grants.ts`, `src/agent-schema.ts`, the Discord bot's
-owner-authorization check (`src/control/bot.ts`), `grants.yaml`, and
-`config.yaml`'s governance section. A PR touching any of these is refused by
-this pipeline categorically — not reviewed, not parked, not merged under any
-verdict. This is deliberately *not* "ask a human" — the owner does not want
+files defines the rules that constrain every agent in this system, *and* the
+code that implements this very exclusion. A PR touching any of them is refused
+by this pipeline categorically — not reviewed, not parked, not merged under any
+verdict.
+
+The set has two halves, both in `src/control/excluded-paths.ts`:
+
+**`EXCLUDED_PATHS`** — exact-path matches:
+
+| Path | Why |
+| --- | --- |
+| `src/governor.ts` | budget/concurrency/quiet-hours/breaker enforcement |
+| `src/grants.ts` | grant matching and the `decide()` engine |
+| `src/agent-schema.ts` | what an agent definition is even allowed to say |
+| `src/control/bot.ts` | the Discord bot's owner-authorization check |
+| `grants.yaml` | the grants themselves |
+| `config.yaml` | governance configuration (excluded whole — see below) |
+| `src/control/excluded-paths.ts` | this list; deleting one line removes the mechanism |
+| `src/runner/sdk-runner.ts` | all three of `mergePR`'s gates live here |
+| `src/control/webhook-signature.ts` | the only thing between a forged HTTP request and a run |
+| `src/control/webhook-wiring.ts` | the `enabled` predicate and the untrusted-content fence |
+| `src/control/webhook-receiver.ts` | the inbound HTTP trust boundary |
+| `src/runner/credentials.ts` | the child-env allowlist keeping secrets out of subprocesses |
+| `src/index.ts` | boot wiring: what gets constructed with which credentials |
+| `.github/workflows/ci.yml` | CI itself, which branch protection requires (§2) |
+
+**`EXCLUDED_PREFIXES`** — whole subtrees, matched by path prefix:
+
+| Prefix | Why |
+| --- | --- |
+| `agents/` | any `agent.yaml` is a capability grant |
+
+The prefix half exists because exact-path membership structurally cannot cover
+a directory that grows over time. Any `agent.yaml` under `agents/` is a
+capability declaration: a PR adding `tier: autonomous`, `approval: auto`,
+`grantRefs: [infra-repo]` to some *other* agent hands that agent merge
+capability without ever touching the excluded `grants.yaml`. Listing today's
+agent files by name would silently stop protecting tomorrow's.
+
+`config.yaml` is excluded whole rather than just its `governor:` key: a
+line-range check inside one file is fragile against reformatting, and nothing
+else in `config.yaml` is sensitive enough to be worth that risk for the rare
+case an automated PR would want to touch it at all.
+
+The second half of the list — this pipeline's own implementation — is not
+optional caution. A pipeline able to merge changes to its own gates is a
+pipeline with no gates: one PR weakens a check, the next does anything.
+
+This is deliberately *not* "ask a human" — the owner does not want
 to review code, so the safety here comes from removing the *capability*, not
 from a decision point. Changes to that code happen the way tonight's did:
 directly, by a human (or a human-directed session), on their own schedule,
@@ -99,17 +159,25 @@ outside this pipeline entirely.
 
 **Enforced by two independent mechanisms:**
 
-1. **Our own pipeline code.** Before the reviewer agent is ever invoked, a
-   static path-list check runs against the PR's changed files
-   (`git diff --name-only` against the merge base). Any overlap with the
-   excluded-path set → hard stop, before any LLM sees the diff.
+1. **Our own pipeline code.** A static path-list check runs against the PR's
+   changed files as GitHub itself reports them (the PR-files API, not
+   anything the reviewing agent supplies). Any overlap with `EXCLUDED_PATHS`
+   or `EXCLUDED_PREFIXES` → hard stop. A rename contributes *both* its old
+   and new path to that list, so a PR cannot move an excluded file out from
+   under the check; and a changed-file list too long to fetch in one page
+   fails closed (refuse to review) rather than being silently truncated.
 2. **GitHub's own access control**, independent of anything this codebase
    does. A `CODEOWNERS` file marks the excluded paths as requiring review
    from an account other than the bot; branch protection on `main` requires
    that review before merge; the bot's own GitHub permissions are configured
    so it cannot bypass branch protection. Even a bug in mechanism 1 — a
    missed path, a logic error — does not remove this guarantee, because it
-   does not depend on our code being correct.
+   does not depend on our code being correct. That `CODEOWNERS` file should
+   be **generated from (or explicitly kept in sync with)**
+   `EXCLUDED_PATHS`/`EXCLUDED_PREFIXES` rather than hand-maintained as a
+   separate list: two independently-edited copies of the same set is how one
+   quietly ends up shorter than the other, and the whole point of Wall 2 is
+   that it covers what Wall 1 covers even when Wall 1 has a bug.
 
 **Consequence:** the worst outcome of a bug, a compromised PR, or a
 misbehaving future proposer (sub-project 2b) touching the excluded paths is:
@@ -130,8 +198,12 @@ that:
   webhook is configured) before trusting anything in the payload. An
   unverified endpoint would let anyone who found the URL forge a "PR opened"
   event and trigger a run.
-- Filters to the events this system cares about (PR opened/synchronized,
-  the CI check-suite completing) and ignores everything else.
+- Filters to the events this system cares about — `pull_request` with an
+  action of `opened`, `synchronize`, or `reopened` — and ignores everything
+  else. Note what is *not* here: no `check_suite`-completion event, and no
+  inspection of CI's pass/fail state. A review starts as soon as a PR appears
+  or changes, concurrently with CI; the CI gate lives in GitHub branch
+  protection at merge time instead (§2).
 - On a relevant, verified event, triggers a run of the matching `webhook`-type
   agent the same way `src/triggers/cron.ts` triggers a `cron`-type agent
   today — through `Governor.admit()`, same as any other run.
@@ -228,6 +300,30 @@ security-sensitive paths.** This is a real, accepted risk, not a
 theoretical one; it was explained plainly and the simpler option was chosen
 over a safer, more complex sandboxed alternative.
 
+**A second, related accepted risk: `Bash` can reach `gh` directly.** The
+`pr-reviewer` agent has `Bash` in its `allowedTools` — it needs it to check
+out and actually run the PR's code. `detectOutwardEffect` in `src/grants.ts`
+does not recognize `gh pr merge`, `gh pr review`, or `git push` as outward
+effects, so `decide()` falls through to its "no effect detected → allow"
+default for them. An agent that chose to shell out to `gh pr merge` — whether
+by its own error or because its behavior was hijacked by content injected in
+the PR it is reviewing — would therefore bypass all three of `mergePR`'s
+gates entirely, **including Lock 4's excluded-path check**. Wall 2
+(CODEOWNERS + branch protection, §3) still holds against this, since it
+restricts by *who* is merging rather than by which code path asked; so the
+bound on this risk is the same as the token-theft bound above: a PR can get
+merged without passing review, but the excluded security-sensitive paths stay
+protected.
+
+This is stated as an **accepted, documented risk for now**, on the same terms
+as the token-theft risk above — not an oversight. Closing it properly is a
+real design decision rather than a bolt-on: either extend
+`detectOutwardEffect` to recognize these Bash-invoked GitHub-CLI and
+`git push` patterns (and accept that string-matching a shell command line is
+itself a fragile boundary), or narrow `Bash`'s availability/scope for this
+agent specifically (and accept that a reviewer that cannot run arbitrary
+commands is a weaker reviewer). Both belong to a future task, not this one.
+
 **Two cheap mitigations included regardless**, since they cost little and
 reduce how bad this can get without changing the architecture:
 1. The GitHub token is scoped as narrowly as GitHub's fine-grained PATs
@@ -256,8 +352,19 @@ own fresh review from its own `synchronize` webhook event.
 
 Designed to fail safe throughout, matching the rest of this system's posture:
 
-- CI never goes green → no webhook ever fires → nothing happens. The PR is
-  visibly broken on GitHub; no separate failure path needed.
+- CI never goes green → the review still runs (the trigger is the PR event,
+  not CI's result — §2), but the merge cannot land: GitHub branch protection's
+  required status check refuses it, surfacing as an ordinary
+  `{merged: false, reason: ...}` the pipeline reports on the PR. The PR stays
+  open and visibly broken on GitHub. The cost of the trigger not being
+  CI-gated is a review that may run against a branch CI later fails — wasted
+  budget, not an unsafe merge.
+- Anything fails *before* the run starts (a GitHub rate limit, a network
+  error, a revoked token, or the deliberate fail-closed refusal on a
+  changed-file list too long to fetch in one page) → no run record exists,
+  so the breaker and the Discord outbox never see it. The reason is instead
+  posted as a comment on the PR itself, where a human is actually looking,
+  and logged. Nothing merges.
 - The reviewer agent errors or crashes mid-run → recorded as a failed run
   like any other agent failure; the circuit breaker counts it; nothing
   merges, since merging only happens on an explicit clean synthesis verdict.

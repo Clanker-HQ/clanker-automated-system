@@ -9,7 +9,11 @@ mechanisms, not a human decision point.
 
 **Architecture:** A new `webhook` trigger type (sibling to the existing
 `cron`) fires the `pr-reviewer` agent — an ordinary agent under the existing
-Governor/tier/grant machinery — when GitHub reports a PR's CI has gone green.
+Governor/tier/grant machinery — when GitHub reports a PR opened, synchronized
+or reopened. The trigger is deliberately *not* gated on CI's result: the
+review runs concurrently with CI, and the CI gate is GitHub branch
+protection's required status check at merge time (Task 13, Step 2), which
+refuses the merge API call itself rather than relying on this system's code.
 Two new MCP tools (`mergePR`, `postReviewComment`, mirroring the existing
 `AskHuman` tool's shape) give it a way to act on GitHub; `mergePR` is grant-gated
 through the same `decide()` engine every other outward effect uses, and is
@@ -37,12 +41,32 @@ internal-only endpoint).
   / `formatZodError` from `src/errors.ts` for every validation failure; zod
   schemas use `.strict()`; tests that touch the filesystem use
   `mkdtempSync(join(tmpdir(), "cai-<thing>-"))`, never a fixed path.
-- **The excluded-path set is exact and fixed for this plan:** `src/governor.ts`,
-  `src/grants.ts`, `src/agent-schema.ts`, `src/control/bot.ts`, `grants.yaml`,
-  and the `governor:` key of `config.yaml`. A PR touching any of these never
-  merges through this pipeline under any circumstance — this check runs
-  before the grant/review machinery even starts, and nothing later in the
-  pipeline can override it.
+- **The excluded-path set covers both the parent governance files and this
+  pipeline's own implementation.** It lives in
+  `src/control/excluded-paths.ts` as two exported arrays and is the single
+  source of truth for the whole plan (spec §3 documents the same list;
+  Task 13's `CODEOWNERS` should be generated from it or explicitly kept in
+  sync with it, never hand-maintained as a second independent copy).
+
+  `EXCLUDED_PATHS` (exact match): `src/governor.ts`, `src/grants.ts`,
+  `src/agent-schema.ts`, `src/control/bot.ts`, `grants.yaml`, `config.yaml`
+  (excluded whole, not just its `governor:` key),
+  `src/control/excluded-paths.ts`, `src/runner/sdk-runner.ts`,
+  `src/control/webhook-signature.ts`, `src/control/webhook-wiring.ts`,
+  `src/control/webhook-receiver.ts`, `src/runner/credentials.ts`,
+  `src/index.ts`, `.github/workflows/ci.yml`.
+
+  `EXCLUDED_PREFIXES` (prefix match, whole subtree): `agents/` — covering any
+  `agent.yaml`, including files that don't exist yet. An `agent.yaml` is a
+  capability declaration: a PR adding `tier: autonomous`, `approval: auto`,
+  `grantRefs: [infra-repo]` to some *other* agent would hand it merge
+  capability without touching the excluded `grants.yaml`, and an exact-path
+  list of today's agent files would silently stop protecting tomorrow's.
+
+  A PR touching any of these never merges through this pipeline under any
+  circumstance — this check runs before the grant/review machinery even
+  starts, against GitHub's own reported changed-file list (both sides of a
+  rename included), and nothing later in the pipeline can override it.
 - **`mergePR` only ever executes when three things are simultaneously true:**
   the excluded-path check passes, the PR's current head SHA still matches
   what was reviewed, and `decide()` resolves to `allow`. All three are
@@ -305,7 +329,15 @@ git commit -m "feat: github-pr grant kind"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: exported `EXCLUDED_PATHS: readonly string[]`; exported `touchesExcludedPath(changedFiles: string[]): boolean`.
+- Produces: exported `EXCLUDED_PATHS: readonly string[]`; exported `EXCLUDED_PREFIXES: readonly string[]`; exported `touchesExcludedPath(changedFiles: string[]): boolean`.
+
+> **Superseded list:** the six-path `EXCLUDED_PATHS` array and the matching
+> test assertion in the code blocks below are this task's *original* scope,
+> kept as written for the historical record. The final whole-branch review
+> expanded the set to also cover this pipeline's own implementation and added
+> `EXCLUDED_PREFIXES`. **Global Constraints above is the authoritative list**
+> — `src/control/excluded-paths.ts` and `tests/excluded-paths.test.ts` match
+> it, not the snippets below.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1777,21 +1809,52 @@ small throwaway test repository — not the real infrastructure repo yet.
 - [ ] **Step 2: Configure Wall 2 — CODEOWNERS + branch protection**
 
 Add a `CODEOWNERS` file to the test repo naming a human account (the
-owner's own GitHub account, not the bot) as the required reviewer for the
-excluded paths listed in `src/control/excluded-paths.ts`:
+owner's own GitHub account, not the bot) as the required reviewer for every
+path in `EXCLUDED_PATHS` and `EXCLUDED_PREFIXES` in
+`src/control/excluded-paths.ts`. **Generate this file from those arrays (or
+add a test asserting the two agree) rather than hand-maintaining it as a
+separate list** — two independently-edited copies of the same set is exactly
+how one ends up quietly shorter than the other, and Wall 2's whole purpose is
+to still cover what Wall 1 covers when Wall 1 has a bug.
+
+As of this plan, that list is:
 
 ```
-/src/governor.ts        @owner-account
-/src/grants.ts          @owner-account
-/src/agent-schema.ts    @owner-account
-/src/control/bot.ts     @owner-account
-/grants.yaml            @owner-account
-/config.yaml            @owner-account
+# Parent governance files
+/src/governor.ts                     @owner-account
+/src/grants.ts                       @owner-account
+/src/agent-schema.ts                 @owner-account
+/src/control/bot.ts                  @owner-account
+/grants.yaml                         @owner-account
+/config.yaml                         @owner-account
+# This pipeline's own safety rails
+/src/control/excluded-paths.ts       @owner-account
+/src/runner/sdk-runner.ts            @owner-account
+/src/control/webhook-signature.ts    @owner-account
+/src/control/webhook-wiring.ts       @owner-account
+/src/control/webhook-receiver.ts     @owner-account
+/src/runner/credentials.ts           @owner-account
+/src/index.ts                        @owner-account
+/.github/workflows/ci.yml            @owner-account
+# EXCLUDED_PREFIXES: any agent.yaml is a capability declaration
+/agents/                             @owner-account
 ```
 
-In the repo's Settings → Branches, add a protection rule on `main` requiring
-a review from a CODEOWNERS-matched reviewer before merge, and confirm the
-bot account's permissions do not include "bypass branch protection."
+In the repo's Settings → Branches, add a protection rule on `main` that:
+
+1. **Requires a review from a CODEOWNERS-matched reviewer before merge** —
+   this is Wall 2 of Lock 4, and confirm the bot account's permissions do
+   **not** include "bypass branch protection."
+2. **Requires the CI workflow's status check to pass before merging**
+   ("Require status checks to pass before merging" → select the `test` job
+   from `.github/workflows/ci.yml`). This is what actually makes spec success
+   criterion 1 true — a PR that breaks tests cannot merge. The webhook
+   trigger fires on the PR event, not on CI completion, so this system's own
+   code never inspects CI's result (spec §2); GitHub's merge API refusing a
+   merge with failing required checks is the entire CI gate, and
+   `mergePullRequest` already surfaces that refusal as
+   `{merged: false, reason: ...}`. Without this box checked, a test-breaking
+   PR **can** merge through this pipeline.
 
 - [ ] **Step 3: Add the webhook**
 
