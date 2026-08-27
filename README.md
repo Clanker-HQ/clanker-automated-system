@@ -33,7 +33,13 @@ subscription** rather than the API. Results are reported to Discord.
    command from any other author is ignored without a reply. Boot fails if it
    is unset, the same way a missing bot token does — an approval anyone in the
    channel could give is not an approval.
-5. `docker compose up --build`
+5. Set `GITHUB_PR_TOKEN` (a fine-grained PAT scoped to only the repos this
+   system manages and only pull-request read/write + merge permissions) and
+   `GITHUB_WEBHOOK_SECRET` (the shared secret you'll configure when adding the
+   repo's webhook under Settings → Webhooks). Both are `mustEnv`, the same as
+   `DISCORD_OWNER_ID` above — boot fails without them, even before any agent
+   is actually webhook-triggered.
+6. `docker compose up --build`
 
 To exercise the whole pipeline **without consuming any subscription quota**, set
 `RUNNER=fake` in `.env` first. The boot log states which mode is live:
@@ -191,8 +197,11 @@ Still genuinely deferred:
   didn't error, not that the agent's objective was achieved (see above).
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
 - **Any real grant.** `grants.yaml` ships one synthetic grant (`test-echo`,
-  a POST to `httpbin.org`) to exercise tier/grant enforcement end to end;
-  wiring up an actual credentialed effect (a repo push, a real API call)
-  happens later, agent by agent, as a real need shows up.
+  a POST to `httpbin.org`) to exercise tier/grant enforcement end to end,
+  plus `infra-repo` (a `github-pr` grant) backing `agents/pr-reviewer` —
+  but that one's `repos` list is still the `owner/repo` placeholder, so it
+  authorises nothing against a real repository yet. Wiring up an actual
+  credentialed effect (a repo push, a real API call, the real target repo
+  for PR review) happens later, agent by agent, as a real need shows up.
 
 See the design doc's roadmap for how these fit together.
