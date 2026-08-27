@@ -450,7 +450,7 @@ describe("SdkRunner grant enforcement", () => {
   });
 });
 
-describe("SdkRunner mergePR tool", () => {
+describe("SdkRunner GitHub PR tools", () => {
   function granted() {
     return { ...AGENT, tier: "autonomous", approval: "auto", grantRefs: ["infra-repo"] } as unknown as AgentDef;
   }
@@ -474,6 +474,9 @@ describe("SdkRunner mergePR tool", () => {
   }
   function mergeToolHandler(params: GithubPrParams): (input: unknown) => Promise<unknown> {
     return params.options.mcpServers.githubPr.instance._registeredTools.mergePR!.handler;
+  }
+  function commentToolHandler(params: GithubPrParams): (input: unknown) => Promise<unknown> {
+    return params.options.mcpServers.githubPr.instance._registeredTools.postReviewComment!.handler;
   }
 
   it("passes the mergePR MCP tool's server when a GithubTransport is provided", async () => {
@@ -654,5 +657,23 @@ describe("SdkRunner mergePR tool", () => {
     expect(result).toMatchObject({
       content: [{ type: "text", text: expect.not.stringMatching(/no grant authorises/i) }],
     });
+  });
+
+  it("posts a review comment via GithubTransport, ungated (no grant check)", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: [], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    // Deliberately NO grants passed — posting a comment is not an outward
+    // effect requiring authorisation, unlike merging.
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await commentToolHandler(params)({ repo: "owner/repo", number: 1, body: "Looks clean." });
+
+    expect(github.postedComments).toEqual([{ repo: "owner/repo", number: 1, body: "Looks clean." }]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("posted") }] });
   });
 });

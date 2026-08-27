@@ -391,6 +391,15 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: `Successfully merged ${repo}#${number}.` }] };
               },
             ),
+            tool(
+              "postReviewComment",
+              "Post a comment on a pull request — findings, an explanation of why a merge was refused, or general review feedback. Never gated: commenting has no outward consequence beyond ordinary communication.",
+              { repo: z.string(), number: z.number().int().positive(), body: z.string().min(1) },
+              async ({ repo, number, body }) => {
+                await github.postReviewComment(repo, number, body);
+                return { content: [{ type: "text" as const, text: `Comment posted on ${repo}#${number}.` }] };
+              },
+            ),
           ],
         })
       : undefined;
