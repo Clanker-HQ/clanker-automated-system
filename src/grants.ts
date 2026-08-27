@@ -34,7 +34,16 @@ const ProvisionGrant = z
   })
   .strict();
 
-export const GrantSchema = z.discriminatedUnion("kind", [HttpGrant, GitPushGrant, ProvisionGrant]);
+const GithubPrGrant = z
+  .object({
+    id: z.string().min(1),
+    kind: z.literal("github-pr"),
+    repos: z.array(z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"')).min(1),
+    secret: z.string().min(1),
+  })
+  .strict();
+
+export const GrantSchema = z.discriminatedUnion("kind", [HttpGrant, GitPushGrant, ProvisionGrant, GithubPrGrant]);
 export type Grant = z.infer<typeof GrantSchema>;
 
 const GrantsFileSchema = z.object({ grants: z.array(GrantSchema).default([]) }).strict();
@@ -165,6 +174,11 @@ function grantTargetPattern(grant: Grant): string {
       return grant.remote;
     case "provision":
       return grant.scope;
+    case "github-pr":
+      // Not matched via globMatch — matchGrant (extended in Task 7) checks
+      // grant.repos.includes(effect.target) directly for this kind. This
+      // case exists only so the switch stays exhaustive.
+      return "";
   }
 }
 

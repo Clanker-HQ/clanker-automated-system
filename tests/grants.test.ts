@@ -72,6 +72,19 @@ grants:
     const yaml = "grants:\n  - id: bad\n    kind: http\n    method: POST\n    secret: X\n";
     expect(() => parseGrants("grants.yaml", yaml)).toThrow(/urlPattern/);
   });
+
+  it("parses a github-pr grant", () => {
+    const grants = parseGrants(
+      "grants.yaml",
+      "grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: [owner/repo]\n    secret: GITHUB_PR_TOKEN\n",
+    );
+    expect(grants[0]).toMatchObject({ kind: "github-pr", repos: ["owner/repo"] });
+  });
+
+  it("rejects a github-pr grant with an empty repos list", () => {
+    const yaml = "grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: []\n    secret: GITHUB_PR_TOKEN\n";
+    expect(() => parseGrants("grants.yaml", yaml)).toThrow();
+  });
 });
 
 import { decide, detectOutwardEffect, matchGrant, validateGrantRefs } from "../src/grants.js";
