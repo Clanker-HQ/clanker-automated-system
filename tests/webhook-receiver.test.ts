@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { request } from "node:http";
 import { WebhookReceiver } from "../src/control/webhook-receiver.js";
 
 const SECRET = "test-secret";
@@ -67,5 +68,110 @@ describe("WebhookReceiver.handleRequest", () => {
     const body = prOpenedPayload();
     const result = await receiver.handleRequest(body, sign(body));
     expect(result.status).toBe(202);
+  });
+});
+
+describe("WebhookReceiver.listen and close", () => {
+  it("close() resolves immediately if called before listen()", async () => {
+    const receiver = new WebhookReceiver({ secret: SECRET });
+    // Should not hang
+    await expect(receiver.close()).resolves.toBeUndefined();
+  });
+
+  it("listen() and close() work over a real HTTP connection", async () => {
+    const receiver = new WebhookReceiver({ secret: SECRET });
+    const handler = vi.fn().mockResolvedValue(undefined);
+    receiver.onEvent(handler);
+
+    // Listen on ephemeral port (0 = OS assigns a free port)
+    await receiver.listen(0);
+
+    // Get the port from the server
+    const port = (receiver["server"] as any)?.address()?.port;
+    expect(port).toBeGreaterThan(0);
+
+    // Make a real HTTP request
+    const body = prOpenedPayload();
+    const signature = sign(body);
+
+    const response = await new Promise<{ status: number; data: string }>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "localhost",
+          port,
+          path: "/",
+          method: "POST",
+          headers: {
+            "x-hub-signature-256": signature,
+            "content-type": "application/json",
+          },
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk) => {
+            data += chunk;
+          });
+          res.on("end", () => {
+            resolve({ status: res.statusCode || 0, data });
+          });
+        },
+      );
+      req.on("error", reject);
+      req.write(body);
+      req.end();
+    });
+
+    expect(response.status).toBe(202);
+    expect(handler).toHaveBeenCalledWith({
+      repo: "owner/repo",
+      event: "pull_request",
+      action: "opened",
+      pullRequestNumber: 42,
+    });
+
+    // Close should work after listen
+    await expect(receiver.close()).resolves.toBeUndefined();
+  });
+
+  it("responds with 413 Payload Too Large for oversized bodies", async () => {
+    const receiver = new WebhookReceiver({ secret: SECRET });
+    await receiver.listen(0);
+
+    const port = (receiver["server"] as any)?.address()?.port;
+
+    // Create a body larger than 1MB
+    const largeBody = "x".repeat(1024 * 1024 + 1);
+    const signature = sign(largeBody);
+
+    const response = await new Promise<{ status: number; data: string }>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "localhost",
+          port,
+          path: "/",
+          method: "POST",
+          headers: {
+            "x-hub-signature-256": signature,
+          },
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk) => {
+            data += chunk;
+          });
+          res.on("end", () => {
+            resolve({ status: res.statusCode || 0, data });
+          });
+        },
+      );
+      req.on("error", reject);
+      req.write(largeBody);
+      req.end();
+    });
+
+    expect(response.status).toBe(413);
+    expect(response.data).toMatch(/[Pp]ayload too large|[Bb]ad request/i);
+
+    await receiver.close();
   });
 });

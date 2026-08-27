@@ -62,9 +62,27 @@ export class WebhookReceiver {
   }
 
   async listen(port: number): Promise<void> {
+    const MAX_BODY_SIZE = 1024 * 1024; // 1MB
     this.server = createServer((req, res) => {
       const chunks: Buffer[] = [];
-      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      let totalSize = 0;
+
+      req.on("error", () => {
+        res.writeHead(400, { "content-type": "text/plain" });
+        res.end("Bad request");
+      });
+
+      req.on("data", (chunk: Buffer) => {
+        totalSize += chunk.length;
+        if (totalSize > MAX_BODY_SIZE) {
+          res.writeHead(413, { "content-type": "text/plain" });
+          res.end("Payload too large");
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+
       req.on("end", () => {
         void this.handleRequest(Buffer.concat(chunks).toString("utf8"), req.headers["x-hub-signature-256"] as string | undefined).then(
           ({ status, body }) => {
@@ -78,8 +96,9 @@ export class WebhookReceiver {
   }
 
   async close(): Promise<void> {
+    if (!this.server) return;
     await new Promise<void>((resolve, reject) => {
-      this.server?.close((err) => (err ? reject(err) : resolve()));
+      this.server!.close((err) => (err ? reject(err) : resolve()));
     });
   }
 }
