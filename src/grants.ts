@@ -116,7 +116,9 @@ export function detectOutwardEffect(toolName: string, input: Record<string, unkn
     // Bare `git push` — no remote argument, pushing to the configured upstream
     // — is the commonest real-world form, and requiring a captured argument
     // meant it was detected as nothing at all. It now reports a sentinel
-    // target that no grant pattern will match, so it fails closed.
+    // target so it's still checked against grants — no *specific* remote
+    // pattern will match it, but a deliberately permissive one (`remote:
+    // "*"`) still will, same as it would for any other target.
     if (/\bgit\s+push\b/.test(command)) {
       const remote = command.match(/\bgit\s+push\s+(\S+)/)?.[1];
       return {

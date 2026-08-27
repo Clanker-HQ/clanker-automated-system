@@ -94,7 +94,7 @@ try again later, the id stays valid. Entries older than
 | `!enable <agent>` | Re-enable it, and reset its circuit breaker |
 | `!budget <n>` | Set the daily spend ceiling in USD, e.g. `!budget 25` |
 | `!concurrency <n>` | Set how many runs may be in flight at once |
-| `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 22:00-07:00 Europe/Berlin`. Same-day windows only; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |
+| `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `22:00-07:00` would never actually suppress anything, since `from` must be earlier than `to`; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |
 | `!quiet off` | Disable quiet hours |
 | `!runs` | The last 20 runs — id, status, cost |
 
