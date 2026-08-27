@@ -139,8 +139,10 @@ describe("WebhookReceiver.listen and close", () => {
 
     const port = (receiver["server"] as any)?.address()?.port;
 
-    // Create a body larger than 1MB
-    const largeBody = "x".repeat(1024 * 1024 + 1);
+    // Create a body significantly larger than 1MB (10MB) to simulate realistic
+    // attack scenario with large unread data in kernel buffer when limit is hit.
+    // This ensures the 413 response can be flushed before req.destroy() is called.
+    const largeBody = "x".repeat(10 * 1024 * 1024);
     const signature = sign(largeBody);
 
     const response = await new Promise<{ status: number; data: string }>((resolve, reject) => {
@@ -170,7 +172,7 @@ describe("WebhookReceiver.listen and close", () => {
     });
 
     expect(response.status).toBe(413);
-    expect(response.data).toMatch(/[Pp]ayload too large|[Bb]ad request/i);
+    expect(response.data).toContain("Payload too large");
 
     await receiver.close();
   });

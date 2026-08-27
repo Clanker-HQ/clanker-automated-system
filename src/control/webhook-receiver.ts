@@ -66,24 +66,31 @@ export class WebhookReceiver {
     this.server = createServer((req, res) => {
       const chunks: Buffer[] = [];
       let totalSize = 0;
+      let responseSent = false;
 
       req.on("error", () => {
-        res.writeHead(400, { "content-type": "text/plain" });
-        res.end("Bad request");
+        if (!responseSent && !res.destroyed && !res.writableEnded) {
+          responseSent = true;
+          res.writeHead(400, { "content-type": "text/plain" });
+          res.end("Bad request");
+        }
       });
 
       req.on("data", (chunk: Buffer) => {
+        if (responseSent) return;
         totalSize += chunk.length;
         if (totalSize > MAX_BODY_SIZE) {
+          responseSent = true;
           res.writeHead(413, { "content-type": "text/plain" });
           res.end("Payload too large");
-          req.destroy();
           return;
         }
         chunks.push(chunk);
       });
 
       req.on("end", () => {
+        if (responseSent) return;
+        responseSent = true;
         void this.handleRequest(Buffer.concat(chunks).toString("utf8"), req.headers["x-hub-signature-256"] as string | undefined).then(
           ({ status, body }) => {
             res.writeHead(status, { "content-type": "text/plain" });
