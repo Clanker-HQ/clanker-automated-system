@@ -56,13 +56,21 @@ export class GithubApiTransport implements GithubTransport {
     }
 
     const pr = (await prRes.json()) as { head: { sha: string }; title: string; body: string | null };
-    const files = (await filesRes.json()) as { filename: string }[];
+    const files = (await filesRes.json()) as { filename: string; previous_filename?: string }[];
     const diff = await diffRes.text();
     return {
       number,
       repo,
       headSha: pr.head.sha,
-      changedFiles: files.map((f) => f.filename),
+      // A rename is reported as one entry with `filename` = the NEW path and
+      // `previous_filename` = the OLD one. Reporting only the new path would
+      // let a PR move an excluded file out from under Lock 4's exact-path set
+      // (e.g. src/governor.ts -> src/core/governor.ts): the check would see
+      // only the unprotected new path, wave the rename through, and a
+      // follow-up PR could then rewrite the now-unprotected file freely. Both
+      // paths are carried through so the excluded-path check sees the file
+      // the PR is moving away from as well as where it lands.
+      changedFiles: files.flatMap((f) => (f.previous_filename ? [f.filename, f.previous_filename] : [f.filename])),
       diff,
       title: pr.title,
       body: pr.body ?? "",

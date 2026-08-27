@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { touchesExcludedPath } from "../src/control/excluded-paths.js";
 import { GithubApiTransport } from "../src/control/github-api-transport.js";
 
 /** A minimal Response-shaped stub — only the members GithubApiTransport reads. */
@@ -42,6 +43,37 @@ describe("GithubApiTransport.getPullRequest", () => {
     expect(info.headSha).toBe("sha-1");
     expect(info.changedFiles).toEqual(["src/a.ts", "src/b.ts"]);
     expect(info.title).toBe("A change");
+  });
+
+  // Regression test for the final review's Critical #1: GitHub reports a
+  // rename as a single entry whose `filename` is the NEW path, with the OLD
+  // path only in `previous_filename`. Mapping just `filename` meant a PR that
+  // renamed an excluded file (src/governor.ts -> src/core/governor.ts)
+  // reported only the unprotected new path, so Lock 4's exact-path check
+  // never saw the excluded path and waved the rename through — after which
+  // the file is permanently outside the protected set.
+  it("reports both sides of a rename, so a file renamed away from an excluded path is still visible to Lock 4", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/files")) {
+        return fakeResponse({
+          json: [
+            { filename: "src/core/governor.ts", previous_filename: "src/governor.ts", status: "renamed" },
+            { filename: "README.md", status: "modified" },
+          ],
+        });
+      }
+      return fakeResponse({ json: prJson(), text: "diff --git a/x b/x" });
+    }) as unknown as typeof fetch;
+
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    const info = await t.getPullRequest("owner/repo", 1);
+
+    expect(info.changedFiles).toContain("src/governor.ts");
+    expect(info.changedFiles).toContain("src/core/governor.ts");
+    expect(info.changedFiles).toContain("README.md");
+    // And the mapping that produces it is what Lock 4 actually consumes.
+    expect(touchesExcludedPath(info.changedFiles)).toBe(true);
   });
 
   it("fails closed — refuses rather than silently truncating — when the changed-files list is paginated", async () => {

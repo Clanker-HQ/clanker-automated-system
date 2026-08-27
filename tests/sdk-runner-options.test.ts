@@ -493,7 +493,7 @@ describe("SdkRunner GitHub PR tools", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
-    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
@@ -563,11 +563,45 @@ describe("SdkRunner GitHub PR tools", () => {
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
   });
 
+  // Regression test for the final review's Critical #1, at the gate level.
+  // GithubApiTransport now reports both sides of a rename (see
+  // tests/github-api-transport.test.ts for the API-mapping half of this),
+  // so a PR that renames an excluded file to an unprotected path arrives here
+  // with the OLD, excluded path still present in changedFiles — and Gate 1
+  // must refuse it. Without both halves, a PR could move src/governor.ts out
+  // from under the excluded set and a follow-up PR could then rewrite the
+  // now-unprotected file freely.
+  it("refuses to merge a PR that renames a file away from an excluded path", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    // What GithubApiTransport's rename mapping produces: the new path and the
+    // previous (excluded) path, both in the flat changedFiles list.
+    github.seedPullRequest({
+      number: 1,
+      repo: "owner/repo",
+      headSha: "sha-1",
+      changedFiles: ["src/core/governor.ts", "src/governor.ts"],
+      diff: "",
+      title: "t",
+      body: "b",
+    });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
+  });
+
   it("refuses to merge when the current head SHA has moved past what was reviewed", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
-    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "newer-sha", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "newer-sha", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
@@ -583,7 +617,7 @@ describe("SdkRunner GitHub PR tools", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
-    github.seedPullRequest({ number: 1, repo: "owner/other-repo", headSha: "sha-1", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    github.seedPullRequest({ number: 1, repo: "owner/other-repo", headSha: "sha-1", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
@@ -641,7 +675,7 @@ describe("SdkRunner GitHub PR tools", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
-    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const notAuto = { ...AGENT, tier: "autonomous", approval: "notify", grantRefs: ["infra-repo"] } as unknown as AgentDef;
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
