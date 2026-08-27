@@ -3,9 +3,12 @@ import { type Config, loadConfig } from "./config.js";
 import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
 import { DiscordBot } from "./control/bot.js";
 import { reconcileAndConnectBot } from "./control/boot-wiring.js";
+import { buildRouter } from "./control/build-router.js";
+import { Dispatcher } from "./control/dispatcher.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
+import { TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { makeWebhookHandler } from "./control/webhook-wiring.js";
 import { ValidationError } from "./errors.js";
@@ -127,6 +130,7 @@ function main(): void {
   });
 
   const pending = new PendingStore(DATA_DIR);
+  const tasks = new TaskStore(DATA_DIR);
 
   // The orchestrator needs the bot (to announce a live park) and the bot needs
   // the orchestrator (to resume one), so one of the two references has to be
@@ -136,10 +140,12 @@ function main(): void {
   // window.
   let bot: DiscordBot | undefined;
 
+  const outbox = new DiscordOutbox({ config, dataDir: DATA_DIR });
+
   const orchestrator = new Orchestrator({
     runner,
     store: runStore,
-    outbox: new DiscordOutbox({ config, dataDir: DATA_DIR }),
+    outbox,
     dataDir: DATA_DIR,
     governor,
     breaker,
@@ -150,6 +156,27 @@ function main(): void {
       if (!entry) return;
       if (kind === "approval") await bot.postApproval(entry);
       else await bot.postQuestion(entry);
+    },
+  });
+
+  const router = buildRouter();
+  const dispatcher = new Dispatcher({
+    tasks,
+    router,
+    agents,
+    orchestrator,
+    dataDir: DATA_DIR,
+    // No agent has been chosen yet at this point (a routing failure, or no
+    // registered specialist at all), so there is no agent.outbox.discord to
+    // report through — "smoke" is this project's one configured channel,
+    // matching how agents/pr-reviewer and agents/smoke both already use it.
+    // Wrapped in an async function with a bare await (rather than returning
+    // outbox.postAlert(...) directly): postAlert resolves to
+    // "delivered" | "undelivered", not void, and DispatcherDeps.notify's
+    // type is `(text: string) => Promise<void>` — the wrapper's inferred
+    // Promise<void> return type is what actually satisfies it.
+    notify: async (text) => {
+      await outbox.postAlert("smoke", text);
     },
   });
 
@@ -168,9 +195,18 @@ function main(): void {
       return varName ? (process.env[varName] ?? "") : "";
     },
     store: runStore, overrides, breaker, dataDir: DATA_DIR,
+    tasks, dispatcher,
   });
 
   void reconcileAndConnectBot({ pending, bot, timeoutHours: config.governor.pendingTimeoutHours });
+
+  void tasks.reconcile().then(({ reset }) => {
+    if (reset.length > 0) {
+      console.log(`[tasks] ${reset.length} task(s) reset from "running" to "pending" after restart`);
+    }
+    dispatcher.start();
+    void dispatcher.wake();
+  });
 
   const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
   webhookReceiver.onEvent(makeWebhookHandler({ agents, github, orchestrator }));
