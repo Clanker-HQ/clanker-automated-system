@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { PendingStore } from "../src/control/pending.js";
 import type { Grant } from "../src/grants.js";
 import type { AgentDef } from "../src/registry.js";
@@ -446,5 +447,106 @@ describe("SdkRunner grant enforcement", () => {
 
     expect(decision).toMatchObject({ behavior: "deny", interrupt: true });
     expect(await new PendingStore(dir).list()).toHaveLength(1);
+  });
+});
+
+describe("SdkRunner mergePR tool", () => {
+  function granted(repos: string[] = ["owner/repo"]) {
+    return { ...AGENT, tier: "autonomous", approval: "auto", grantRefs: ["infra-repo"] } as unknown as AgentDef;
+  }
+  const GITHUB_PR_GRANT: Grant = { id: "infra-repo", kind: "github-pr", repos: ["owner/repo"], secret: "X" };
+
+  // createSdkMcpServer (the real, un-mocked implementation — see the module
+  // mock comment at the top of this file) returns { type, name, instance },
+  // not a plain `.tools` array: `instance` is a live McpServer that files
+  // registered tools under its own internal `_registeredTools` map, keyed by
+  // name, each with a callable `.handler`. That is the only way to reach a
+  // registered tool's handler directly in a unit test without driving the
+  // whole MCP request/response protocol.
+  interface GithubPrParams {
+    options: {
+      mcpServers: {
+        githubPr: {
+          instance: { _registeredTools: Record<string, { handler: (input: unknown, extra?: unknown) => Promise<unknown> }> };
+        };
+      };
+    };
+  }
+  function mergeToolHandler(params: GithubPrParams): (input: unknown) => Promise<unknown> {
+    return params.options.mcpServers.githubPr.instance._registeredTools.mergePR!.handler;
+  }
+
+  it("passes the mergePR MCP tool's server when a GithubTransport is provided", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github }).execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as { options: { mcpServers: Record<string, unknown> } };
+    expect(params.options.mcpServers.githubPr).toBeDefined();
+  });
+
+  it("merges when the repo is granted, the SHA matches, and the path isn't excluded", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/index.ts"] });
+
+    expect(github.merged).toEqual([{ repo: "owner/repo", number: 1 }]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("merged") }] });
+  });
+
+  it("refuses to merge a PR touching an excluded path, without ever calling GithubTransport.mergePullRequest", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/governor.ts"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/governor.ts"] });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
+  });
+
+  it("refuses to merge when the current head SHA has moved past what was reviewed", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "newer-sha", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/index.ts"] });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/head|sha/i) }] });
+  });
+
+  it("refuses to merge a repo the agent has no matching grant for", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    github.seedPullRequest({ number: 1, repo: "owner/other-repo", headSha: "sha-1", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/other-repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/index.ts"] });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/grant/i) }] });
   });
 });

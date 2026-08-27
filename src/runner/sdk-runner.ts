@@ -1,5 +1,7 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { touchesExcludedPath } from "../control/excluded-paths.js";
+import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
 import { decide, type Grant } from "../grants.js";
 import type { AgentDef } from "../registry.js";
@@ -199,7 +201,7 @@ export function linkAbort(signal: AbortSignal, controller: AbortController): voi
 
 export class SdkRunner implements Runner {
   constructor(
-    private readonly deps: { grants: Grant[]; pending: PendingStore } = {
+    private readonly deps: { grants: Grant[]; pending: PendingStore; github?: GithubTransport } = {
       grants: [],
       pending: new PendingStore(process.cwd()),
     },
@@ -306,6 +308,67 @@ export class SdkRunner implements Runner {
       ],
     });
 
+    // The mergePR tool, only registered when a GithubTransport dependency was
+    // provided (agents that don't merge PRs never see it). Three gates run in
+    // this order, each unconditionally, and none can be bypassed by an
+    // earlier gate's outcome:
+    //   1. excluded-path check — a PR touching a security-sensitive path can
+    //      never merge through this pipeline, no matter what grant or review
+    //      exists.
+    //   2. grant check — does this agent hold a github-pr grant covering this
+    //      repo, via decide()/detectOutwardEffect/matchGrant.
+    //   3. stale-SHA check — GithubTransport.mergePullRequest itself refuses
+    //      if the PR's head has moved past what was reviewed.
+    const githubPrServer = this.deps.github
+      ? createSdkMcpServer({
+          name: "githubPr",
+          tools: [
+            tool(
+              "mergePR",
+              "Merge a pull request that has passed review. Only succeeds if the repo is granted, the diff doesn't touch a security-sensitive path, and the PR's head hasn't moved since you reviewed it.",
+              {
+                repo: z.string(),
+                number: z.number().int().positive(),
+                expectedHeadSha: z.string().min(1),
+                changedFiles: z.array(z.string()),
+              },
+              async ({ repo, number, expectedHeadSha, changedFiles }) => {
+                // Gate 1 — the excluded-path check. This runs first and
+                // unconditionally: no grant, no review verdict, nothing
+                // later in this handler can override it.
+                if (touchesExcludedPath(changedFiles)) {
+                  return {
+                    content: [
+                      {
+                        type: "text" as const,
+                        text: "Refused: this PR touches a security-sensitive excluded path and can never merge through this pipeline. Changes to that code must be made directly by a human, outside this pipeline.",
+                      },
+                    ],
+                  };
+                }
+
+                // Gate 2 — does this agent hold a github-pr grant covering this repo?
+                const decision = decide(agent, this.deps.grants, "mergePR", { repo });
+                if (decision.kind !== "allow") {
+                  return {
+                    content: [
+                      { type: "text" as const, text: `Refused: no grant authorises merging pull requests in "${repo}".` },
+                    ],
+                  };
+                }
+
+                // Gate 3 — has a newer commit landed since this PR was reviewed?
+                const result = await this.deps.github!.mergePullRequest(repo, number, expectedHeadSha);
+                if (!result.merged) {
+                  return { content: [{ type: "text" as const, text: `Refused: ${result.reason}` }] };
+                }
+                return { content: [{ type: "text" as const, text: `Successfully merged ${repo}#${number}.` }] };
+              },
+            ),
+          ],
+        })
+      : undefined;
+
     const stream = query({
       prompt: ctx.prompt,
       options: {
@@ -335,7 +398,7 @@ export class SdkRunner implements Runner {
         env: childEnv,
         abortController: controller,
         canUseTool,
-        mcpServers: { askHuman: askHumanServer },
+        mcpServers: { askHuman: askHumanServer, ...(githubPrServer ? { githubPr: githubPrServer } : {}) },
         ...(ctx.resume ? { resume: ctx.resume } : {}),
       },
     });

@@ -86,7 +86,7 @@ export function loadGrants(path: string): Grant[] {
  * authority; the pair (kind, target) is.
  */
 export interface OutwardEffect {
-  kind: "http" | "git-push" | "provision";
+  kind: "http" | "git-push" | "provision" | "github-pr";
   description: string;
   target: string;
 }
@@ -163,6 +163,11 @@ export function detectOutwardEffect(toolName: string, input: Record<string, unkn
     return url ? { kind: "http", description: `fetch ${url}`, target: url } : null;
   }
 
+  if (toolName === "mergePR") {
+    const repo = typeof input.repo === "string" ? input.repo : "";
+    return repo ? { kind: "github-pr", description: `merge PR in ${repo}`, target: repo } : null;
+  }
+
   return null;
 }
 
@@ -191,7 +196,16 @@ function globMatch(pattern: string, value: string): boolean {
 export function matchGrant(grants: Grant[], effect: OutwardEffect): Grant | null {
   // The kind check comes first deliberately: a grant only authorises effects of
   // its own family, however well the target strings happen to line up.
-  return grants.find((g) => g.kind === effect.kind && globMatch(grantTargetPattern(g), effect.target)) ?? null;
+  return (
+    grants.find((g) => {
+      if (g.kind !== effect.kind) return false;
+      // github-pr grants authorise by exact repo-list membership, not glob
+      // matching — grantTargetPattern's "github-pr" case deliberately
+      // returns "" and is never reached for this kind.
+      if (g.kind === "github-pr") return g.repos.includes(effect.target);
+      return globMatch(grantTargetPattern(g), effect.target);
+    }) ?? null
+  );
 }
 
 /**
