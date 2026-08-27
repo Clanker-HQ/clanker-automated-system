@@ -14,6 +14,10 @@
       "default": "claude-local",
       "type": "string"
     },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
     "trigger": {
       "oneOf": [
         {
@@ -57,6 +61,19 @@
             "type",
             "repo",
             "event"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dispatched"
+            }
+          },
+          "required": [
+            "type"
           ],
           "additionalProperties": false
         }

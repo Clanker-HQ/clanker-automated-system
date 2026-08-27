@@ -57,12 +57,15 @@ const WebhookTrigger = z
   })
   .strict();
 
+const DispatchedTrigger = z.object({ type: z.literal("dispatched") }).strict();
+
 export const AgentSchema = z
   .object({
     name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "must be lowercase kebab-case"),
     enabled: z.boolean().default(true),
     authoredBy: z.string().default("claude-local"),
-    trigger: z.discriminatedUnion("type", [CronTrigger, WebhookTrigger]),
+    description: z.string().default(""),
+    trigger: z.discriminatedUnion("type", [CronTrigger, WebhookTrigger, DispatchedTrigger]),
     run: z
       .object({
         model: z.enum(MODELS),
@@ -148,8 +151,16 @@ export const AgentSchema = z
         message: `tool(s) ${overlap.join(", ")} appear in both allowedTools and disallowedTools. List each tool in exactly one`,
       });
     }
+    if (agent.trigger.type === "dispatched" && !agent.description.trim()) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["description"],
+        message: `a "dispatched" agent needs a non-empty top-level description — the dispatcher's routing call reads it to decide when this specialist applies`,
+      });
+    }
   });
 
 export type AgentYaml = z.infer<typeof AgentSchema>;
 export type CronTrigger = z.infer<typeof CronTrigger>;
 export type WebhookTrigger = z.infer<typeof WebhookTrigger>;
+export type DispatchedTrigger = z.infer<typeof DispatchedTrigger>;

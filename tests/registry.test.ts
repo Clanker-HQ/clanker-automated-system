@@ -196,6 +196,30 @@ describe("parseAgent", () => {
     if (agent.trigger.type !== "cron") throw new Error("expected cron trigger");
     expect(agent.trigger.timezone).toBe(tz);
   });
+
+  it("accepts a dispatched trigger when a non-empty description is present", () => {
+    const yaml = AGENT.replace(
+      /trigger: \{ type: cron, schedule: "[^"]*", timezone: [^ ]* \}/,
+      "trigger: { type: dispatched }",
+    ).replace("name: smoke", "name: smoke\ndescription: Handles routine smoke checks.");
+    expect(() => parseAgent("agent.yaml", yaml)).not.toThrow();
+    const agent = parseAgent("agent.yaml", yaml);
+    expect(agent.trigger).toEqual({ type: "dispatched" });
+    expect(agent.description).toBe("Handles routine smoke checks.");
+  });
+
+  it("rejects a dispatched trigger with no description", () => {
+    const yaml = AGENT.replace(
+      /trigger: \{ type: cron, schedule: "[^"]*", timezone: [^ ]* \}/,
+      "trigger: { type: dispatched }",
+    );
+    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/description/);
+  });
+
+  it("defaults description to an empty string for a cron agent, which needs none", () => {
+    const agent = parseAgent("agent.yaml", AGENT);
+    expect(agent.description).toBe("");
+  });
 });
 
 describe("loadRegistry", () => {
