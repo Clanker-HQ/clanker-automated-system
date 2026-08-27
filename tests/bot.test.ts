@@ -8,6 +8,7 @@ import { PendingStore } from "../src/control/pending.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
 import { BreakerStore } from "../src/state/breaker.js";
+import { TaskStore } from "../src/control/task-store.js";
 
 const AGENTS = [{ name: "smoke", workspace: "/ws/smoke" } as AgentDef];
 
@@ -22,12 +23,15 @@ function setup() {
   const store = new RunStore(dataDir);
   const overrides = new ConfigOverridesStore(dataDir);
   const breaker = new BreakerStore(dataDir);
+  const tasks = new TaskStore(dataDir);
+  const dispatcher = { wake: vi.fn().mockResolvedValue(undefined) };
   const bot = new DiscordBot({
     transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
     channelFor: () => "smoke-channel",
     store, overrides, breaker, dataDir, ownerId: OWNER,
+    tasks, dispatcher,
   });
-  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker };
+  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher };
 }
 
 describe("DiscordBot", () => {
@@ -276,5 +280,51 @@ describe("DiscordBot", () => {
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!runs" });
     expect(transport.sent.some((m) => m.text.includes("smoke-run-1"))).toBe(true);
+  });
+});
+
+describe("DiscordBot task commands", () => {
+  it("!task queues a task, replies with its id, and wakes the dispatcher", async () => {
+    const { transport, bot, tasks, dispatcher } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task find a profitable SaaS idea" });
+    const all = await tasks.list();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.text).toBe("find a profitable SaaS idea");
+    expect(all[0]?.createdBy).toBe(`discord:${OWNER}`);
+    expect(transport.sent[0]?.text).toContain(all[0]!.id);
+    expect(dispatcher.wake).toHaveBeenCalled();
+  });
+
+  it("!task with no text replies with usage and creates nothing", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task" });
+    expect(await tasks.list()).toEqual([]);
+    expect(transport.sent[0]?.text).toContain("Usage");
+  });
+
+  it("!tasks lists pending and running tasks, not done ones", async () => {
+    const { transport, bot, tasks } = setup();
+    await tasks.create({ text: "a pending one", createdBy: "discord:owner" });
+    const running = await tasks.create({ text: "a running one", createdBy: "discord:owner" });
+    await tasks.update(running.id, { status: "running" });
+    const done = await tasks.create({ text: "a finished one", createdBy: "discord:owner" });
+    await tasks.update(done.id, { status: "done" });
+
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!tasks" });
+    const reply = transport.sent[0]!.text;
+    expect(reply).toContain("a pending one");
+    expect(reply).toContain("a running one");
+    expect(reply).not.toContain("a finished one");
+  });
+
+  it("ignores !task from a non-owner author", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "not-the-owner", content: "!task do something" });
+    expect(await tasks.list()).toEqual([]);
+    expect(transport.sent).toEqual([]);
   });
 });

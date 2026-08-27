@@ -7,6 +7,7 @@ import type { ConfigOverridesStore } from "../config-overrides.js";
 import { formatZodError } from "../errors.js";
 import type { RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
+import type { TaskStore } from "./task-store.js";
 
 export interface IncomingMessage {
   channelId: string;
@@ -52,6 +53,10 @@ interface ResumeCapableOrchestrator {
   resumeRun(entry: PendingEntry, decision: { approved: boolean } | { answer: string }, agent: AgentDef): Promise<unknown>;
 }
 
+interface WakeableDispatcher {
+  wake(): Promise<void>;
+}
+
 const RESUME_REFUSED =
   "the pending entry is still open, so you can try again later.";
 
@@ -66,6 +71,8 @@ export class DiscordBot {
   private readonly breaker: BreakerStore;
   private readonly dataDir: string;
   private readonly ownerId: string;
+  private readonly tasks: TaskStore;
+  private readonly dispatcher: WakeableDispatcher;
   /** Pending ids currently mid-resume, so a repeated `approve <id>` cannot start a second resume of the same entry while the first is still running. */
   private readonly resuming = new Set<string>();
 
@@ -75,6 +82,7 @@ export class DiscordBot {
     store: RunStore; overrides: ConfigOverridesStore; breaker: BreakerStore; dataDir: string;
     /** The one Discord user id allowed to approve/deny/answer or run any `!` admin command. */
     ownerId: string;
+    tasks: TaskStore; dispatcher: WakeableDispatcher;
   }) {
     this.transport = opts.transport;
     this.pending = opts.pending;
@@ -86,6 +94,8 @@ export class DiscordBot {
     this.breaker = opts.breaker;
     this.dataDir = opts.dataDir;
     this.ownerId = opts.ownerId;
+    this.tasks = opts.tasks;
+    this.dispatcher = opts.dispatcher;
   }
 
   async postApproval(entry: PendingEntry): Promise<void> {
@@ -251,6 +261,25 @@ export class DiscordBot {
         const recent = await this.store.listRecent(20);
         const lines = recent.map((r) => `${r.runId} — ${r.status} — $${r.costUsd.toFixed(4)}`);
         return void reply(lines.length > 0 ? lines.join("\n") : "No runs yet.");
+      }
+      case "!task": {
+        if (!arg.trim()) return void reply("Usage: `!task <free-form request>`");
+        const task = await this.tasks.create({ text: arg, createdBy: `discord:${msg.authorId}` });
+        void this.dispatcher.wake().catch((err: unknown) => {
+          console.error(`[bot] dispatcher wake failed after !task ${task.id}:`, err);
+        });
+        return void reply(`📋 Task \`${task.id}\` queued.`);
+      }
+      case "!tasks": {
+        const all = await this.tasks.list();
+        const active = all
+          .filter((t) => t.status === "pending" || t.status === "running")
+          .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
+        const lines = active.map((t) => {
+          const text = t.text.length > 60 ? `${t.text.slice(0, 57)}...` : t.text;
+          return `${t.id.slice(0, 8)} — ${t.status} — ${text}`;
+        });
+        return void reply(lines.length > 0 ? lines.join("\n") : "No pending or running tasks.");
       }
       default:
         return void reply(`Unknown command: ${command}`);
