@@ -19,6 +19,7 @@ import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { DiscordBot } from "../src/control/bot.js";
 import { DiscordJsTransport } from "../src/control/discord-transport.js";
 import { PendingStore } from "../src/control/pending.js";
+import { TaskStore } from "../src/control/task-store.js";
 import { ValidationError } from "../src/errors.js";
 import { Governor } from "../src/governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "../src/grants.js";
@@ -102,6 +103,8 @@ async function main(): Promise<void> {
         return varName ? (process.env[varName] ?? "") : "";
       },
       store: runStore, overrides, breaker, dataDir: DATA_DIR,
+      tasks: new TaskStore(DATA_DIR),
+      dispatcher: { wake: async () => {} },
     });
 
     await bot.start();

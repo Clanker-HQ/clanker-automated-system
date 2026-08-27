@@ -6,6 +6,7 @@ import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { DiscordBot, FakeBotTransport } from "../src/control/bot.js";
 import { reconcileAndConnectBot } from "../src/control/boot-wiring.js";
 import { PendingStore } from "../src/control/pending.js";
+import { TaskStore } from "../src/control/task-store.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
 import { BreakerStore } from "../src/state/breaker.js";
@@ -17,11 +18,14 @@ function setup() {
   const pending = new PendingStore(dataDir);
   const transport = new FakeBotTransport();
   const orchestrator = { resumeRun: vi.fn().mockResolvedValue({ status: "success" }) };
+  const tasks = new TaskStore(dataDir);
+  const dispatcher = { wake: vi.fn().mockResolvedValue(undefined) };
   const bot = new DiscordBot({
     transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
     channelFor: () => "smoke-channel",
     store: new RunStore(dataDir), overrides: new ConfigOverridesStore(dataDir),
     breaker: new BreakerStore(dataDir), dataDir, ownerId: "owner",
+    tasks, dispatcher,
   });
   return { dataDir, pending, transport, bot };
 }
