@@ -75,7 +75,7 @@ export class TaskStore {
   async nextPending(): Promise<Task | null> {
     const pending = (await this.list()).filter((t) => t.status === "pending");
     if (pending.length === 0) return null;
-    pending.sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    pending.sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
     return pending[0]!;
   }
 
