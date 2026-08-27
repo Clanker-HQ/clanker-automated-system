@@ -4,3 +4,15 @@ grants:
     method: POST
     urlPattern: "https://httpbin.org/post"
     secret: TEST_ECHO_TOKEN
+
+  # Backs agents/pr-reviewer's grantRefs. "owner/repo" is the same
+  # placeholder used in that agent's trigger.repo — mergePR will correctly
+  # refuse any real repo until Milestone B replaces both with the actual
+  # name. Without this grant, boot's validateGrantRefs check fails outright
+  # (it cross-checks every agent's grantRefs against the ids defined here),
+  # so this entry exists to keep boot passing, not because a real credential
+  # is live yet.
+  - id: infra-repo
+    kind: github-pr
+    repos: ["owner/repo"]
+    secret: GITHUB_PR_TOKEN
