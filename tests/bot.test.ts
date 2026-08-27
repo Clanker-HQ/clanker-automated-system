@@ -11,6 +11,9 @@ import { BreakerStore } from "../src/state/breaker.js";
 
 const AGENTS = [{ name: "smoke", workspace: "/ws/smoke" } as AgentDef];
 
+/** Every `simulateMessage` below sends as this author; anything else must be ignored. */
+const OWNER = "owner";
+
 function setup() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-bot-"));
   const pending = new PendingStore(dataDir);
@@ -22,7 +25,7 @@ function setup() {
   const bot = new DiscordBot({
     transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
     channelFor: () => "smoke-channel",
-    store, overrides, breaker, dataDir,
+    store, overrides, breaker, dataDir, ownerId: OWNER,
   });
   return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker };
 }
@@ -171,6 +174,99 @@ describe("DiscordBot", () => {
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!enable" });
     expect(transport.sent.some((m) => m.text.includes("Usage"))).toBe(true);
     expect((await overrides.read()).disabledAgents).toEqual(["smoke"]);
+  });
+
+  // Critical: approve/deny/answer IS the human decision the whole tier/grant
+  // system exists to require. Anyone who can see the channel must not be able
+  // to supply it, or to run an admin command.
+  it("ignores every message from an author other than the configured owner, silently", async () => {
+    const { pending, transport, orchestrator, bot, overrides, dataDir } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    await bot.start();
+
+    const intruder = { channelId: "smoke-channel", authorId: "someone-else" };
+    await transport.simulateMessage({ ...intruder, content: `approve ${entry.id}` });
+    await transport.simulateMessage({ ...intruder, content: "!stop" });
+    await transport.simulateMessage({ ...intruder, content: "!budget 999" });
+    await transport.simulateMessage({ ...intruder, content: "!disable smoke" });
+
+    expect(orchestrator.resumeRun).not.toHaveBeenCalled();
+    expect(await pending.get(entry.id)).not.toBeNull();
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(dataDir, "STOP"))).toBe(false);
+    const state = await overrides.read();
+    expect(state.dailyBudgetUsd).toBeUndefined();
+    expect(state.disabledAgents).toBeUndefined();
+    // Silent on purpose: a reply would confirm the bot is listening and let an
+    // attacker probe for the owner id.
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it("still serves the owner after ignoring an intruder", async () => {
+    const { pending, transport, orchestrator, bot } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "not-owner", content: `approve ${entry.id}` });
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `approve ${entry.id}` });
+    expect(orchestrator.resumeRun).toHaveBeenCalledTimes(1);
+  });
+
+  // Resolving before resuming destroyed the entry — sessionId and all — on any
+  // refusal, with no feedback at all.
+  it("keeps the pending entry and explains itself when resumeRun refuses", async () => {
+    const { pending, transport, orchestrator, bot } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    orchestrator.resumeRun.mockResolvedValueOnce(undefined);
+    await bot.start();
+
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `approve ${entry.id}` });
+
+    expect(await pending.get(entry.id)).not.toBeNull();
+    const replies = transport.sent.map((m) => m.text).join("\n");
+    expect(replies).toContain(entry.id);
+    expect(replies).toMatch(/refused/i);
+    expect(replies).toMatch(/still open/i);
+  });
+
+  it("resolves the entry only after a resume that actually ran", async () => {
+    const { pending, transport, orchestrator, bot } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    orchestrator.resumeRun.mockImplementationOnce(async () => {
+      // Still present while the resumed run is in flight.
+      expect(await pending.get(entry.id)).not.toBeNull();
+      return { status: "success" };
+    });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `approve ${entry.id}` });
+    expect(await pending.get(entry.id)).toBeNull();
+  });
+
+  // An unvalidated timezone written into the overrides makes Governor.admit's
+  // Intl.DateTimeFormat throw for EVERY agent on EVERY admission check.
+  it("!quiet rejects an invalid timezone and leaves the override untouched", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!quiet 10:00-22:00 Not/AZone" });
+
+    expect((await overrides.read()).quietHours).toBeUndefined();
+    const reply = transport.sent.map((m) => m.text).join("\n");
+    expect(reply).toContain("timezone");
+    expect(reply).toContain("Not/AZone");
+  });
+
+  it("!quiet rejects an out-of-range time and leaves the override untouched", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!quiet 99:99-22:00 Europe/Berlin" });
+    expect((await overrides.read()).quietHours).toBeUndefined();
+    expect(transport.sent.map((m) => m.text).join("\n")).toContain("from");
+  });
+
+  it("!quiet accepts a valid window and stores it", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!quiet 22:00-07:00 Europe/Berlin" });
+    expect((await overrides.read()).quietHours).toEqual({ from: "22:00", to: "07:00", timezone: "Europe/Berlin" });
   });
 
   it("!runs reports the most recent runs", async () => {
