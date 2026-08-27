@@ -82,6 +82,7 @@ function harness(
     async (_url: string | URL | Request, _init?: RequestInit) =>
       new Response(null, { status: 204 }),
   );
+  const approvedGrants = new ApprovedGrantsStore(dataDir);
   const orchestrator = new Orchestrator({
     runner,
     store: new RunStore(dataDir),
@@ -95,9 +96,9 @@ function harness(
     dataDir,
     governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
     breaker: new BreakerStore(dataDir),
-    approvedGrants: new ApprovedGrantsStore(dataDir),
+    approvedGrants,
   });
-  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants: new ApprovedGrantsStore(dataDir) };
+  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants };
 }
 
 /** The URL and parsed JSON body of one recorded webhook POST. */

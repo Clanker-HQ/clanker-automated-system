@@ -253,6 +253,15 @@ export class SdkRunner implements Runner {
       // `decide()`, which stays a static, per-call decision function with no
       // knowledge of approval history.
       if (ctx.approvedGrantRefs?.includes(decision.grantRef)) {
+        // The only trace of this decision: no pending entry is written (there
+        // is nothing to park for) and no RunEvent carries it either, so this
+        // log line is what lets someone reading operational logs alongside
+        // data/runs/<runId>/transcript.jsonl tell "auto-allowed under a prior
+        // approval" apart from "no outward effect was ever detected" for the
+        // matching tool_use entry.
+        console.log(
+          `[grants] ${toolName} auto-allowed under previously-approved grant "${decision.grantRef}" (run ${ctx.runId})`,
+        );
         return { behavior: "allow" };
       }
 

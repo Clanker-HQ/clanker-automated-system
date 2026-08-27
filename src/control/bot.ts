@@ -91,7 +91,9 @@ export class DiscordBot {
   async postApproval(entry: PendingEntry): Promise<void> {
     await this.transport.send(
       this.channelFor(entry.agentName),
-      `🔔 **${entry.agentName}** wants to: ${entry.effect}\nGrant: \`${entry.grantRef}\`\n\nReply \`approve ${entry.id}\` or \`deny ${entry.id}\`.`,
+      `🔔 **${entry.agentName}** wants to: ${entry.effect}\nGrant: \`${entry.grantRef}\`\n\n` +
+        `Approving allows the \`${entry.grantRef}\` grant for the rest of this run — not just this one call.\n\n` +
+        `Reply \`approve ${entry.id}\` or \`deny ${entry.id}\`.`,
     );
   }
 

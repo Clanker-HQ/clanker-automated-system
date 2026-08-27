@@ -75,7 +75,7 @@ posts the request and an id. Reply in that channel:
 
 | | |
 |---|---|
-| `approve <id>` | Let the effect proceed; the run continues from where it stopped |
+| `approve <id>` | Allow the matched grant for the rest of this run (not just this one call) and let the run continue from where it stopped |
 | `deny <id>` | Refuse it; the agent is told to continue with anything else, or stop |
 | `answer <id> <text>` | Free-text reply to a question (`answer 3f2a-… use the main branch`) |
 

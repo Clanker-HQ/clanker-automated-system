@@ -11,7 +11,13 @@ export class ApprovedGrantsStore {
   /** Grant ids approved so far for this run. Empty (not throwing) when none exist yet. */
   async read(runId: string): Promise<string[]> {
     try {
-      return JSON.parse(await readFile(this.path(runId), "utf8")) as string[];
+      const parsed: unknown = JSON.parse(await readFile(this.path(runId), "utf8"));
+      // A shape guard, not just a cast: a corrupted or hand-edited file that
+      // isn't an array of strings (e.g. a bare JSON string) must not flow
+      // into `.includes()` as if it were the list — a JSON *string* is
+      // itself array-like enough that `.includes()` would silently become a
+      // substring match, the same bug class `matchGrant` was fixed for.
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
     } catch {
       return [];
     }

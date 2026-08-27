@@ -356,23 +356,64 @@ describe("SdkRunner grant enforcement", () => {
   // canUseTool parks AGAIN from scratch — looping approve -> resume -> retry
   // -> park forever. ctx.approvedGrantRefs carries what was already approved
   // earlier in this same run; canUseTool must consult it before parking.
-  it("allows a matching-grant effect straight through, without parking, when the grant is already in ctx.approvedGrantRefs", async () => {
+  it("allows a matching-grant effect straight through when called after the stream has drained, and writes no pending entry", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
     const resumeCtx = { ...CTX, approvedGrantRefs: ["test-echo"] };
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
 
-    const events = await collect(
-      sdkRunnerWith([TEST_ECHO], dir).execute(granted, resumeCtx, new AbortController().signal),
-    );
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, resumeCtx, new AbortController().signal));
 
     const params = queryMock.mock.calls[0]![0] as { options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> } };
     const decision = await params.options.canUseTool("WebFetch", { url: "https://httpbin.org/post" }, { signal: new AbortController().signal, toolUseID: "t1" });
 
     expect(decision).toEqual({ behavior: "allow" });
     expect(await new PendingStore(dir).list()).toEqual([]);
+  });
+
+  // The test above calls canUseTool only AFTER execute() has fully drained,
+  // which can't prove anything about mid-stream behavior — a stale terminal
+  // "parked" event could never appear in `events` regardless of whether the
+  // bypass works, since nothing was yielded to trigger it. This test calls
+  // canUseTool from INSIDE the mocked stream (mirroring the mid-stream abort
+  // test above) so it actually proves: no abort happens, the stream is never
+  // interrupted, and the run reaches its normal terminal usage event instead
+  // of the parked/aborted fallback path.
+  it("does not abort or park mid-stream when canUseTool sees an already-approved grant — the run completes normally", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const granted = { ...AGENT, tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    const resumeCtx = { ...CTX, approvedGrantRefs: ["test-echo"] };
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    queryMock.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "assistant", session_id: "sess-bypass", message: { content: "starting" } };
+        const params = queryMock.mock.calls[0]![0] as {
+          options: { canUseTool: (name: string, input: Record<string, unknown>, opts: unknown) => Promise<unknown> };
+        };
+        const decision = await params.options.canUseTool(
+          "WebFetch",
+          { url: "https://httpbin.org/post" },
+          { signal: new AbortController().signal, toolUseID: "t1" },
+        );
+        expect(decision).toEqual({ behavior: "allow" });
+        yield RESULT_MESSAGE;
+      },
+    });
+
+    const events = await collect(sdkRunnerWith([TEST_ECHO], dir).execute(granted, resumeCtx, new AbortController().signal));
+
     expect(events.some((e) => e.type === "parked")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "usage" });
+    expect(await new PendingStore(dir).list()).toEqual([]);
+    // The auto-allow bypass writes no pending entry and no RunEvent, so a log
+    // line is the only trace of the decision — assert it's actually there.
+    expect(logSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(
+      'auto-allowed under previously-approved grant "test-echo"',
+    );
+    logSpy.mockRestore();
   });
 
   // Confirms the original park behaviour is untouched when approvedGrantRefs
