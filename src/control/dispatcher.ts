@@ -25,6 +25,34 @@ export interface DispatcherDeps {
   now?: () => Date;
 }
 
+/**
+ * Posting to Discord must never change what a task RECORDS about itself.
+ *
+ * `notify` is not a rare-failure path: DiscordOutbox.webhookFor throws on every
+ * single call when the channel key is unknown to config.yaml or its env var is
+ * unset. Left unguarded inside runDispatchTick's outer catch, that exception
+ * overwrote the task's already-correct status/failureReason with the Discord
+ * error — replacing a real diagnosis ("boom", "no specialist matched this
+ * task") with "DISCORD_WEBHOOK_SMOKE is unset", i.e. destroying the only record
+ * of what actually went wrong, precisely when the operator needs it. The task
+ * file is the durable record; the Discord post is a courtesy on top of it.
+ *
+ * Every notify in this module goes through here for that reason — call
+ * `deps.notify` directly and the bug comes back.
+ */
+async function notifyBestEffort(deps: DispatcherDeps, text: string): Promise<void> {
+  // try/catch rather than `.catch()` on the returned promise: webhookFor's
+  // throw happens while *building* the request, so a notify implementation that
+  // isn't itself `async` would throw synchronously and sail straight past a
+  // `.catch()` handler. This form catches both, and tolerates a notify that
+  // returns something other than a promise.
+  try {
+    await deps.notify(text);
+  } catch (error) {
+    console.error("[dispatcher] notify failed", error);
+  }
+}
+
 function specialistsOf(agents: AgentDef[]): Specialist[] {
   return agents
     .filter((a) => a.enabled && a.trigger.type === "dispatched")
@@ -61,7 +89,7 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
         finishedAt: now().toISOString(),
         failureReason: "no dispatched specialist agents are registered",
       });
-      await deps.notify(`⚠️ Task \`${task.id}\` failed: no dispatched specialist agents are registered.`);
+      await notifyBestEffort(deps, `⚠️ Task \`${task.id}\` failed: no dispatched specialist agents are registered.`);
       return { ran: true, taskId: task.id };
     }
 
@@ -83,7 +111,7 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
           ? `router chose "${chosenName}", which is not a registered dispatched specialist`
           : "no specialist matched this task";
         await deps.tasks.update(task.id, { status: "failed", finishedAt: now().toISOString(), failureReason: reason });
-        await deps.notify(`⚠️ Task \`${task.id}\` failed: ${reason}. Text: ${task.text}`);
+        await notifyBestEffort(deps, `⚠️ Task \`${task.id}\` failed: ${reason}. Text: ${task.text}`);
         return { ran: true, taskId: task.id };
       }
 
@@ -113,7 +141,7 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
         finishedAt: now().toISOString(),
         result: { summary: result.summary, path: join(deps.dataDir, "runs", result.runId) },
       });
-      await deps.notify(`✅ Task \`${task.id}\` done: ${result.summary}`);
+      await notifyBestEffort(deps, `✅ Task \`${task.id}\` done: ${result.summary}`);
     } else if (result.status === "parked" || result.status === "question") {
       // NOT a failure: the run is alive and paused mid-execution awaiting a
       // human approve/deny/answer, which Orchestrator.resumeRun will continue
@@ -133,15 +161,19 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
         finishedAt: now().toISOString(),
         failureReason: reason,
       });
-      await deps.notify(`❌ Task \`${task.id}\` failed: ${reason}`);
+      await notifyBestEffort(deps, `❌ Task \`${task.id}\` failed: ${reason}`);
     }
     return { ran: true, taskId: task.id };
   } catch (error) {
-    // Anything thrown mid-attempt (a prompt file that won't read, a notify()
-    // rejection, an update() racing a deleted task file) would otherwise leave
+    // Anything thrown mid-attempt (a prompt file that won't read, an update()
+    // racing a deleted task file, a router that blows up) would otherwise leave
     // the task stuck "running" — invisible to nextPending() forever — and abort
     // the whole drain. Fail the task loudly instead, and let the drain go on:
     // a thrown error is not a "wait for the governor" situation.
+    //
+    // A notify() rejection deliberately never reaches here — see
+    // notifyBestEffort. Overwriting a task's real status/failureReason with a
+    // Discord error would destroy the diagnosis this branch exists to record.
     console.error(`[dispatcher] task ${task.id} threw mid-attempt`, error);
     try {
       await deps.tasks.update(task.id, {

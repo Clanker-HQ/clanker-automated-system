@@ -199,16 +199,89 @@ describe("runDispatchTick", () => {
     expect(updated?.failureReason).toBe("prompt.md is missing");
   });
 
-  it("fails the task when notify itself throws, instead of propagating out of the tick", async () => {
-    const { tasks, dataDir } = taskStore();
-    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
-    const notify = vi.fn().mockRejectedValue(new Error("discord is down"));
-    const outcome = await runDispatchTick({
-      tasks, router: new FakeRouter("research"), agents: [specialist()],
-      orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) }, notify, dataDir,
+  // A notify() rejection is not an exotic case: DiscordOutbox.webhookFor throws
+  // on EVERY call when a channel key is missing from config.yaml or its env var
+  // is unset. The task file is the durable record of what happened; a failure to
+  // announce it in Discord must never rewrite it.
+  describe("a notify() rejection never overwrites the task's real outcome", () => {
+    it("keeps a successful task done, with its result, when the success notify rejects", async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const notify = vi.fn().mockRejectedValue(new Error("DISCORD_WEBHOOK_SMOKE is unset"));
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const outcome = await runDispatchTick({
+          tasks, router: new FakeRouter("research"), agents: [specialist()],
+          orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) }, notify, dataDir,
+        });
+        expect(outcome).toEqual({ ran: true, taskId: task.id });
+        const updated = await tasks.get(task.id);
+        expect(updated?.status).toBe("done");
+        expect(updated?.failureReason).toBeUndefined();
+        expect(updated?.result).toEqual({ summary: "Found three ideas.", path: join(dataDir, "runs", "research-1") });
+        // Swallowed for the task's sake, but never silently: it is logged.
+        expect(errors).toHaveBeenCalled();
+      } finally {
+        errors.mockRestore();
+      }
     });
-    expect(outcome).toEqual({ ran: true, taskId: task.id });
-    expect((await tasks.get(task.id))?.failureReason).toBe("discord is down");
+
+    it("keeps the run's own failureReason when the failure notify rejects", async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const notify = vi.fn().mockRejectedValue(new Error("DISCORD_WEBHOOK_SMOKE is unset"));
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await runDispatchTick({
+          tasks, router: new FakeRouter("research"), agents: [specialist()],
+          orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" })) },
+          notify, dataDir,
+        });
+        const updated = await tasks.get(task.id);
+        expect(updated?.status).toBe("failed");
+        // The whole point: "boom" is the only record of what actually went
+        // wrong. A Discord misconfiguration must not replace it.
+        expect(updated?.failureReason).toBe("boom");
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    it("keeps the routing-failure reason when that notify rejects", async () => {
+      const { tasks, dataDir } = taskStore();
+      await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const notify = vi.fn().mockRejectedValue(new Error("DISCORD_WEBHOOK_SMOKE is unset"));
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await runDispatchTick({
+          tasks, router: new FakeRouter(null), agents: [specialist()],
+          orchestrator: { executeRun: vi.fn() }, notify, dataDir,
+        });
+        const [updated] = await tasks.list();
+        expect(updated?.status).toBe("failed");
+        expect(updated?.failureReason).toContain("no specialist matched");
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    it("keeps the no-specialists-registered reason when that notify rejects", async () => {
+      const { tasks, dataDir } = taskStore();
+      await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const notify = vi.fn().mockRejectedValue(new Error("DISCORD_WEBHOOK_SMOKE is unset"));
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await runDispatchTick({
+          tasks, router: new FakeRouter("research"), agents: [],
+          orchestrator: { executeRun: vi.fn() }, notify, dataDir,
+        });
+        const [updated] = await tasks.list();
+        expect(updated?.status).toBe("failed");
+        expect(updated?.failureReason).toContain("no dispatched specialist");
+      } finally {
+        errors.mockRestore();
+      }
+    });
   });
 
   it("fails the task and notifies, without ever calling executeRun, when no specialist matches", async () => {
