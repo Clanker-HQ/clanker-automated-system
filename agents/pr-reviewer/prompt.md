@@ -20,6 +20,16 @@ safe. Use Task to spawn sub-reviews from different angles in parallel
 diff actually does what the PR claims) rather than trying to hold every
 angle in your own head at once.
 
+When actually running the PR's code (installing dependencies, running its
+test suite, executing anything from the PR itself) — as opposed to reading
+files or running `git`/`gh` commands you trust — prefix the command with
+`unshare --net --` if it's available (`which unshare`). This blocks network
+access for exactly that command, since the PR's own code hasn't been vetted
+yet and shouldn't be able to make outbound calls while it runs. If `unshare`
+isn't available on this machine, proceed without it, but never use any
+network access gained during that step for anything beyond reporting what
+happened.
+
 ## How to decide
 
 For every finding any sub-review surfaces, adversarially re-check it
