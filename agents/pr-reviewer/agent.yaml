@@ -4,7 +4,10 @@ authoredBy: claude-local
 
 trigger:
   type: webhook
-  repo: "owner/repo"   # replace with the real repo once it exists
+  repo: "*"   # any repo the GITHUB_PR_TOKEN can reach (a dedicated, single-purpose
+              # bot account) — a webhook still has to be added on each repo in
+              # GitHub's own settings; this just removes the need to edit this
+              # file every time a new repo comes under management
   event: pull_request
 
 run:

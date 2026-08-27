@@ -61,6 +61,16 @@ describe("parseAgent", () => {
     expect(() => parseAgent("agent.yaml", yaml)).toThrow(/repo/);
   });
 
+  it("accepts a webhook trigger with a wildcard repo, matching any repo the bot's token can reach", () => {
+    const yaml = AGENT.replace(
+      /trigger: \{ type: cron, schedule: "[^"]*", timezone: [^ ]* \}/,
+      'trigger: { type: webhook, repo: "*", event: pull_request }',
+    );
+    expect(() => parseAgent("agent.yaml", yaml)).not.toThrow();
+    const agent = parseAgent("agent.yaml", yaml);
+    expect(agent.trigger).toEqual({ type: "webhook", repo: "*", event: "pull_request" });
+  });
+
   it("applies defaults", () => {
     const agent = parseAgent("agent.yaml", AGENT);
     expect(agent.enabled).toBe(true);

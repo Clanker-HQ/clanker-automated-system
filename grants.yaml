@@ -5,14 +5,17 @@ grants:
     urlPattern: "https://httpbin.org/post"
     secret: TEST_ECHO_TOKEN
 
-  # Backs agents/pr-reviewer's grantRefs. "owner/repo" is the same
-  # placeholder used in that agent's trigger.repo — mergePR will correctly
-  # refuse any real repo until Milestone B replaces both with the actual
-  # name. Without this grant, boot's validateGrantRefs check fails outright
-  # (it cross-checks every agent's grantRefs against the ids defined here),
-  # so this entry exists to keep boot passing, not because a real credential
-  # is live yet.
+  # Backs agents/pr-reviewer's grantRefs. GITHUB_PR_TOKEN is a fine-grained
+  # PAT on a dedicated, single-purpose bot account, scoped to "all
+  # repositories" on that account with ONLY Contents:Read and Pull
+  # requests:Read&write — no Administration, no billing, no other-account
+  # access. `repos: "*"` here matches that token's own scope: authority is
+  # bounded by what the token can reach, not by an allowlist duplicated in
+  # this file. A repo not yet under this account cannot be merged into
+  # regardless of this setting; a repo added to the account still needs its
+  # own webhook configured on GitHub's side (see Task 13 in the plan) before
+  # this pipeline ever sees an event from it.
   - id: infra-repo
     kind: github-pr
-    repos: ["owner/repo"]
+    repos: "*"
     secret: GITHUB_PR_TOKEN

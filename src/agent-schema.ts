@@ -43,7 +43,16 @@ const CronTrigger = z
 const WebhookTrigger = z
   .object({
     type: z.literal("webhook"),
-    repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
+    // "*" matches events from any repo the configured GithubTransport's
+    // token can reach — the intended shape for a dedicated bot account whose
+    // token is itself scoped to "all repos on this account, PR actions
+    // only" rather than per-repo. A GitHub webhook still has to be added on
+    // each repo individually (GitHub has no account-wide webhook without a
+    // GitHub App), so "*" removes per-repo *config* edits, not the per-repo
+    // *webhook* setup.
+    repo: z.string().refine((v) => v === "*" || /^[\w.-]+\/[\w.-]+$/.test(v), {
+      message: 'must be "owner/repo", or "*" to match any repo the bot account can reach',
+    }),
     event: z.literal("pull_request"),
   })
   .strict();

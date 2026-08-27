@@ -38,8 +38,18 @@ export function makeWebhookHandler(deps: {
     // nothing for webhook-triggered agents, since nothing else in this path
     // checks it (the runtime `!disable` override and the breaker are both
     // orthogonal to this).
+    //
+    // `trigger.repo === "*"` matches any repo — the intended shape when the
+    // agent's underlying GithubTransport token is itself scoped to "all
+    // repos on this dedicated bot account" rather than one repo at a time,
+    // so a newly created repo needs a webhook added on GitHub's side but no
+    // config edit here.
     const agent = deps.agents.find(
-      (a) => a.enabled && a.trigger.type === "webhook" && a.trigger.repo === event.repo && a.trigger.event === event.event,
+      (a) =>
+        a.enabled &&
+        a.trigger.type === "webhook" &&
+        (a.trigger.repo === "*" || a.trigger.repo === event.repo) &&
+        a.trigger.event === event.event,
     );
     if (!agent) return;
 

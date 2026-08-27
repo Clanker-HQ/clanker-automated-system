@@ -243,12 +243,31 @@ PRs instead of silently misbehaving forever.
 Parallel to the existing `HttpGrant`/`GitPushGrant`/`ProvisionGrant` shapes in
 `src/grants.ts`. Covers the whole cohesive "handle this PR" workflow — reading
 the diff, posting review comments, merging — as one grant, since none of
-those individual actions should ever need approval per §3's decision. Scoped
-to the **set** of repos this bot identity manages (not hardcoded to one repo):
-the owner expects this GitHub identity to eventually cover multiple projects,
-so the grant (and the underlying fine-grained PAT) names a list of repos,
-extended as new projects come under management — never "all repos,"
-never unbounded.
+those individual actions should ever need approval per §3's decision.
+
+**Revised from the original design** (which called for an explicit,
+hand-maintained repo list, "never 'all repos,' never unbounded"): the bot
+GitHub identity is a dedicated, single-purpose account created only for this
+system and whatever repos it comes to manage — it holds nothing else. Given
+that, the owner chose automatic scope over a hand-maintained allowlist: the
+grant's `repos` field accepts either an explicit array (kept for a shared or
+multi-purpose account, where a narrower allowlist than the token's own reach
+is still worth keeping) or the literal `"*"`, meaning "any repo the
+underlying token can reach." The boundary that actually matters is not the
+repo count but the **permission type** on the fine-grained PAT: it is scoped
+to "all repositories" on the dedicated account, with only `Contents: Read`
+and `Pull requests: Read and write` — explicitly *not* `Administration`
+(which governs branch-protection rules and CODEOWNERS enforcement), and
+nothing account-level (billing, collaborators, other accounts). Withholding
+`Administration` is what keeps Wall 2 (§3) intact regardless of how many
+repos the token's PR permissions cover: the bot can merge PRs, and nothing
+else, on any repo it can see.
+
+A GitHub webhook is still inherently per-repo — a new repo needs one added
+in its own Settings → Webhooks regardless of grant scope, since no
+account-wide webhook exists without a GitHub App (§10). The wildcard removes
+the need to hand-edit `grants.yaml`/`agent.yaml` for every new repo; it does
+not remove that one GitHub-side setup step.
 
 ---
 

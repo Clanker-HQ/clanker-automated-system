@@ -46,8 +46,7 @@
               "const": "webhook"
             },
             "repo": {
-              "type": "string",
-              "pattern": "^[\\w.-]+\\/[\\w.-]+$"
+              "type": "string"
             },
             "event": {
               "type": "string",

@@ -85,6 +85,19 @@ grants:
     const yaml = "grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: []\n    secret: GITHUB_PR_TOKEN\n";
     expect(() => parseGrants("grants.yaml", yaml)).toThrow();
   });
+
+  it("parses a github-pr grant with a wildcard repos value", () => {
+    const grants = parseGrants(
+      "grants.yaml",
+      'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: "*"\n    secret: GITHUB_PR_TOKEN\n',
+    );
+    expect(grants[0]).toMatchObject({ kind: "github-pr", repos: "*" });
+  });
+
+  it("rejects a github-pr grant whose repos is a non-wildcard string", () => {
+    const yaml = 'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: "owner/repo"\n    secret: GITHUB_PR_TOKEN\n';
+    expect(() => parseGrants("grants.yaml", yaml)).toThrow();
+  });
 });
 
 import { decide, detectOutwardEffect, matchGrant, validateGrantRefs } from "../src/grants.js";
@@ -189,6 +202,16 @@ describe("detectOutwardEffect", () => {
 });
 
 describe("matchGrant", () => {
+  it("matches a wildcard github-pr grant against any repo", () => {
+    const wildcard = parseGrants(
+      "grants.yaml",
+      'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: "*"\n    secret: X\n',
+    )[0]!;
+    const effect = detectOutwardEffect("mergePR", { repo: "owner/some-new-repo" })!;
+    expect(effect.kind).toBe("github-pr");
+    expect(matchGrant([wildcard], effect)).toBe(wildcard);
+  });
+
   it("matches a git-push grant by remote, ignoring branch detail in the target", () => {
     const effect = detectOutwardEffect("Bash", { command: "git push github.com/me/site main" })!;
     expect(matchGrant([PUSH_SITE], effect)).toBe(PUSH_SITE);

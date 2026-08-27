@@ -1864,9 +1864,18 @@ Settings → Webhooks → Add webhook, pointing at the ngrok URL forwarding to
 
 - [ ] **Step 4: Generate the fine-grained PAT**
 
-Scoped to only this test repo for now (per the spec's §4.4, the repo list
-grows as more projects come under management), with only "Pull requests:
-Read and write" and "Contents: Read" permissions.
+Scoped to **all repositories** on the dedicated bot account (per the spec's
+revised §4.4 — this account is single-purpose, so "all repos on it" is
+exactly as bounded as the account itself), with only "Pull requests: Read
+and write" and "Contents: Read" permissions — explicitly **not**
+"Administration" (that's what would let the bot bypass or edit branch
+protection / CODEOWNERS, collapsing Wall 2), and nothing account-level.
+Set `grants.yaml`'s `infra-repo` grant to `repos: "*"` and
+`agents/pr-reviewer/agent.yaml`'s `trigger.repo` to `"*"` (both already the
+committed default) so no config edit is needed as more repos come under
+this account. A webhook still has to be added per-repo in Step 3 above —
+GitHub has no account-wide webhook without a GitHub App (§10) — so a new
+repo needs that one manual step, not a code or config change.
 
 - [ ] **Step 5: Live dry run**
 

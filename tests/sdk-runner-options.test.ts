@@ -505,6 +505,23 @@ describe("SdkRunner GitHub PR tools", () => {
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("merged") }] });
   });
 
+  it("a wildcard (\"*\") github-pr grant authorises a merge in a repo not explicitly listed anywhere", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    const WILDCARD_GRANT: Grant = { id: "infra-repo", kind: "github-pr", repos: "*", secret: "X" };
+    github.seedPullRequest({ number: 1, repo: "owner/some-new-repo", headSha: "sha-1", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [WILDCARD_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/some-new-repo", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(github.merged).toEqual([{ repo: "owner/some-new-repo", number: 1 }]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("merged") }] });
+  });
+
   it("refuses to merge a PR touching an excluded path, without ever calling GithubTransport.mergePullRequest", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));

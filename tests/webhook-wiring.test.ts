@@ -183,6 +183,21 @@ describe("makeWebhookHandler", () => {
     expect(executeRun).not.toHaveBeenCalled();
   });
 
+  it("a wildcard (\"*\") trigger.repo matches an event from any repo, not just one it was configured with", async () => {
+    const github = githubWithSeededPr({ repo: "owner/some-new-repo", number: 7 });
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({
+      agents: [agent({ trigger: { type: "webhook", repo: "*", event: "pull_request" } })],
+      github,
+      orchestrator,
+    });
+
+    await handler(event({ repo: "owner/some-new-repo" }));
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+  });
+
   it("does not match a cron-triggered agent, even if it happened to share a name", async () => {
     const github = githubWithSeededPr();
     const executeRun = vi.fn().mockResolvedValue(undefined);

@@ -38,7 +38,16 @@ const GithubPrGrant = z
   .object({
     id: z.string().min(1),
     kind: z.literal("github-pr"),
-    repos: z.array(z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"')).min(1),
+    // "*" means "any repo this grant's underlying token can reach" — the
+    // right shape for a dedicated, single-purpose bot account whose PAT is
+    // itself scoped to "all repos on this account, PR actions only" (no
+    // Administration/billing/account-level power). An explicit array is
+    // still supported for an account or token shared across purposes, where
+    // an allowlist narrower than the token's own reach is worth keeping.
+    repos: z.union([
+      z.literal("*"),
+      z.array(z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"')).min(1),
+    ]),
     secret: z.string().min(1),
   })
   .strict();
@@ -203,10 +212,10 @@ export function matchGrant(grants: Grant[], effect: OutwardEffect): Grant | null
   return (
     grants.find((g) => {
       if (g.kind !== effect.kind) return false;
-      // github-pr grants authorise by exact repo-list membership, not glob
-      // matching — grantTargetPattern's "github-pr" case deliberately
-      // returns "" and is never reached for this kind.
-      if (g.kind === "github-pr") return g.repos.includes(effect.target);
+      // github-pr grants authorise by exact repo-list membership (or "*"
+      // for any repo), not glob matching — grantTargetPattern's "github-pr"
+      // case deliberately returns "" and is never reached for this kind.
+      if (g.kind === "github-pr") return g.repos === "*" || g.repos.includes(effect.target);
       return globMatch(grantTargetPattern(g), effect.target);
     }) ?? null
   );
