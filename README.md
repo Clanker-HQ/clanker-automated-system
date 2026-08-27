@@ -27,6 +27,12 @@ subscription** rather than the API. Results are reported to Discord.
    `DISCORD_CHANNEL_ID_SMOKE=<numeric id>` in `.env`. The webhook stays for
    routine one-way reports; the bot uses the channel ID to post approvals,
    questions, and admin command replies into the same channel.
+   Finally, set `DISCORD_OWNER_ID` to **your own** numeric Discord user ID
+   (Developer Mode on → right-click your name → Copy User ID). That single
+   account is the only one the bot obeys: approve/deny/answer and every `!`
+   command from any other author is ignored without a reply. Boot fails if it
+   is unset, the same way a missing bot token does — an approval anyone in the
+   channel could give is not an approval.
 5. `docker compose up --build`
 
 To exercise the whole pipeline **without consuming any subscription quota**, set
@@ -58,6 +64,43 @@ naming the plan that will deliver it, so a setting never silently does nothing.
 | A run's transcript | `.../runs/<runId>/transcript.jsonl` — written as events arrive, so it survives a crash |
 | Undelivered reports | `data/undelivered/` — only exists if Discord rejected a message three times |
 
+### From Discord
+
+Everything below works only for the account in `DISCORD_OWNER_ID`. Messages
+from anyone else are ignored silently — no reply, no effect — so don't debug a
+"broken" bot before checking which account you typed from.
+
+**Answering a parked run.** When a run stops to ask for something, the bot
+posts the request and an id. Reply in that channel:
+
+| | |
+|---|---|
+| `approve <id>` | Let the effect proceed; the run continues from where it stopped |
+| `deny <id>` | Refuse it; the agent is told to continue with anything else, or stop |
+| `answer <id> <text>` | Free-text reply to a question (`answer 3f2a-… use the main branch`) |
+
+An approval that can't be resumed right now (STOP file, quiet hours, budget
+spent, a rate-limit rejection) replies to say so and **leaves the entry open** —
+try again later, the id stays valid. Entries older than
+`governor.pendingTimeoutHours` are auto-denied at the next restart.
+
+**Admin commands.**
+
+| | |
+|---|---|
+| `!stop` | Write the STOP file — no new runs, and no resumes, until `!resume` |
+| `!resume` | Remove the STOP file |
+| `!disable <agent>` | Stop triggering that one agent (a human resume still works) |
+| `!enable <agent>` | Re-enable it, and reset its circuit breaker |
+| `!budget <n>` | Set the daily spend ceiling in USD, e.g. `!budget 25` |
+| `!concurrency <n>` | Set how many runs may be in flight at once |
+| `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 22:00-07:00 Europe/Berlin`. Same-day windows only; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |
+| `!quiet off` | Disable quiet hours |
+| `!runs` | The last 20 runs — id, status, cost |
+
+These write to `data/config-overrides.json` and take effect on the next
+admission check; they override `config.yaml` until changed back.
+
 ## Development
 
 - `npm test` — full suite, consumes no quota
@@ -73,9 +116,20 @@ early on.
 
 **Agents share one rate limit with your own interactive Claude use.** The
 governor is live: it enforces `maxConcurrent`, `dailyBudgetUsd`, `quietHours`,
-and a circuit breaker, and admits runs with an eye on the SDK's own
-`rate_limit_event` utilisation reporting. A run that can't be admitted right
-now is parked, not silently dropped or force-run over your interactive quota.
+a manual `!disable`, the STOP file, and a circuit breaker that trips after
+three consecutive failed or timed-out runs of the same agent (`!enable <agent>`
+resets it). It admits runs with an eye on the SDK's own `rate_limit_event`
+utilisation reporting.
+
+**A refused run is skipped, not queued.** Only `maxConcurrent` makes a run
+*wait* — it holds until a slot frees. Every other refusal (quiet hours, budget
+spent, breaker tripped, rate-limit rejection, STOP file, a disabled agent)
+simply drops that cron fire: it is logged, alert-worthy ones post a Discord
+alert, and nothing is retried or queued. The agent's next run is its next
+scheduled fire. Don't read "parked" into this — in this system **parked** means
+something narrower and quite different: an *in-flight* run that stopped
+mid-execution to await a human approve/deny/answer, and which resumes its
+original session when you give it.
 
 **`Bash`'s outward-effect detection is a pattern list, not a hard boundary.**
 Every tier below `autonomous`-with-auto-approval is only as safe as the code's
@@ -95,6 +149,29 @@ slips through, so the worst case is "it tried and had nothing to push to" —
 but don't treat `sandboxed` as airtight against a determined or confused
 agent, and don't grant `granted`/`autonomous` to an agent whose `Bash` usage
 you haven't read.
+
+**A grant matches on kind and target only — its narrowing fields are validated
+but not enforced.** When an effect is checked against `grants.yaml`, the match
+compares the grant's family (`http` / `git-push` / `provision`) and its target
+pattern (`urlPattern` / `remote` / `scope`, with `*` wildcards). Three fields
+are checked for well-formedness at boot and then never consulted again at match
+time:
+
+- `method` on an `http` grant. A grant scoped to `method: POST` currently also
+  authorizes a `DELETE` to the same URL.
+- `branches` on a `git-push` grant. A grant scoped to `branches: [main]`
+  currently authorizes a push to *any* branch on that remote.
+- `limit.perDay` on a `provision` grant. Nothing counts uses, so the cap is not
+  applied.
+
+Reading a method or a branch name back out of a free-form `Bash` string is the
+same unsolved problem as `detectOutwardEffect` above, which is why it isn't
+faked. The practical consequence: read a real grant as "this agent may reach
+this target, by this family of effect" and nothing narrower. `grants.yaml`
+ships only the synthetic `test-echo` grant today, so nothing live depends on
+this yet — but a grant you add for a real credential should be scoped by its
+`urlPattern`/`remote`, and by what the credential behind it is allowed to do,
+rather than by `method` or `branches`.
 
 **Tool calls need absolute paths.** An agent prompt that says "read `notes.md` in
 your working directory" will fail its first tool call. Say so explicitly in the
