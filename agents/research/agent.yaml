@@ -17,10 +17,23 @@ run:
   maxBudgetUsd: 2.00
 
 permissions:
+  # `Read` is deliberately absent, and must stay absent. This agent holds a
+  # deliberately broad `web-read` grant (urlPattern "*"), so local file access
+  # plus that grant would be a straightforward exfiltration path: read a secret
+  # off disk, WebFetch it to an attacker-chosen URL, auto-allowed. Nothing this
+  # agent legitimately does needs to read local files — it researches the open
+  # web and writes its findings out. If a future edit seems to need `Read`,
+  # narrow the grant first.
   allowedTools: [WebSearch, WebFetch, Write]
   disallowedTools: []
 
-tier: granted
+# `autonomous`, not `granted`, because only `tier: autonomous` + `approval: auto`
+# short-circuits decide() (src/grants.ts) to `allow` once a grant matches. At
+# `tier: granted` a matched grant still returns `park` — this agent would stop
+# for a human Discord approval on its very first WebFetch, every single run,
+# which defeats the point of a broad auto-approved read-only web grant. The
+# containment here is the grant + the tool list, not the tier.
+tier: autonomous
 approval: auto
 grantRefs: [web-read]
 

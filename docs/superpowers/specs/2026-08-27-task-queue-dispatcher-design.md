@@ -109,7 +109,10 @@ interface Task {
   id: string;
   text: string;              // the free-form request
   priority: number;          // higher = more urgent; default e.g. 50
-  status: "pending" | "running" | "done" | "failed";
+  status: "pending" | "running" | "done" | "failed" | "waiting";
+                             // "waiting" = the run parked mid-execution on a
+                             // human approve/deny/answer and is still alive;
+                             // not finished, not failed.
   createdBy: string;         // "discord:<owner>" today — only DISCORD_OWNER_ID can submit
   createdAt: string;
   startedAt?: string;
@@ -220,19 +223,36 @@ triggering the specialist's run.
 `agents/research/agent.yaml` + `agents/research/prompt.md` — a new agent,
 config only, no new execution code.
 
-**Tier:** `granted`, **not** `readonly`. Checked directly against
-`src/grants.ts` rather than assumed: `WebFetch` is a recognized outward
-effect (`detectOutwardEffect`, `src/grants.ts:170`), and `tier: readonly`
-denies **any** recognized outward effect outright, with no grant possible
-(`src/grants.ts:268`). `WebSearch` isn't in the recognized-effect list at
-all, so it would work at `readonly` — but a research agent restricted to
-search-result snippets, never able to fetch and actually read a page, isn't
-a real research agent. So this agent needs `tier: granted` plus a new `http`
-grant in `grants.yaml` scoped broadly for reads (`urlPattern: "*"`), with
-`approval: auto`. Reading public web pages carries none of the "spending
-money or doing something big/dangerous" risk the owner wants to personally
-approve — it's a deliberately low-risk, broad grant, unlike the narrow
-single-endpoint `test-echo` grant or a future git-push/provision grant.
+**Tier:** `autonomous`, **not** `readonly` and **not** `granted`. Checked
+directly against `src/grants.ts` rather than assumed: `WebFetch` is a
+recognized outward effect (`detectOutwardEffect`, `src/grants.ts:170`), and
+`tier: readonly` denies **any** recognized outward effect outright, with no
+grant possible (`src/grants.ts:268`). `WebSearch` isn't in the
+recognized-effect list at all, so it would work at `readonly` — but a
+research agent restricted to search-result snippets, never able to fetch and
+actually read a page, isn't a real research agent. So this agent needs a
+grant: a new `http` grant in `grants.yaml` scoped broadly for reads
+(`urlPattern: "*"`).
+
+`granted` is not enough to make that grant auto-allow, which is the trap
+here. `decide()` short-circuits a matched grant to `{kind: "allow"}` only for
+`agent.tier === "autonomous" && agent.approval === "auto"`
+(`src/grants.ts:277`); at `tier: granted`, a matched grant still returns
+`{kind: "park"}`, so the agent would stop for a human Discord approval on its
+very first `WebFetch`, on every single run. That is the opposite of the
+intent. The agent is therefore `tier: autonomous` with `approval: auto` and
+`grantRefs: [web-read]`.
+
+Reading public web pages carries none of the "spending money or doing
+something big/dangerous" risk the owner wants to personally approve — it's a
+deliberately low-risk, broad grant, unlike the narrow single-endpoint
+`test-echo` grant or a future git-push/provision grant. `autonomous` here
+does **not** mean unrestricted: containment comes from the grant's own family
+(`http` only — no git-push, no provision, no github-pr, since `matchGrant`
+requires the kinds to line up) and from the tool list, which is
+`[WebSearch, WebFetch, Write]` with `Read` deliberately omitted. Local file
+reads plus a `urlPattern: "*"` fetch grant would be a direct exfiltration
+path; without `Read` there is nothing local to exfiltrate.
 
 **Output:** the full research writeup is saved to disk under `data/`
 (exact path an implementation-plan detail); a short summary is what's
@@ -263,7 +283,11 @@ Fails safe throughout, matching the rest of this system's posture:
   next scheduled fire. Only `maxConcurrent` is a genuine wait per Plan B
   §4.2 — every other refusal here means "try again on the next tick," not
   "drop it," since (unlike a cron agent, which gets another fire tomorrow
-  regardless) a queued task has nowhere else to go.
+  regardless) a queued task has nowhere else to go. A refusal must also
+  *stop the current drain*: the refused task is still the head of the queue,
+  so continuing would immediately re-pick it and spin. The routing decision
+  is cached on the task (`specialistAgent`) across the refusal, so the retry
+  costs no second routing call.
 
 ---
 

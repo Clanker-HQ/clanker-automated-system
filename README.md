@@ -105,9 +105,26 @@ try again later, the id stays valid. Entries older than
 | `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `22:00-07:00` would never actually suppress anything, since `from` must be earlier than `to`; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |
 | `!quiet off` | Disable quiet hours |
 | `!runs` | The last 20 runs — id, status, cost |
+| `!task <text>` | Queue a free-form request; replies with its task id |
+| `!tasks` | Tasks not yet finished — id, status, truncated text |
 
 These write to `data/config-overrides.json` and take effect on the next
 admission check; they override `config.yaml` until changed back.
+
+**The task queue.** `!task <text>` durably queues a free-form request under
+`data/tasks/<id>.json` — it survives a restart. A dispatcher picks the
+highest-priority pending task, asks a cheap routing call which specialist
+should handle it, and runs that specialist through the same Governor as every
+other agent. Today there is exactly one specialist, `research`: it searches and
+reads the open web and writes up what it finds, with no code changes, no
+publishing, and no spending. When the run finishes, the channel gets a
+task-id-correlated line (`✅ Task <id> done: …` or `❌ Task <id> failed: …`)
+alongside the agent's own run report, and the full artifact is on disk under
+`data/runs/<runId>/`. A task whose run parks for an approve/deny/answer shows
+as `waiting` in `!tasks` — the run is alive, not failed. Known limitation: the
+resume path knows about runs, not tasks, so a resumed task stays `waiting` on
+record even after the run itself completes; the run's own report is the source
+of truth for how it ended.
 
 ## Development
 
@@ -134,7 +151,13 @@ utilisation reporting.
 spent, breaker tripped, rate-limit rejection, STOP file, a disabled agent)
 simply drops that cron fire: it is logged, alert-worthy ones post a Discord
 alert, and nothing is retried or queued. The agent's next run is its next
-scheduled fire. Don't read "parked" into this — in this system **parked** means
+scheduled fire. **One exception: a dispatched task.** A `!task` refused
+admission goes back to `pending` with its routing decision kept, and is
+retried on the dispatcher's next periodic tick (or the next `!task` / finished
+run) — a queued task has nowhere else to go, unlike a cron agent that gets
+another fire regardless. It is not dropped, and it is not notified per retry
+either; `!tasks` still showing it is how you know it's waiting on the governor.
+Don't read "parked" into this — in this system **parked** means
 something narrower and quite different: an *in-flight* run that stopped
 mid-execution to await a human approve/deny/answer, and which resumes its
 original session when you give it.

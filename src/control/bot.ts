@@ -263,8 +263,12 @@ export class DiscordBot {
         return void reply(lines.length > 0 ? lines.join("\n") : "No runs yet.");
       }
       case "!task": {
-        if (!arg.trim()) return void reply("Usage: `!task <free-form request>`");
-        const task = await this.tasks.create({ text: arg, createdBy: `discord:${msg.authorId}` });
+        // Deliberately NOT the shared `arg`: that comes from split(/\s+/) +
+        // join(" "), which collapses runs of whitespace and destroys newlines —
+        // fine for `!budget 25`, destructive for a multi-line free-form request.
+        const raw = msg.content.trim().slice(command.length).trim();
+        if (!raw) return void reply("Usage: `!task <free-form request>`");
+        const task = await this.tasks.create({ text: raw, createdBy: `discord:${msg.authorId}` });
         void this.dispatcher.wake().catch((err: unknown) => {
           console.error(`[bot] dispatcher wake failed after !task ${task.id}:`, err);
         });
@@ -273,13 +277,15 @@ export class DiscordBot {
       case "!tasks": {
         const all = await this.tasks.list();
         const active = all
-          .filter((t) => t.status === "pending" || t.status === "running")
+          // "waiting" belongs here too: it is a live run paused on a human
+          // approve/deny/answer, so it is exactly what the owner needs to see.
+          .filter((t) => t.status === "pending" || t.status === "running" || t.status === "waiting")
           .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
         const lines = active.map((t) => {
           const text = t.text.length > 60 ? `${t.text.slice(0, 57)}...` : t.text;
           return `${t.id.slice(0, 8)} — ${t.status} — ${text}`;
         });
-        return void reply(lines.length > 0 ? lines.join("\n") : "No pending or running tasks.");
+        return void reply(lines.length > 0 ? lines.join("\n") : "No pending, running, or waiting tasks.");
       }
       default:
         return void reply(`Unknown command: ${command}`);

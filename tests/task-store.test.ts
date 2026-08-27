@@ -1,7 +1,7 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TaskStore } from "../src/control/task-store.js";
 
 function store(): TaskStore {
@@ -20,7 +20,32 @@ describe("TaskStore", () => {
   });
 
   it("returns null for an id that doesn't exist", async () => {
-    expect(await store().get("nope")).toBeNull();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await store().get("nope")).toBeNull();
+      // A missing file is a legitimate answer, not something to shout about.
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("logs, rather than silently swallowing, a task file that exists but won't parse", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-tasks-"));
+    const s = new TaskStore(dir);
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    writeFileSync(join(dir, "tasks", `${task.id}.json`), "{ truncated");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Still null — callers have no better move — but a corrupt file quietly
+      // vanishing from list()/nextPending() forever is exactly the silent loss
+      // this project's fail-loud posture exists to prevent.
+      expect(await s.get(task.id)).toBeNull();
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0]![0])).toContain(task.id);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("honours an explicit priority and parentId", async () => {

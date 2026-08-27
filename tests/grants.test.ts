@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseGrants } from "../src/grants.js";
 import { ValidationError } from "../src/errors.js";
+import { parseAgent } from "../src/registry.js";
 
 const VALID = `
 grants:
@@ -355,5 +357,30 @@ describe("decide", () => {
   it("still parks an autonomous-tier agent whose approval mode isn't auto", () => {
     const result = decide(agent("autonomous", ["test-echo"], "notify"), [TEST_ECHO], "WebFetch", { url: "https://httpbin.org/post" });
     expect(result.kind).toBe("park");
+  });
+});
+
+/**
+ * These run decide() against the REAL shipped agent definition and grants file,
+ * not a hand-built fixture. The whole point: `tier: granted` + `approval: auto`
+ * reads like it auto-allows and does not — it parks — and every dispatcher/bot
+ * test uses a fake orchestrator that never reaches canUseTool, so nothing else
+ * in this suite would notice the agent parking on its first WebFetch of every run.
+ */
+describe("the shipped research agent's tier and grant, checked against decide()", () => {
+  const agent = parseAgent("agents/research/agent.yaml", readFileSync("agents/research/agent.yaml", "utf8"));
+  const grants = parseGrants("grants.yaml", readFileSync("grants.yaml", "utf8"));
+
+  it("auto-allows a WebFetch of an arbitrary public page, without parking for a human", () => {
+    expect(decide(agent, grants, "WebFetch", { url: "https://example.com/some/article" })).toEqual({ kind: "allow" });
+  });
+
+  it("still denies an effect outside its granted family, e.g. a git push", () => {
+    const result = decide(agent, grants, "Bash", { command: "git push origin main" });
+    expect(result.kind).toBe("deny");
+  });
+
+  it("has no Read tool: local file access plus a urlPattern:'*' fetch grant would be an exfiltration path", () => {
+    expect(agent.permissions.allowedTools).not.toContain("Read");
   });
 });

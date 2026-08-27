@@ -79,16 +79,136 @@ describe("runDispatchTick", () => {
     expect(updated?.failureReason).toBe("boom");
   });
 
-  it("puts the task back to pending, without failing it, when the governor refuses admission", async () => {
+  it("puts the task back to pending, reports deferred, and keeps its routing, when the governor refuses admission", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
     const executeRun = vi.fn().mockResolvedValue(undefined);
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const outcome = await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify, dataDir,
+    });
+    expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("pending");
+    // The routing decision survives the refusal, so the retry costs no second
+    // router call — see the "does not re-route" test below.
+    expect(updated?.specialistAgent).toBe("research");
+    expect(updated?.finishedAt).toBeUndefined();
+    // Deliberately no per-retry Discord notification: over a 12-hour quiet-hours
+    // window that would be pure spam. `!tasks` is how a deferred task stays visible.
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("does not call the router again for a task already routed by an earlier deferred attempt", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(task.id, { specialistAgent: "research" });
+    const router = new FakeRouter("research");
+    const executeRun = vi.fn().mockResolvedValue(successResult());
     await runDispatchTick({
+      tasks, router, agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+    });
+    expect(router.calls).toHaveLength(0);
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect((await tasks.get(task.id))?.status).toBe("done");
+  });
+
+  it("persists the routing decision before attempting admission, so a refusal on the first attempt still caches it", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    const router = new FakeRouter("research");
+    // First attempt: routed, then refused.
+    await runDispatchTick({
+      tasks, router, agents: [specialist()],
+      orchestrator: { executeRun: vi.fn().mockResolvedValue(undefined) }, notify: vi.fn(), dataDir,
+    });
+    expect(router.calls).toHaveLength(1);
+    // Second attempt: admitted. The router must not be consulted a second time.
+    const outcome = await runDispatchTick({
+      tasks, router, agents: [specialist()],
+      orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) }, notify: vi.fn(), dataDir,
+    });
+    expect(router.calls).toHaveLength(1);
+    expect(outcome.deferred).toBeUndefined();
+    expect((await tasks.get(task.id))?.status).toBe("done");
+  });
+
+  for (const status of ["parked", "question"] as const) {
+    it(`marks the task "waiting", not failed, when the run ends ${status} awaiting a human`, async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(successResult({ status }));
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("waiting");
+      // The run is alive and paused, not finished and not failed.
+      expect(updated?.failureReason).toBeUndefined();
+      expect(updated?.finishedAt).toBeUndefined();
+      expect(notify).not.toHaveBeenCalled();
+    });
+  }
+
+  it("notifies with the task id and the run summary on success", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    const notify = vi.fn().mockResolvedValue(undefined);
+    await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) }, notify, dataDir,
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    const text = notify.mock.calls[0]![0] as string;
+    expect(text).toContain(task.id);
+    expect(text).toContain("Found three ideas.");
+  });
+
+  it("notifies with the task id and the error on a failed run", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    const notify = vi.fn().mockResolvedValue(undefined);
+    await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" })) },
+      notify, dataDir,
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    const text = notify.mock.calls[0]![0] as string;
+    expect(text).toContain(task.id);
+    expect(text).toContain("boom");
+  });
+
+  it("fails the task, rather than leaving it stuck running, when the run throws", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    const executeRun = vi.fn().mockRejectedValue(new Error("prompt.md is missing"));
+    const outcome = await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
       orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
+    // Not deferred: a thrown error isn't "wait for the governor", so the drain continues.
+    expect(outcome).toEqual({ ran: true, taskId: task.id });
     const updated = await tasks.get(task.id);
-    expect(updated?.status).toBe("pending");
+    expect(updated?.status).toBe("failed");
+    expect(updated?.failureReason).toBe("prompt.md is missing");
+  });
+
+  it("fails the task when notify itself throws, instead of propagating out of the tick", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    const notify = vi.fn().mockRejectedValue(new Error("discord is down"));
+    const outcome = await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) }, notify, dataDir,
+    });
+    expect(outcome).toEqual({ ran: true, taskId: task.id });
+    expect((await tasks.get(task.id))?.failureReason).toBe("discord is down");
   });
 
   it("fails the task and notifies, without ever calling executeRun, when no specialist matches", async () => {
@@ -150,6 +270,44 @@ describe("Dispatcher.wake", () => {
     expect(executeRun).toHaveBeenCalledTimes(2);
     const remaining = (await tasks.list()).filter((t) => t.status === "pending" || t.status === "running");
     expect(remaining).toEqual([]);
+  });
+
+  it("stops draining after a governor refusal instead of spinning on the same task", async () => {
+    // Regression test: with `while (outcome.ran)` this looped forever —
+    // nextPending() returns the same refused task, it is re-routed (a real,
+    // unbudgeted LLM call in production) and refused again, for as long as the
+    // refusal lasts. A 12-hour quiet-hours window made that a 12-hour hot loop.
+    const { tasks, dataDir } = taskStore();
+    await tasks.create({ text: "a", createdBy: "discord:owner" });
+    await tasks.create({ text: "b", createdBy: "discord:owner" });
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const router = new FakeRouter("research");
+    const dispatcher = new Dispatcher({
+      tasks, router, agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+    });
+    await dispatcher.wake();
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect(router.calls).toHaveLength(1);
+    // Both tasks are still queued for a later tick — neither is lost.
+    expect((await tasks.list()).filter((t) => t.status === "pending")).toHaveLength(2);
+  });
+
+  it("keeps draining past a task that threw — a thrown error is not a deferral", async () => {
+    const { tasks, dataDir } = taskStore();
+    await tasks.create({ text: "a", createdBy: "discord:owner", priority: 90 });
+    await tasks.create({ text: "b", createdBy: "discord:owner", priority: 10 });
+    const executeRun = vi.fn()
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValue(successResult());
+    const dispatcher = new Dispatcher({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+    });
+    await dispatcher.wake();
+    expect(executeRun).toHaveBeenCalledTimes(2);
+    const statuses = (await tasks.list()).map((t) => t.status).sort();
+    expect(statuses).toEqual(["done", "failed"]);
   });
 
   it("a re-entrant wake() call while draining is a no-op, not a second concurrent drain", async () => {

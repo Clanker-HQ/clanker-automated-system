@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-export type TaskStatus = "pending" | "running" | "done" | "failed";
+/**
+ * "waiting" is a live run that stopped mid-execution to await a human
+ * approve/deny/answer (a `parked`/`question` RunResult). It is neither finished
+ * nor failed — the run resumes its original session once the owner replies —
+ * so it deliberately keeps no `finishedAt`/`failureReason`.
+ */
+export type TaskStatus = "pending" | "running" | "done" | "failed" | "waiting";
 
 export interface Task {
   id: string;
@@ -48,7 +54,15 @@ export class TaskStore {
   async get(id: string): Promise<Task | null> {
     try {
       return JSON.parse(await readFile(this.path(id), "utf8")) as Task;
-    } catch {
+    } catch (err) {
+      // A missing file is a legitimate "no such task". Anything else — a
+      // corrupt/truncated JSON file, a permission error — silently drops the
+      // task out of list()/nextPending() forever, which is exactly the kind of
+      // quiet loss this project's fail-loud posture exists to prevent. Still
+      // returns null (callers have no better move), but it is never silent.
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        console.error(`[task-store] failed to read/parse task "${id}"`, err);
+      }
       return null;
     }
   }

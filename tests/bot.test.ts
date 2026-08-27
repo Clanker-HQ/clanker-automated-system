@@ -296,6 +296,14 @@ describe("DiscordBot task commands", () => {
     expect(dispatcher.wake).toHaveBeenCalled();
   });
 
+  it("!task preserves internal whitespace and newlines in the request text", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    const text = "research two things:\n- one\n- two   (with  spacing)";
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!task ${text}` });
+    expect((await tasks.list())[0]?.text).toBe(text);
+  });
+
   it("!task with no text replies with usage and creates nothing", async () => {
     const { transport, bot, tasks } = setup();
     await bot.start();
@@ -304,20 +312,28 @@ describe("DiscordBot task commands", () => {
     expect(transport.sent[0]?.text).toContain("Usage");
   });
 
-  it("!tasks lists pending and running tasks, not done ones", async () => {
+  it("!tasks lists pending, running, and waiting tasks, not finished ones", async () => {
     const { transport, bot, tasks } = setup();
     await tasks.create({ text: "a pending one", createdBy: "discord:owner" });
     const running = await tasks.create({ text: "a running one", createdBy: "discord:owner" });
     await tasks.update(running.id, { status: "running" });
+    // A run parked on the owner's own approve/deny/answer: still in flight, and
+    // precisely the task they most need to see listed.
+    const waiting = await tasks.create({ text: "a waiting one", createdBy: "discord:owner" });
+    await tasks.update(waiting.id, { status: "waiting" });
     const done = await tasks.create({ text: "a finished one", createdBy: "discord:owner" });
     await tasks.update(done.id, { status: "done" });
+    const failed = await tasks.create({ text: "a broken one", createdBy: "discord:owner" });
+    await tasks.update(failed.id, { status: "failed" });
 
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!tasks" });
     const reply = transport.sent[0]!.text;
     expect(reply).toContain("a pending one");
     expect(reply).toContain("a running one");
+    expect(reply).toContain("a waiting one");
     expect(reply).not.toContain("a finished one");
+    expect(reply).not.toContain("a broken one");
   });
 
   it("ignores !task from a non-owner author", async () => {
