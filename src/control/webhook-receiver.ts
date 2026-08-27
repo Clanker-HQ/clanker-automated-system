@@ -81,7 +81,8 @@ export class WebhookReceiver {
         totalSize += chunk.length;
         if (totalSize > MAX_BODY_SIZE) {
           responseSent = true;
-          res.writeHead(413, { "content-type": "text/plain" });
+          req.pause();
+          res.writeHead(413, { "content-type": "text/plain", "connection": "close" });
           res.end("Payload too large");
           return;
         }
