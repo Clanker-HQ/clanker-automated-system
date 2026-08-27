@@ -8,8 +8,9 @@ import { TaskStore } from "../src/control/task-store.js";
 import type { AgentDef } from "../src/registry.js";
 import type { RunResult } from "../src/run-store.js";
 
-function taskStore(): TaskStore {
-  return new TaskStore(mkdtempSync(join(tmpdir(), "cai-dispatcher-")));
+function taskStore(): { tasks: TaskStore; dataDir: string } {
+  const dataDir = mkdtempSync(join(tmpdir(), "cai-dispatcher-"));
+  return { tasks: new TaskStore(dataDir), dataDir };
 }
 
 function specialist(overrides: Partial<AgentDef> = {}): AgentDef {
@@ -41,36 +42,37 @@ function successResult(overrides: Partial<RunResult> = {}): RunResult {
 
 describe("runDispatchTick", () => {
   it("does nothing and reports ran:false when the queue is empty", async () => {
+    const { tasks, dataDir } = taskStore();
     const result = await runDispatchTick({
-      tasks: taskStore(), router: new FakeRouter(null), agents: [specialist()],
-      orchestrator: { executeRun: vi.fn() }, notify: vi.fn(),
+      tasks, router: new FakeRouter(null), agents: [specialist()],
+      orchestrator: { executeRun: vi.fn() }, notify: vi.fn(), dataDir,
     });
     expect(result).toEqual({ ran: false });
   });
 
   it("routes a pending task, runs it, and marks it done on success", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "find a profitable niche", createdBy: "discord:owner" });
     const executeRun = vi.fn().mockResolvedValue(successResult());
     const result = await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
-      orchestrator: { executeRun }, notify: vi.fn(),
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     expect(result).toEqual({ ran: true, taskId: task.id });
     expect(executeRun).toHaveBeenCalledWith(specialist(), expect.any(Date), "find a profitable niche");
     const updated = await tasks.get(task.id);
     expect(updated?.status).toBe("done");
     expect(updated?.specialistAgent).toBe("research");
-    expect(updated?.result).toEqual({ summary: "Found three ideas.", path: "data/runs/research-1" });
+    expect(updated?.result).toEqual({ summary: "Found three ideas.", path: join(dataDir, "runs", "research-1") });
   });
 
   it("marks the task failed, with the run's own error, when the run doesn't succeed", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
     const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
     await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
-      orchestrator: { executeRun }, notify: vi.fn(),
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     const updated = await tasks.get(task.id);
     expect(updated?.status).toBe("failed");
@@ -78,25 +80,25 @@ describe("runDispatchTick", () => {
   });
 
   it("puts the task back to pending, without failing it, when the governor refuses admission", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
     const executeRun = vi.fn().mockResolvedValue(undefined);
     await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
-      orchestrator: { executeRun }, notify: vi.fn(),
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     const updated = await tasks.get(task.id);
     expect(updated?.status).toBe("pending");
   });
 
   it("fails the task and notifies, without ever calling executeRun, when no specialist matches", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     await tasks.create({ text: "x", createdBy: "discord:owner" });
     const executeRun = vi.fn();
     const notify = vi.fn().mockResolvedValue(undefined);
     await runDispatchTick({
       tasks, router: new FakeRouter(null), agents: [specialist()],
-      orchestrator: { executeRun }, notify,
+      orchestrator: { executeRun }, notify, dataDir,
     });
     expect(executeRun).not.toHaveBeenCalled();
     const [task] = await tasks.list();
@@ -106,12 +108,12 @@ describe("runDispatchTick", () => {
   });
 
   it("fails the task and notifies when no dispatched specialists are registered at all", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     await tasks.create({ text: "x", createdBy: "discord:owner" });
     const notify = vi.fn().mockResolvedValue(undefined);
     await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [],
-      orchestrator: { executeRun: vi.fn() }, notify,
+      orchestrator: { executeRun: vi.fn() }, notify, dataDir,
     });
     const [task] = await tasks.list();
     expect(task?.status).toBe("failed");
@@ -120,12 +122,12 @@ describe("runDispatchTick", () => {
   });
 
   it("fails the task when the router names an agent that isn't a registered dispatched specialist", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     await tasks.create({ text: "x", createdBy: "discord:owner" });
     const executeRun = vi.fn();
     await runDispatchTick({
       tasks, router: new FakeRouter("some-other-agent"), agents: [specialist()],
-      orchestrator: { executeRun }, notify: vi.fn(),
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     expect(executeRun).not.toHaveBeenCalled();
     const [task] = await tasks.list();
@@ -136,13 +138,13 @@ describe("runDispatchTick", () => {
 
 describe("Dispatcher.wake", () => {
   it("drains every pending task in one wake() call, not just one", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     await tasks.create({ text: "a", createdBy: "discord:owner" });
     await tasks.create({ text: "b", createdBy: "discord:owner" });
     const executeRun = vi.fn().mockResolvedValue(successResult());
     const dispatcher = new Dispatcher({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
-      orchestrator: { executeRun }, notify: vi.fn(),
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     await dispatcher.wake();
     expect(executeRun).toHaveBeenCalledTimes(2);
@@ -151,13 +153,13 @@ describe("Dispatcher.wake", () => {
   });
 
   it("a re-entrant wake() call while draining is a no-op, not a second concurrent drain", async () => {
-    const tasks = taskStore();
+    const { tasks, dataDir } = taskStore();
     await tasks.create({ text: "a", createdBy: "discord:owner" });
     let resolveRun!: (r: RunResult) => void;
     const executeRun = vi.fn().mockReturnValue(new Promise<RunResult>((resolve) => { resolveRun = resolve; }));
     const dispatcher = new Dispatcher({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
-      orchestrator: { executeRun }, notify: vi.fn(),
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     const firstWake = dispatcher.wake();
     const secondWake = dispatcher.wake();

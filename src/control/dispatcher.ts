@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
 import type { Router, Specialist } from "./router.js";
@@ -14,6 +15,7 @@ export interface DispatcherDeps {
   orchestrator: RunTrigger;
   /** Posts a message for a task that never reaches Orchestrator.executeRun — a routing failure has no run, so it never gets a report through the agent's own outbox. */
   notify: (text: string) => Promise<void>;
+  dataDir: string;
   now?: () => Date;
 }
 
@@ -72,7 +74,7 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<{ ran: bool
     await deps.tasks.update(task.id, {
       status: "done",
       finishedAt: now().toISOString(),
-      result: { summary: result.summary, path: `data/runs/${result.runId}` },
+      result: { summary: result.summary, path: join(deps.dataDir, "runs", result.runId) },
     });
   } else {
     await deps.tasks.update(task.id, {
@@ -101,7 +103,11 @@ export class Dispatcher {
   ) {}
 
   start(): void {
-    this.timer = setInterval(() => void this.wake(), this.tickMs);
+    this.timer = setInterval(() => {
+      this.wake().catch((error: unknown) => {
+        console.error("[dispatcher] wake() failed during periodic tick", error);
+      });
+    }, this.tickMs);
   }
 
   stop(): void {
