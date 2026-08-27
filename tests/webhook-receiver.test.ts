@@ -181,6 +181,34 @@ describe("WebhookReceiver.listen and close", () => {
     await receiver.close();
   });
 
+  it("rejects listen() (rather than crashing with an unhandled 'error' event) when the port is already in use", async () => {
+    const holder = new WebhookReceiver({ secret: SECRET });
+    await holder.listen(0);
+    const takenPort = (holder["server"] as any)?.address()?.port;
+
+    const receiver = new WebhookReceiver({ secret: SECRET });
+    await expect(receiver.listen(takenPort)).rejects.toThrow(/EADDRINUSE/);
+
+    await holder.close();
+  });
+
+  it("still allows a later listen() to succeed on the same instance after an earlier port conflict", async () => {
+    // Guards against the 'error' listener leaking across calls: since each
+    // listen() call builds a fresh node:http server, a listener attached
+    // during a failed attempt must not linger and reject an unrelated,
+    // later, successful bind.
+    const holder = new WebhookReceiver({ secret: SECRET });
+    await holder.listen(0);
+    const takenPort = (holder["server"] as any)?.address()?.port;
+
+    const receiver = new WebhookReceiver({ secret: SECRET });
+    await expect(receiver.listen(takenPort)).rejects.toThrow();
+    await expect(receiver.listen(0)).resolves.toBeUndefined();
+
+    await receiver.close();
+    await holder.close();
+  });
+
   it("destroys a connection that never finishes sending its body (slowloris backstop)", async () => {
     // Short timeout so the test is fast and deterministic instead of waiting
     // out the real 30s production default.

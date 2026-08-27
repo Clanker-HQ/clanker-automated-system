@@ -127,7 +127,22 @@ export class WebhookReceiver {
         );
       });
     });
-    await new Promise<void>((resolve) => this.server!.listen(port, resolve));
+
+    // Without this, a server-level error (most commonly EADDRINUSE — the
+    // configured port already in use) surfaces as an unhandled 'error' event
+    // on the server instead of a rejection: a hard process crash with a raw
+    // stack trace, and the returned promise never even settles. `once` (not
+    // `on`) and removing the listener on success: a runtime error on an
+    // already-listening server is a different concern this method doesn't
+    // own, and must not reject a promise that already resolved.
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => reject(err);
+      this.server!.once("error", onError);
+      this.server!.listen(port, () => {
+        this.server!.removeListener("error", onError);
+        resolve();
+      });
+    });
   }
 
   async close(): Promise<void> {
