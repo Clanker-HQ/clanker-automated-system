@@ -12,11 +12,16 @@ const RELEVANT_ACTIONS: ReadonlySet<string> = new Set(["opened", "synchronize", 
 
 export class WebhookReceiver {
   private readonly secret: string;
+  private readonly requestTimeoutMs: number;
   private handler: ((event: WebhookEvent) => Promise<void>) | null = null;
   private server: Server | null = null;
 
-  constructor(opts: { secret: string }) {
+  constructor(opts: { secret: string; requestTimeoutMs?: number }) {
     this.secret = opts.secret;
+    // Slowloris backstop for listen()'s node:http adapter: a request that
+    // hasn't finished sending its body within this window gets destroyed.
+    // Configurable so tests can exercise it without a real 30s wait.
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
   }
 
   onEvent(handler: (event: WebhookEvent) => Promise<void>): void {
@@ -63,12 +68,23 @@ export class WebhookReceiver {
 
   async listen(port: number): Promise<void> {
     const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+
     this.server = createServer((req, res) => {
       const chunks: Buffer[] = [];
       let totalSize = 0;
       let responseSent = false;
 
+      // Slowloris backstop: bounds how long a connection can be held open
+      // by a client that trickles bytes forever (or never finishes sending).
+      // This is independent of the oversized-body handling below -- it's
+      // the only thing in this handler that ever calls req.destroy().
+      const timer = setTimeout(() => {
+        req.destroy();
+      }, this.requestTimeoutMs);
+      const clearRequestTimer = (): void => clearTimeout(timer);
+
       req.on("error", () => {
+        clearRequestTimer();
         if (!responseSent && !res.destroyed && !res.writableEnded) {
           responseSent = true;
           res.writeHead(400, { "content-type": "text/plain" });
@@ -77,20 +93,31 @@ export class WebhookReceiver {
       });
 
       req.on("data", (chunk: Buffer) => {
-        if (responseSent) return;
         totalSize += chunk.length;
         if (totalSize > MAX_BODY_SIZE) {
-          responseSent = true;
-          req.pause();
-          res.writeHead(413, { "content-type": "text/plain", "connection": "close" });
-          res.end("Payload too large");
+          if (!responseSent) {
+            responseSent = true;
+            res.writeHead(413, { "content-type": "text/plain" });
+            res.end("Payload too large");
+          }
+          // Deliberately do NOT pause() or destroy() here. Node sends an RST
+          // (surfacing to the client as ECONNRESET) when a socket is closed
+          // while unread body data is still sitting in its receive buffer --
+          // true whether that data was ignored via pause() or never read at
+          // all. So instead we keep consuming (and discarding) the rest of
+          // the body: memory stays bounded because we simply stop retaining
+          // chunks below, and the eventual connection close (once the client
+          // finishes sending and the stream reaches 'end') is clean because
+          // nothing is left unread. This costs a little extra bandwidth/CPU
+          // to drain, but that's the trade that actually delivers the 413.
           return;
         }
         chunks.push(chunk);
       });
 
       req.on("end", () => {
-        if (responseSent) return;
+        clearRequestTimer();
+        if (responseSent) return; // oversized body already got its 413; body is now fully drained, let the connection close naturally
         responseSent = true;
         void this.handleRequest(Buffer.concat(chunks).toString("utf8"), req.headers["x-hub-signature-256"] as string | undefined).then(
           ({ status, body }) => {
