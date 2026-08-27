@@ -40,12 +40,20 @@ const CronTrigger = z
   })
   .strict();
 
+const WebhookTrigger = z
+  .object({
+    type: z.literal("webhook"),
+    repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
+    event: z.literal("pull_request"),
+  })
+  .strict();
+
 export const AgentSchema = z
   .object({
     name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "must be lowercase kebab-case"),
     enabled: z.boolean().default(true),
     authoredBy: z.string().default("claude-local"),
-    trigger: CronTrigger,
+    trigger: z.discriminatedUnion("type", [CronTrigger, WebhookTrigger]),
     run: z
       .object({
         model: z.enum(MODELS),
@@ -134,3 +142,5 @@ export const AgentSchema = z
   });
 
 export type AgentYaml = z.infer<typeof AgentSchema>;
+export type CronTrigger = z.infer<typeof CronTrigger>;
+export type WebhookTrigger = z.infer<typeof WebhookTrigger>;

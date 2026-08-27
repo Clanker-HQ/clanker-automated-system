@@ -43,6 +43,24 @@ function scaffoldMany(entries: { name: string; agentYaml: string }[]) {
 const ENV = { DISCORD_WEBHOOK_SMOKE: "https://discord.test/hook" };
 
 describe("parseAgent", () => {
+  it("accepts a webhook trigger, naming the repo and event it binds to", () => {
+    const yaml = AGENT.replace(
+      /trigger: \{ type: cron, schedule: "[^"]*", timezone: [^ ]* \}/,
+      'trigger: { type: webhook, repo: "owner/repo", event: pull_request }',
+    );
+    expect(() => parseAgent("agent.yaml", yaml)).not.toThrow();
+    const agent = parseAgent("agent.yaml", yaml);
+    expect(agent.trigger).toEqual({ type: "webhook", repo: "owner/repo", event: "pull_request" });
+  });
+
+  it("rejects a webhook trigger with a malformed repo (must be owner/name)", () => {
+    const yaml = AGENT.replace(
+      /trigger: \{ type: cron, schedule: "[^"]*", timezone: [^ ]* \}/,
+      'trigger: { type: webhook, repo: "not-a-repo-slug", event: pull_request }',
+    );
+    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/repo/);
+  });
+
   it("applies defaults", () => {
     const agent = parseAgent("agent.yaml", AGENT);
     expect(agent.enabled).toBe(true);
@@ -164,7 +182,9 @@ describe("parseAgent", () => {
 
   it.each(["Europe/Berlin", "UTC"])("accepts trigger.timezone %s", (tz) => {
     const yaml = AGENT.replace("Europe/Berlin", tz);
-    expect(parseAgent("agent.yaml", yaml).trigger.timezone).toBe(tz);
+    const agent = parseAgent("agent.yaml", yaml);
+    if (agent.trigger.type !== "cron") throw new Error("expected cron trigger");
+    expect(agent.trigger.timezone).toBe(tz);
   });
 });
 

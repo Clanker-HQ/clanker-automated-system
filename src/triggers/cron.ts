@@ -9,6 +9,7 @@ export function startCron(agents: AgentDef[], orchestrator: Orchestrator): Cron[
       console.log(`[cron] ${agent.name} is disabled; not scheduled`);
       continue;
     }
+    if (agent.trigger.type !== "cron") continue;
     const job = new Cron(
       agent.trigger.schedule,
       { timezone: agent.trigger.timezone, protect: true },

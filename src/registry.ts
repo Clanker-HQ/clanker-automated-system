@@ -103,8 +103,9 @@ export function loadRegistry(opts: {
     const rawTrigger = raw["trigger"] as Record<string, unknown> | undefined;
     const rawOutbox = raw["outbox"] as Record<string, unknown> | undefined;
     const name = agent?.name ?? asString(raw["name"]);
-    const schedule = agent?.trigger.schedule ?? asString(rawTrigger?.["schedule"]);
-    const timezone = agent?.trigger.timezone ?? asString(rawTrigger?.["timezone"]);
+    const triggerType = agent?.trigger.type ?? asString(rawTrigger?.["type"]);
+    const schedule = agent?.trigger.type === "cron" ? agent.trigger.schedule : asString(rawTrigger?.["schedule"]);
+    const timezone = agent?.trigger.type === "cron" ? agent.trigger.timezone : asString(rawTrigger?.["timezone"]);
     const discord = agent?.outbox.discord ?? asString(rawOutbox?.["discord"]);
 
     if (name !== undefined && name !== dirName) {
@@ -113,7 +114,7 @@ export function loadRegistry(opts: {
     if (!existsSync(promptPath)) {
       lines.push(`prompt.md is missing. Every agent needs its task in prompt.md`);
     }
-    if (schedule !== undefined && timezone !== undefined && !isValidCron(schedule, timezone)) {
+    if (triggerType === "cron" && schedule !== undefined && timezone !== undefined && !isValidCron(schedule, timezone)) {
       lines.push(
         `trigger.schedule: "${schedule}" is not a valid cron expression. Use five or six fields (croner also accepts a leading seconds field), e.g. "0 7 * * *" for 07:00 daily`,
       );

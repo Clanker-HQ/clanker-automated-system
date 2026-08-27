@@ -15,26 +15,53 @@
       "type": "string"
     },
     "trigger": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "cron"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "cron"
+            },
+            "schedule": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timezone": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "schedule",
+            "timezone"
+          ],
+          "additionalProperties": false
         },
-        "schedule": {
-          "type": "string",
-          "minLength": 1
-        },
-        "timezone": {
-          "type": "string"
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "webhook"
+            },
+            "repo": {
+              "type": "string",
+              "pattern": "^[\\w.-]+\\/[\\w.-]+$"
+            },
+            "event": {
+              "type": "string",
+              "const": "pull_request"
+            }
+          },
+          "required": [
+            "type",
+            "repo",
+            "event"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "type",
-        "schedule",
-        "timezone"
-      ],
-      "additionalProperties": false
+      ]
     },
     "run": {
       "type": "object",
