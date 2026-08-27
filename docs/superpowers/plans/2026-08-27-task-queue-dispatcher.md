@@ -1446,7 +1446,14 @@ needs it:
     // registered specialist at all), so there is no agent.outbox.discord to
     // report through — "smoke" is this project's one configured channel,
     // matching how agents/pr-reviewer and agents/smoke both already use it.
-    notify: (text) => outbox.postAlert("smoke", text),
+    // Wrapped in an async function with a bare await (rather than returning
+    // outbox.postAlert(...) directly): postAlert resolves to
+    // "delivered" | "undelivered", not void, and DispatcherDeps.notify's
+    // type is `(text: string) => Promise<void>` — the wrapper's inferred
+    // Promise<void> return type is what actually satisfies it.
+    notify: async (text) => {
+      await outbox.postAlert("smoke", text);
+    },
   });
 ```
 
