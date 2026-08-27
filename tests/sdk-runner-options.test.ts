@@ -451,7 +451,7 @@ describe("SdkRunner grant enforcement", () => {
 });
 
 describe("SdkRunner mergePR tool", () => {
-  function granted(repos: string[] = ["owner/repo"]) {
+  function granted() {
     return { ...AGENT, tier: "autonomous", approval: "auto", grantRefs: ["infra-repo"] } as unknown as AgentDef;
   }
   const GITHUB_PR_GRANT: Grant = { id: "infra-repo", kind: "github-pr", repos: ["owner/repo"], secret: "X" };
@@ -496,7 +496,7 @@ describe("SdkRunner mergePR tool", () => {
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
-    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/index.ts"] });
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
 
     expect(github.merged).toEqual([{ repo: "owner/repo", number: 1 }]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("merged") }] });
@@ -512,7 +512,49 @@ describe("SdkRunner mergePR tool", () => {
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
-    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/governor.ts"] });
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
+  });
+
+  // Regression test for the Task 7 review's Critical finding: the mergePR
+  // tool used to take `changedFiles` as a caller-supplied argument and check
+  // Gate 1 against THAT, not against what GitHub actually reports the PR
+  // touching — so a reviewing agent (via prompt injection in the PR body,
+  // a truncated file list, or plain model error) could claim a PR only
+  // touched "README.md" while it really touched src/governor.ts, and Gate 1
+  // would wave it through. `changedFiles` is no longer an input parameter at
+  // all (removed from the tool's schema), so there is no argument to lie
+  // through any more — this proves the excluded-path decision is made
+  // against `GithubTransport.getPullRequest`'s authoritative data by seeding
+  // a PR whose REAL changed files include an excluded path and confirming
+  // the tool still refuses even though the caller passes nothing describing
+  // the diff at all.
+  it("refuses to merge based on GitHub's authoritative changed files, not anything the caller could claim", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    // The PR's REAL diff touches an excluded path — this is what
+    // getPullRequest will report, and it's what Gate 1 must be checked
+    // against.
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/governor.ts", "README.md"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    // The call carries no description of the diff at all — proving Gate 1
+    // cannot be satisfied by omitting or lying about changed files, and
+    // (via the `as never` cast) that even a caller that still tries to pass
+    // a competing `changedFiles` field gets ignored, since the handler never
+    // reads it from its input.
+    const result = await mergeToolHandler(params)({
+      repo: "owner/repo",
+      number: 1,
+      expectedHeadSha: "sha-1",
+      changedFiles: ["README.md"],
+    } as never);
 
     expect(github.merged).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
@@ -528,7 +570,7 @@ describe("SdkRunner mergePR tool", () => {
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
-    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/index.ts"] });
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
 
     expect(github.merged).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/head|sha/i) }] });
@@ -544,9 +586,73 @@ describe("SdkRunner mergePR tool", () => {
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
-    const result = await mergeToolHandler(params)({ repo: "owner/other-repo", number: 1, expectedHeadSha: "sha-1", changedFiles: ["src/index.ts"] });
+    const result = await mergeToolHandler(params)({ repo: "owner/other-repo", number: 1, expectedHeadSha: "sha-1" });
 
     expect(github.merged).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/grant/i) }] });
+  });
+
+  // Important finding #1: `repo` used to be a bare z.string(), which
+  // permits "" — detectOutwardEffect returns null for a falsy repo, and
+  // decide() treats a null effect as an unconditional allow. Not reachable
+  // to an actual merge (a real/fake transport 404s on repo: ""), but the
+  // schema itself must not rely on that. This test goes through the real
+  // MCP protocol layer (not the direct .handler access the other tests use)
+  // specifically because the schema's own validation is what's under test
+  // here, and calling .handler directly bypasses zod validation entirely.
+  it("rejects a malformed repo string at the schema level, never reaching the grant or GitHub calls", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const instance = params.options.mcpServers.githubPr.instance as unknown as {
+      connect: (t: unknown) => Promise<void>;
+    };
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    await Promise.all([instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: "mergePR",
+      arguments: { repo: "", number: 1, expectedHeadSha: "sha-1" },
+    });
+
+    expect(github.merged).toEqual([]);
+    expect(result.isError).toBe(true);
+    await client.close();
+  });
+
+  // Important finding #2: a "park" decide() outcome (a grant DID match, it
+  // just needs human approval) used to be reported with the same "no grant
+  // authorises" text as an outright deny — which is factually wrong and
+  // misleads the agent into thinking it's a config problem rather than a
+  // pending-approval state. Behavior (refuse) is unchanged; only the message
+  // must now distinguish the two.
+  it("refuses with a distinct message when the matched grant needs human approval, not the no-grant message", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/index.ts"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const notAuto = { ...AGENT, tier: "autonomous", approval: "notify", grantRefs: ["infra-repo"] } as unknown as AgentDef;
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(notAuto, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: expect.stringMatching(/approval/i) }],
+    });
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: expect.not.stringMatching(/no grant authorises/i) }],
+    });
   });
 });

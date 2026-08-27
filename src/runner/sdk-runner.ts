@@ -314,12 +314,22 @@ export class SdkRunner implements Runner {
     // earlier gate's outcome:
     //   1. excluded-path check — a PR touching a security-sensitive path can
     //      never merge through this pipeline, no matter what grant or review
-    //      exists.
+    //      exists. Checked against `getPullRequest`'s own authoritative
+    //      `changedFiles`, NOT anything the calling model supplies — a
+    //      `changedFiles` tool argument would be exactly the kind of value
+    //      "trusted from an earlier step" that Lock 4 exists to rule out
+    //      (prompt injection in the PR diff/body, a truncated file list, or
+    //      plain model error could all under-report what a PR touches), so
+    //      the tool doesn't accept one at all.
     //   2. grant check — does this agent hold a github-pr grant covering this
     //      repo, via decide()/detectOutwardEffect/matchGrant.
-    //   3. stale-SHA check — GithubTransport.mergePullRequest itself refuses
-    //      if the PR's head has moved past what was reviewed.
-    const githubPrServer = this.deps.github
+    //   3. stale-SHA check — the freshly-fetched head is compared against
+    //      what the agent believed it reviewed, then GithubTransport.
+    //      mergePullRequest re-verifies the same thing itself immediately
+    //      before merging (defense in depth against a commit landing in the
+    //      gap between the fetch above and the merge call).
+    const github = this.deps.github;
+    const githubPrServer = github
       ? createSdkMcpServer({
           name: "githubPr",
           tools: [
@@ -327,16 +337,18 @@ export class SdkRunner implements Runner {
               "mergePR",
               "Merge a pull request that has passed review. Only succeeds if the repo is granted, the diff doesn't touch a security-sensitive path, and the PR's head hasn't moved since you reviewed it.",
               {
-                repo: z.string(),
+                repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
                 number: z.number().int().positive(),
                 expectedHeadSha: z.string().min(1),
-                changedFiles: z.array(z.string()),
               },
-              async ({ repo, number, expectedHeadSha, changedFiles }) => {
-                // Gate 1 — the excluded-path check. This runs first and
+              async ({ repo, number, expectedHeadSha }) => {
+                const info = await github.getPullRequest(repo, number);
+
+                // Gate 1 — the excluded-path check, against the PR's real,
+                // GitHub-reported changed files. This runs first and
                 // unconditionally: no grant, no review verdict, nothing
                 // later in this handler can override it.
-                if (touchesExcludedPath(changedFiles)) {
+                if (touchesExcludedPath(info.changedFiles)) {
                   return {
                     content: [
                       {
@@ -350,15 +362,29 @@ export class SdkRunner implements Runner {
                 // Gate 2 — does this agent hold a github-pr grant covering this repo?
                 const decision = decide(agent, this.deps.grants, "mergePR", { repo });
                 if (decision.kind !== "allow") {
-                  return {
-                    content: [
-                      { type: "text" as const, text: `Refused: no grant authorises merging pull requests in "${repo}".` },
-                    ],
-                  };
+                  // A "park" decision means a grant DID match but needs human
+                  // approval — this tool has no mechanism (unlike canUseTool)
+                  // to suspend mid-call and wait for that, so it still
+                  // refuses, but the message must not claim no grant exists.
+                  const text =
+                    decision.kind === "park"
+                      ? `Refused: merging "${repo}" requires human approval of grant "${decision.grantRef}", which this tool cannot wait for.`
+                      : `Refused: no grant authorises merging pull requests in "${repo}".`;
+                  return { content: [{ type: "text" as const, text }] };
                 }
 
                 // Gate 3 — has a newer commit landed since this PR was reviewed?
-                const result = await this.deps.github!.mergePullRequest(repo, number, expectedHeadSha);
+                if (info.headSha !== expectedHeadSha) {
+                  return {
+                    content: [
+                      {
+                        type: "text" as const,
+                        text: `Refused: PR head moved (expected ${expectedHeadSha}, now ${info.headSha}) — a newer commit landed since review started.`,
+                      },
+                    ],
+                  };
+                }
+                const result = await github.mergePullRequest(repo, number, expectedHeadSha);
                 if (!result.merged) {
                   return { content: [{ type: "text" as const, text: `Refused: ${result.reason}` }] };
                 }

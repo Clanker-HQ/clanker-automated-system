@@ -163,6 +163,10 @@ export function detectOutwardEffect(toolName: string, input: Record<string, unkn
     return url ? { kind: "http", description: `fetch ${url}`, target: url } : null;
   }
 
+  // Only reachable via the mergePR tool handler's own direct decide() call
+  // (src/runner/sdk-runner.ts) — mergePR never routes through the
+  // canUseTool/detectOutwardEffect path the SDK's own tool-call interception
+  // uses, since it's a custom MCP tool the handler gates internally.
   if (toolName === "mergePR") {
     const repo = typeof input.repo === "string" ? input.repo : "";
     return repo ? { kind: "github-pr", description: `merge PR in ${repo}`, target: repo } : null;
