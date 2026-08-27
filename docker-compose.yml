@@ -2,6 +2,14 @@ services:
   supervisor:
     build: .
     env_file: .env
+    # The webhook receiver (src/index.ts) binds WEBHOOK_PORT inside the
+    # container; without publishing it, GitHub's webhook — delivered to the
+    # host via a tunnel (ngrok) or a reverse proxy — can never reach it, and
+    # no PR would ever be reviewed. Same port inside and out so the tunnel's
+    # target matches WEBHOOK_PORT exactly, and the default matches
+    # src/index.ts's own fallback of 8787.
+    ports:
+      - "${WEBHOOK_PORT:-8787}:${WEBHOOK_PORT:-8787}"
     volumes:
       - agent-data:/app/data
       # Read-only: the supervisor reads its own definitions but cannot rewrite
