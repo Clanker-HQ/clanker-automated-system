@@ -98,7 +98,7 @@ function harness(
     breaker: new BreakerStore(dataDir),
     approvedGrants,
   });
-  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants };
+  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants, runner };
 }
 
 /** The URL and parsed JSON body of one recorded webhook POST. */
@@ -426,6 +426,23 @@ describe("Orchestrator.executeRun", () => {
     });
     await orchestrator.executeRun(AGENT);
     expect(governor.recordRateLimitError).toHaveBeenCalledTimes(1);
+  });
+
+  it("appends promptContext to the file-read prompt when provided", async () => {
+    const { agent, orchestrator, runner } = harness({ events: [{ type: "assistant", text: "ok" }] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    await orchestrator.executeRun(agent, new Date(), "Extra per-run context.");
+    const ctxArg = executeSpy.mock.calls[0]![1] as { prompt: string };
+    expect(ctxArg.prompt).toContain("Do the thing.");
+    expect(ctxArg.prompt).toContain("Extra per-run context.");
+  });
+
+  it("prompt is unchanged when promptContext is omitted (cron's existing behaviour)", async () => {
+    const { agent, orchestrator, runner } = harness({ events: [{ type: "assistant", text: "ok" }] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    await orchestrator.executeRun(agent);
+    const ctxArg = executeSpy.mock.calls[0]![1] as { prompt: string };
+    expect(ctxArg.prompt).toBe("Do the thing.");
   });
 
   it("refuses to resume a pending entry with no sessionId, without touching the runner", async () => {

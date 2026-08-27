@@ -44,7 +44,13 @@ export class Orchestrator {
     this.onParked = opts.onParked;
   }
 
-  async executeRun(agent: AgentDef, now: Date = new Date()): Promise<RunResult | undefined> {
+  /**
+   * @param promptContext Extra per-invocation content appended to the
+   * file-read prompt. `agent.promptPath` alone is enough for a `cron` agent
+   * (the same task every day), but a `webhook` agent needs to say which PR
+   * this particular run is about — that's what this parameter carries.
+   */
+  async executeRun(agent: AgentDef, now: Date = new Date(), promptContext?: string): Promise<RunResult | undefined> {
     const admitted = await this.governor.admit(agent, "trigger");
     if (admitted.kind === "refuse") {
       console.log(`[governor] refused ${agent.name}: ${admitted.reason}`);
@@ -58,7 +64,9 @@ export class Orchestrator {
 
     try {
       const runId = newRunId(agent.name, now);
-      const result = await this.runAndRecord(agent, runId, { runId, workspace: agent.workspace, prompt: await readFile(agent.promptPath, "utf8") });
+      const basePrompt = await readFile(agent.promptPath, "utf8");
+      const prompt = promptContext ? `${basePrompt}\n\n${promptContext}` : basePrompt;
+      const result = await this.runAndRecord(agent, runId, { runId, workspace: agent.workspace, prompt });
       // Only a *trigger* feeds the breaker. A resume is a human deliberately
       // pushing an already-parked run forward, and Governor.admit already
       // skips the breaker check entirely for kind === "resume" — counting its
