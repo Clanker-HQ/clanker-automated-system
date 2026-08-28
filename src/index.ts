@@ -175,7 +175,7 @@ function main(): void {
     // No agent has been chosen yet at this point (a routing failure, or no
     // registered specialist at all), so there is no agent.outbox.discord to
     // report through — "smoke" is this project's one configured channel,
-    // matching how agents/pr-reviewer and agents/smoke both already use it.
+    // matching how agents/pr-reviewer already uses it.
     // Wrapped in an async function with a bare await (rather than returning
     // outbox.postAlert(...) directly): postAlert resolves to
     // "delivered" | "undelivered", not void, and DispatcherDeps.notify's
