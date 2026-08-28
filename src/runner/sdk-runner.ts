@@ -458,11 +458,20 @@ export class SdkRunner implements Runner {
                         };
                       }
 
-                      await gitPusher.push({
-                        cwd: ctx.workspace,
-                        remoteUrl: `https://x-access-token:${token}@github.com/${repo}.git`,
-                        branch,
-                      });
+                      try {
+                        await gitPusher.push({
+                          cwd: ctx.workspace,
+                          remoteUrl: `https://x-access-token:${token}@github.com/${repo}.git`,
+                          branch,
+                        });
+                      } catch {
+                        // Never interpolate the caught error: RealGitPusher shells out via
+                        // execFile, and a failing `git push` rejects with an Error whose
+                        // .message includes the full argv — including the credential-bearing
+                        // remoteUrl built above. Surfacing that back to the model/transcript
+                        // would leak the live push token in plaintext.
+                        return { content: [{ type: "text" as const, text: `Refused: push to ${repo}:${branch} failed.` }] };
+                      }
                       return { content: [{ type: "text" as const, text: `Pushed HEAD to ${repo}:${branch}.` }] };
                     },
                   ),

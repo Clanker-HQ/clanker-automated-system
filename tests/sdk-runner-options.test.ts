@@ -858,5 +858,36 @@ describe("SdkRunner GitHub PR tools", () => {
       expect(github.merged).toEqual([]);
       expect(mergeResult).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/no grant authorises/i) }] });
     });
+
+    // Fix for the review's Important finding: RealGitPusher shells out via
+    // execFile, and a failing `git push` rejects with an Error whose
+    // .message includes the full argv — including the credential-bearing
+    // remoteUrl (https://x-access-token:<token>@github.com/...). The handler
+    // must never let that raw error's text reach the caller/transcript.
+    it("returns a sanitized refusal, never the raw error, when GitPusher.push() throws", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("BUILDER_PUSH_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitPusher = {
+        pushed: [] as unknown[],
+        push: async () => {
+          throw new Error(
+            "Command failed: git -C /work push https://x-access-token:tok@github.com/owner/repo.git HEAD:refs/heads/agent/builder/add-x\nerror: non-fast-forward",
+          );
+        },
+      };
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitPusher });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as PushBranchParams;
+
+      const result = await pushBranchHandler(params)({ repo: "owner/repo", branch: "agent/builder/add-x" });
+
+      const text = (result as { content: { type: string; text: string }[] }).content[0]!.text;
+      expect(text).not.toContain("tok");
+      expect(text).not.toContain("Command failed");
+      expect(text).toMatch(/failed/i);
+    });
   });
 });
