@@ -312,6 +312,40 @@ describe("DiscordBot task commands", () => {
     expect(transport.sent[0]?.text).toContain("Usage");
   });
 
+  it("!task -d flags the task for a detailed summary and strips the flag from the text", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task -d find a profitable SaaS idea" });
+    const all = await tasks.list();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.text).toBe("find a profitable SaaS idea");
+    expect(all[0]?.wantsDetail).toBe(true);
+  });
+
+  it("!task without -d leaves wantsDetail unset", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task find a profitable SaaS idea" });
+    expect((await tasks.list())[0]?.wantsDetail).toBeUndefined();
+  });
+
+  it("!task -d with nothing after the flag replies with usage and creates nothing", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task -d" });
+    expect(await tasks.list()).toEqual([]);
+    expect(transport.sent[0]?.text).toContain("Usage");
+  });
+
+  it("a word that merely starts with -d is literal text, not the detail flag", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task -detailed report please" });
+    const all = await tasks.list();
+    expect(all[0]?.text).toBe("-detailed report please");
+    expect(all[0]?.wantsDetail).toBeUndefined();
+  });
+
   it("!tasks lists pending, running, and waiting tasks, not finished ones", async () => {
     const { transport, bot, tasks } = setup();
     await tasks.create({ text: "a pending one", createdBy: "discord:owner" });

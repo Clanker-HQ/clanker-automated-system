@@ -55,6 +55,14 @@ describe("TaskStore", () => {
     expect(task.parentId).toBe("parent-1");
   });
 
+  it("honours wantsDetail, and leaves it unset by default", async () => {
+    const s = store();
+    const detailed = await s.create({ text: "x", createdBy: "discord:owner", wantsDetail: true });
+    expect(detailed.wantsDetail).toBe(true);
+    const plain = await s.create({ text: "y", createdBy: "discord:owner" });
+    expect(plain.wantsDetail).toBeUndefined();
+  });
+
   it("update merges a patch and persists it", async () => {
     const s = store();
     const task = await s.create({ text: "x", createdBy: "discord:owner" });

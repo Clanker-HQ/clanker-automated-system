@@ -23,6 +23,8 @@ export interface Task {
   parentId?: string;
   result?: { summary: string; path: string };
   failureReason?: string;
+  /** Set when the requester asked for a longer, more substantive final summary than the specialist's default. */
+  wantsDetail?: boolean;
 }
 
 export class TaskStore {
@@ -36,7 +38,7 @@ export class TaskStore {
     return join(this.dir(), `${id}.json`);
   }
 
-  async create(input: { text: string; priority?: number; createdBy: string; parentId?: string }): Promise<Task> {
+  async create(input: { text: string; priority?: number; createdBy: string; parentId?: string; wantsDetail?: boolean }): Promise<Task> {
     await mkdir(this.dir(), { recursive: true });
     const task: Task = {
       id: randomUUID(),
@@ -46,6 +48,7 @@ export class TaskStore {
       createdBy: input.createdBy,
       createdAt: new Date().toISOString(),
       ...(input.parentId ? { parentId: input.parentId } : {}),
+      ...(input.wantsDetail ? { wantsDetail: true } : {}),
     };
     await writeFile(this.path(task.id), JSON.stringify(task, null, 2) + "\n");
     return task;

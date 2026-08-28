@@ -66,6 +66,20 @@ describe("runDispatchTick", () => {
     expect(updated?.result).toEqual({ summary: "Found three ideas.", path: join(dataDir, "runs", "research-1") });
   });
 
+  it("appends a detail instruction to the prompt when the task wants a detailed summary", async () => {
+    const { tasks, dataDir } = taskStore();
+    await tasks.create({ text: "find a profitable niche", createdBy: "discord:owner", wantsDetail: true });
+    const executeRun = vi.fn().mockResolvedValue(successResult());
+    await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+    });
+    const [, , promptContext] = executeRun.mock.calls[0]!;
+    expect(promptContext).toContain("find a profitable niche");
+    expect(promptContext).toContain("more detail");
+    expect(promptContext).toContain("Discord doesn't render markdown tables");
+  });
+
   it("marks the task failed, with the run's own error, when the run doesn't succeed", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });

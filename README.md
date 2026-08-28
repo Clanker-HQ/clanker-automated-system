@@ -105,7 +105,7 @@ try again later, the id stays valid. Entries older than
 | `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `22:00-07:00` would never actually suppress anything, since `from` must be earlier than `to`; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |
 | `!quiet off` | Disable quiet hours |
 | `!runs` | The last 20 runs — id, status, cost |
-| `!task <text>` | Queue a free-form request; replies with its task id |
+| `!task [-d] <text>` | Queue a free-form request; replies with its task id. `-d` asks for a longer final summary |
 | `!tasks` | Tasks not yet finished — id, status, truncated text |
 
 These write to `data/config-overrides.json` and take effect on the next
@@ -120,7 +120,11 @@ reads the open web and writes up what it finds, with no code changes, no
 publishing, and no spending. When the run finishes, the channel gets a
 task-id-correlated line (`✅ Task <id> done: …` or `❌ Task <id> failed: …`)
 alongside the agent's own run report, and the full artifact is on disk under
-`data/runs/<runId>/`. A task whose run parks for an approve/deny/answer shows
+`data/runs/<runId>/`. That completion line is a short summary by default;
+`!task -d <text>` asks the specialist for a longer, more substantive one in
+that same message instead — still whatever shape fits (a list, a short
+comparison), not forced into paragraphs, and still capped for readability.
+A task whose run parks for an approve/deny/answer shows
 as `waiting` in `!tasks` — the run is alive, not failed. Known limitation: the
 resume path knows about runs, not tasks, so a resumed task stays `waiting` on
 record even after the run itself completes; the run's own report is the source

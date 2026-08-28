@@ -267,8 +267,17 @@ export class DiscordBot {
         // join(" "), which collapses runs of whitespace and destroys newlines —
         // fine for `!budget 25`, destructive for a multi-line free-form request.
         const raw = msg.content.trim().slice(command.length).trim();
-        if (!raw) return void reply("Usage: `!task <free-form request>`");
-        const task = await this.tasks.create({ text: raw, createdBy: `discord:${msg.authorId}` });
+        // `-d` is a leading flag, not part of the request: matched only as
+        // "-d" alone or "-d" + whitespace, so a real request that happens to
+        // start with a word like "-detailed" is left as literal text.
+        const detailMatch = raw.match(/^-d(?:\s+([\s\S]+))?$/);
+        const text = detailMatch ? (detailMatch[1] ?? "").trim() : raw;
+        if (!text) return void reply("Usage: `!task [-d] <free-form request>`");
+        const task = await this.tasks.create({
+          text,
+          createdBy: `discord:${msg.authorId}`,
+          ...(detailMatch ? { wantsDetail: true } : {}),
+        });
         void this.dispatcher.wake().catch((err: unknown) => {
           console.error(`[bot] dispatcher wake failed after !task ${task.id}:`, err);
         });

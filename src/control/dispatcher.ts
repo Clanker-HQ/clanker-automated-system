@@ -53,6 +53,22 @@ async function notifyBestEffort(deps: DispatcherDeps, text: string): Promise<voi
   }
 }
 
+/**
+ * Content shape, not paragraph count, is the actual constraint: a list of
+ * ideas should stay a list, a comparison should stay a comparison — forcing
+ * either into prose would make it worse, not more detailed. Discord's
+ * markdown has no table syntax, so a genuine side-by-side comparison needs a
+ * fenced code block (or two labeled bullet lists) to render at all.
+ */
+const DETAIL_INSTRUCTION =
+  "(The requester asked for more detail this time — give a longer, more " +
+  "substantive final summary than your default. Use whichever format " +
+  "actually fits the content best (a short paragraph, a bulleted list, " +
+  "labeled sections) rather than forcing prose, and keep it skimmable, " +
+  "roughly under 250 words. Discord doesn't render markdown tables, so if a " +
+  "side-by-side comparison genuinely helps, use a fenced code block to keep " +
+  "it aligned, or two labeled bullet lists instead.)";
+
 function specialistsOf(agents: AgentDef[]): Specialist[] {
   return agents
     .filter((a) => a.enabled && a.trigger.type === "dispatched")
@@ -122,7 +138,11 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
 
     await deps.tasks.update(task.id, { status: "running", specialistAgent: agent.name, startedAt: now().toISOString() });
 
-    const result = await deps.orchestrator.executeRun(agent, now(), task.text);
+    // Applied here, not in each specialist's own prompt.md, so every current
+    // and future dispatched agent gets the same "-d" behavior for free rather
+    // than each needing its own copy of this instruction.
+    const promptContext = task.wantsDetail ? `${task.text}\n\n${DETAIL_INSTRUCTION}` : task.text;
+    const result = await deps.orchestrator.executeRun(agent, now(), promptContext);
 
     if (!result) {
       // Governor refused admission (quiet hours, budget, breaker, STOP file) —
