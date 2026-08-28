@@ -62,6 +62,7 @@ function main(): void {
   let webhookSecret: string;
   let webhookPort: number;
   let github: GithubApiTransport;
+  let dispatcher: Dispatcher | undefined;
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
@@ -81,7 +82,16 @@ function main(): void {
     webhookSecret = mustEnv("GITHUB_WEBHOOK_SECRET");
     webhookPort = parsePort("WEBHOOK_PORT", process.env.WEBHOOK_PORT, 8787);
     github = new GithubApiTransport({ token: githubToken });
-    runner = buildRunner({ grants, pending: new PendingStore(DATA_DIR), github });
+    runner = buildRunner({
+      grants, pending: new PendingStore(DATA_DIR), github,
+      tasks: new TaskStore(DATA_DIR),
+      // Late-bound: `dispatcher` isn't constructed until after boot's config/
+      // credential validation completes (same reason `bot` below is late-bound
+      // too) — but this closure is only ever CALLED much later, once a real
+      // agent run actually invokes queueTask, by which point `dispatcher`
+      // is always set.
+      wake: async () => { if (dispatcher) await dispatcher.wake(); },
+    });
     if (runner instanceof SdkRunner) {
       // Resolved once, here, rather than only inside SdkRunner.execute: that
       // body does not run until the orchestrator's first next(), so a missing
@@ -166,7 +176,7 @@ function main(): void {
   });
 
   const router = buildRouter();
-  const dispatcher = new Dispatcher({
+  dispatcher = new Dispatcher({
     tasks,
     router,
     agents,

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PendingStore } from "../src/control/pending.js";
+import { TaskStore } from "../src/control/task-store.js";
 import { buildRunner } from "../src/runner/build-runner.js";
 import { FakeRunner } from "../src/runner/fake-runner.js";
 import { SdkRunner } from "../src/runner/sdk-runner.js";
@@ -32,6 +33,14 @@ describe("buildRunner", () => {
   it("passes the grants and pending store through to the real runner's constructor", () => {
     const { grants, pending } = opts();
     const runner = buildRunner({ grants, pending }, {}) as SdkRunner;
+    expect(runner).toBeInstanceOf(SdkRunner);
+  });
+
+  it("accepts tasks/wake and still returns the real runner when provided", () => {
+    const { grants, pending } = opts();
+    const tasks = new TaskStore(mkdtempSync(join(tmpdir(), "cai-buildrunner-")));
+    const wake = async () => {};
+    const runner = buildRunner({ grants, pending, tasks, wake }, {}) as SdkRunner;
     expect(runner).toBeInstanceOf(SdkRunner);
   });
 });

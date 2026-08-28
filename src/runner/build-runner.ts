@@ -1,5 +1,6 @@
 import type { GithubTransport } from "../control/github-transport.js";
 import type { PendingStore } from "../control/pending.js";
+import type { TaskStore } from "../control/task-store.js";
 import type { Grant } from "../grants.js";
 import { FakeRunner } from "./fake-runner.js";
 import { SdkRunner } from "./sdk-runner.js";
@@ -17,7 +18,7 @@ import type { Runner } from "./types.js";
  * supervisor.
  */
 export function buildRunner(
-  opts: { grants: Grant[]; pending: PendingStore; github?: GithubTransport },
+  opts: { grants: Grant[]; pending: PendingStore; github?: GithubTransport; tasks?: TaskStore; wake?: () => Promise<void> },
   env: NodeJS.ProcessEnv = process.env,
 ): Runner {
   if (env.RUNNER === "fake") {
