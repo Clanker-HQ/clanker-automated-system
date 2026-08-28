@@ -890,4 +890,62 @@ describe("SdkRunner GitHub PR tools", () => {
       expect(text).toMatch(/failed/i);
     });
   });
+
+  describe("openPR", () => {
+    function openPrHandler(params: {
+      options: { mcpServers: { githubPr: { instance: { _registeredTools: Record<string, { handler: (input: unknown) => Promise<unknown> }> } } } };
+    }): (input: unknown) => Promise<unknown> {
+      return params.options.mcpServers.githubPr!.instance._registeredTools.openPR!.handler;
+    }
+
+    it("is registered whenever github is present, independent of gitPusher", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      // Deliberately no gitPusher.
+      const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), github });
+      await collect(runner.execute(granted(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+      expect(params.options.mcpServers.githubPr.instance._registeredTools.openPR).toBeDefined();
+    });
+
+    it("opens a pull request via GithubTransport when head is in the agent/builder/ namespace", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), github });
+      await collect(runner.execute(granted(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+      const result = await openPrHandler(params)({
+        repo: "owner/repo",
+        head: "agent/builder/add-x",
+        base: "main",
+        title: "Add X",
+        body: "Because Y.",
+      });
+
+      expect(github.createdPullRequests).toEqual([
+        { repo: "owner/repo", head: "agent/builder/add-x", base: "main", title: "Add X", body: "Because Y." },
+      ]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Opened https://github.com/owner/repo/pull/1") }] });
+    });
+
+    it("refuses a head outside the agent/builder/ namespace, without calling GithubTransport", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), github });
+      await collect(runner.execute(granted(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+      const result = await openPrHandler(params)({ repo: "owner/repo", head: "main", base: "main", title: "t", body: "b" });
+
+      expect(github.createdPullRequests).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/agent\/builder\//) }] });
+    });
+  });
 });

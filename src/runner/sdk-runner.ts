@@ -477,6 +477,29 @@ export class SdkRunner implements Runner {
                   ),
                 ]
               : []),
+            tool(
+              "openPR",
+              "Open a pull request for a branch that was already pushed via pushBranch. Never gated: by the time this runs, the code is already public on a branch that can only ever be outside the default branch — merging, the actual point of risk, stays behind mergePR's own gates.",
+              {
+                repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
+                head: z.string().min(1),
+                base: z.string().min(1),
+                title: z.string().min(1),
+                body: z.string(),
+              },
+              async ({ repo, head, base, title, body }) => {
+                // Defense in depth, not a security boundary on its own —
+                // pushBranch already refused any branch outside this
+                // namespace before code could reach GitHub at all.
+                if (!/^agent\/builder\//.test(head)) {
+                  return {
+                    content: [{ type: "text" as const, text: `Refused: "${head}" is outside the agent/builder/ namespace.` }],
+                  };
+                }
+                const pr = await github.createPullRequest(repo, { head, base, title, body });
+                return { content: [{ type: "text" as const, text: `Opened ${pr.url}.` }] };
+              },
+            ),
           ],
         })
       : undefined;
