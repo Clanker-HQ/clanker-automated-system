@@ -49,8 +49,17 @@ export async function reconcileAndConnectBot(opts: {
   }
   log(`[pending] ${active.length} awaiting a response after startup`);
 
+  // Runs regardless of Discord connectivity, same as reconcile() above — a
+  // dispatched task's record staying accurate doesn't depend on whether the
+  // failure can also be announced in the channel right now.
+  const failedTasks = await opts.bot.failTasksForExpiredEntries(expired);
+  for (const { task } of failedTasks) {
+    log(`[pending] task ${task.id} marked failed — its approval/question request expired unanswered`);
+  }
+
   const connected = await botStartPromise;
   if (!connected) return;
+  if (failedTasks.length > 0) await opts.bot.notifyExpiredTaskFailures(failedTasks);
   for (const entry of active) {
     if (entry.kind === "approval") await opts.bot.postApproval(entry);
     else await opts.bot.postQuestion(entry);

@@ -32,7 +32,7 @@ function setup() {
       adjustConcurrency: () => { throw new Error("not used in this test"); },
     },
   });
-  return { dataDir, pending, transport, bot };
+  return { dataDir, pending, transport, bot, tasks };
 }
 
 describe("reconcileAndConnectBot", () => {
@@ -75,5 +75,45 @@ describe("reconcileAndConnectBot", () => {
     await reconcileAndConnectBot({ pending, bot, timeoutHours: 24, log: () => {}, logError: () => {} });
 
     expect(transport.sent.some((m) => m.text.includes(active.question!))).toBe(true);
+  });
+
+  it("fails a task waiting on an expired entry's run, even when the bot never connects", async () => {
+    const { pending, transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "look into X", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "waiting", runId: "r1" });
+    await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "question", question: "stale?" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    transport.startError = new Error("bad token");
+    await reconcileAndConnectBot({ pending, bot, timeoutHours: 0, log: () => {}, logError: () => {} });
+
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("failed");
+    expect(updated?.failureReason).toContain("timed out");
+    // Never announced — the connection never succeeded.
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it("notifies the channel about a task failed by an expired entry once the bot connects", async () => {
+    const { pending, transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "look into X", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "waiting", runId: "r1" });
+    await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "question", question: "stale?" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await reconcileAndConnectBot({ pending, bot, timeoutHours: 0, log: () => {}, logError: () => {} });
+
+    expect(transport.sent.some((m) => m.text.includes(task.id) && m.text.includes("failed"))).toBe(true);
+  });
+
+  it("leaves unrelated tasks alone when an entry expires with no matching waiting task", async () => {
+    const { pending, tasks, bot } = setup();
+    const pendingTask = await tasks.create({ text: "still queued", createdBy: "discord:owner" });
+    await pending.create({ runId: "some-other-run", agentName: "smoke", sessionId: "s1", kind: "question", question: "stale?" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await reconcileAndConnectBot({ pending, bot, timeoutHours: 0, log: () => {}, logError: () => {} });
+
+    expect((await tasks.get(pendingTask.id))?.status).toBe("pending");
   });
 });

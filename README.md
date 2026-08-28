@@ -142,10 +142,12 @@ comparison), not forced into paragraphs, and still capped for readability.
 A task whose run parks for an approve/deny/answer shows as `waiting` in
 `!tasks` — the run is alive, not failed. Once you `approve`/`deny`/`answer`
 it to real completion, the task record catches up too — done with its result,
-or failed with the reason — the same way a task that never parked would.
-Narrower residual gap: an entry that expires and gets auto-denied on a
-restart, rather than resolved interactively, never goes through this path,
-so a task behind that specific entry stays `waiting` on record.
+or failed with the reason — the same way a task that never parked would. An
+entry that instead ages past `governor.pendingTimeoutHours` and is
+auto-denied on restart is handled too: the task behind it is marked `failed`
+(reason: the request timed out unanswered) at the same startup reconciliation
+pass that auto-denies the entry, so it never sits `waiting` forever with
+nothing actually coming.
 
 `!tasks` only lists what's still active, so once a task finishes its
 completion message in the channel is the only other record of it —

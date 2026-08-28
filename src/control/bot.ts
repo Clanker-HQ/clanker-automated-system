@@ -251,10 +251,9 @@ export class DiscordBot {
    * park too — so finding no match here is the common, expected case, not
    * an error.
    *
-   * Known residual gap: an entry that expires and is auto-denied on restart
-   * (reconcileAndConnectBot) never goes through resumeRun at all, so a task
-   * behind THAT specific entry still stays "waiting" forever. Narrower than
-   * before, not eliminated.
+   * An entry that instead expires and is auto-denied on restart never
+   * reaches this method (it never goes through resumeRun at all) — see
+   * failTasksForExpiredEntries below for that path.
    */
   private async reconcileTaskForResumedRun(entry: PendingEntry, result: RunResult): Promise<void> {
     const task = (await this.tasks.list()).find((t) => t.status === "waiting" && t.runId === entry.runId);
@@ -274,6 +273,41 @@ export class DiscordBot {
       const reason = result.error ?? `run ended with status "${result.status}"`;
       await this.tasks.update(task.id, { status: "failed", finishedAt: new Date().toISOString(), failureReason: reason });
       await this.transport.send(this.channelFor(entry.agentName), `❌ Task \`${task.id}\` failed: ${reason}`);
+    }
+  }
+
+  /**
+   * The counterpart to reconcileTaskForResumedRun for entries that never get
+   * resumed at all: `PendingStore.reconcile` (called from boot-wiring at
+   * startup) auto-denies any approval/question older than
+   * `governor.pendingTimeoutHours` by simply deleting its pending-store
+   * entry — it never calls resumeRun, so a dispatched task waiting on that
+   * run's id would otherwise stay "waiting" in `!tasks`/`!result`/the digest
+   * forever, even though nothing is ever coming for it. Called unconditionally
+   * from boot-wiring, independent of whether the Discord connection itself
+   * succeeds — the task record's correctness doesn't depend on that.
+   *
+   * Same caveat as reconcileTaskForResumedRun: not every parked run belongs
+   * to a dispatched task, so finding no match is the common, expected case.
+   */
+  async failTasksForExpiredEntries(expired: readonly PendingEntry[]): Promise<{ entry: PendingEntry; task: Task }[]> {
+    if (expired.length === 0) return [];
+    const all = await this.tasks.list();
+    const failed: { entry: PendingEntry; task: Task }[] = [];
+    for (const entry of expired) {
+      const task = all.find((t) => t.status === "waiting" && t.runId === entry.runId);
+      if (!task) continue;
+      const reason = `the pending ${entry.kind} request timed out with no response and was auto-denied at restart`;
+      const updated = await this.tasks.update(task.id, { status: "failed", finishedAt: new Date().toISOString(), failureReason: reason });
+      failed.push({ entry, task: updated });
+    }
+    return failed;
+  }
+
+  /** Best-effort notification for failTasksForExpiredEntries' result — split out because it needs a live Discord connection, unlike the task update itself. */
+  async notifyExpiredTaskFailures(failed: readonly { entry: PendingEntry; task: Task }[]): Promise<void> {
+    for (const { entry, task } of failed) {
+      await this.transport.send(this.channelFor(entry.agentName), `❌ Task \`${task.id}\` failed: ${task.failureReason}`);
     }
   }
 
