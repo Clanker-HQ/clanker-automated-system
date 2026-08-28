@@ -203,6 +203,28 @@ describe("detectOutwardEffect", () => {
   });
 });
 
+describe("detectOutwardEffect: pushBranch", () => {
+  it("reports a git-push effect carrying the branch", () => {
+    const effect = detectOutwardEffect("pushBranch", { repo: "owner/repo", branch: "agent/builder/add-x" });
+    expect(effect).toEqual({
+      kind: "git-push",
+      description: "push agent/builder/add-x to owner/repo",
+      target: "owner/repo",
+      branch: "agent/builder/add-x",
+    });
+  });
+
+  it("returns null when repo is missing or not a string", () => {
+    expect(detectOutwardEffect("pushBranch", { branch: "agent/builder/x" })).toBeNull();
+    expect(detectOutwardEffect("pushBranch", { repo: 1, branch: "agent/builder/x" })).toBeNull();
+  });
+
+  it("returns null when branch is missing or not a string", () => {
+    expect(detectOutwardEffect("pushBranch", { repo: "owner/repo" })).toBeNull();
+    expect(detectOutwardEffect("pushBranch", { repo: "owner/repo", branch: 1 })).toBeNull();
+  });
+});
+
 describe("matchGrant", () => {
   it("matches a wildcard github-pr grant against any repo", () => {
     const wildcard = parseGrants(
@@ -261,6 +283,44 @@ describe("matchGrant", () => {
     )[0]!;
     const httpEffect = detectOutwardEffect("WebFetch", { url: "https://httpbin.org/post" })!;
     expect(matchGrant([provision], httpEffect)).toBeNull();
+  });
+});
+
+describe("matchGrant: git-push branch enforcement", () => {
+  // Built via parseGrants, matching this file's established convention (see
+  // PUSH_SITE above) rather than a literal `Grant`-typed object — no new
+  // import is needed and the grant is validated the same way a real one is.
+  const BUILDER_PUSH = parseGrants(
+    "grants.yaml",
+    'grants:\n  - id: builder-push\n    kind: git-push\n    remote: "owner/repo"\n    branches: ["agent/builder/*"]\n    secret: X\n',
+  )[0]!;
+
+  it("matches when remote and branch both match a pushBranch effect", () => {
+    const effect = detectOutwardEffect("pushBranch", { repo: "owner/repo", branch: "agent/builder/add-x" })!;
+    expect(matchGrant([BUILDER_PUSH], effect)).toBe(BUILDER_PUSH);
+  });
+
+  it("rejects a pushBranch effect whose branch falls outside the grant's branches patterns", () => {
+    const effect = detectOutwardEffect("pushBranch", { repo: "owner/repo", branch: "main" })!;
+    expect(matchGrant([BUILDER_PUSH], effect)).toBeNull();
+  });
+
+  it("rejects a pushBranch effect whose remote doesn't match, even with a matching branch", () => {
+    const effect = detectOutwardEffect("pushBranch", { repo: "owner/other-repo", branch: "agent/builder/add-x" })!;
+    expect(matchGrant([BUILDER_PUSH], effect)).toBeNull();
+  });
+
+  it("does not apply branch enforcement to a raw Bash git push effect (branch is undefined)", () => {
+    const effect = detectOutwardEffect("Bash", { command: "git push owner/repo main" })!;
+    expect(effect.branch).toBeUndefined();
+    // remote matches "owner/repo" via globMatch on `remote`; branches is
+    // irrelevant here since effect.branch is undefined — unchanged behavior.
+    expect(matchGrant([BUILDER_PUSH], effect)).toBe(BUILDER_PUSH);
+  });
+
+  it("supports a glob pattern in branches, e.g. agent/builder/*", () => {
+    const effect = detectOutwardEffect("pushBranch", { repo: "owner/repo", branch: "agent/builder/deeply/nested-slug" })!;
+    expect(matchGrant([BUILDER_PUSH], effect)).toBe(BUILDER_PUSH);
   });
 });
 

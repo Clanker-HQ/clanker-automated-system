@@ -98,6 +98,8 @@ export interface OutwardEffect {
   kind: "http" | "git-push" | "provision" | "github-pr";
   description: string;
   target: string;
+  /** Only ever set by the pushBranch effect below — a raw Bash `git push` never carries one. */
+  branch?: string;
 }
 
 const OUTWARD_HOST_PATTERN = /https?:\/\/\S+/g;
@@ -181,6 +183,15 @@ export function detectOutwardEffect(toolName: string, input: Record<string, unkn
     return repo ? { kind: "github-pr", description: `merge PR in ${repo}`, target: repo } : null;
   }
 
+  // Only reachable via the pushBranch tool handler's own direct decide() call
+  // (src/runner/sdk-runner.ts), same as mergePR above.
+  if (toolName === "pushBranch") {
+    const repo = typeof input.repo === "string" ? input.repo : "";
+    const branch = typeof input.branch === "string" ? input.branch : "";
+    if (!repo || !branch) return null;
+    return { kind: "git-push", description: `push ${branch} to ${repo}`, target: repo, branch };
+  }
+
   return null;
 }
 
@@ -216,6 +227,13 @@ export function matchGrant(grants: Grant[], effect: OutwardEffect): Grant | null
       // for any repo), not glob matching — grantTargetPattern's "github-pr"
       // case deliberately returns "" and is never reached for this kind.
       if (g.kind === "github-pr") return g.repos === "*" || g.repos.includes(effect.target);
+      // A pushBranch-detected effect carries the branch it intends to push;
+      // a raw Bash `git push` effect never sets `branch`, so this additional
+      // check is skipped for that path — unchanged behavior for every
+      // existing caller.
+      if (g.kind === "git-push" && effect.branch !== undefined) {
+        return globMatch(g.remote, effect.target) && g.branches.some((pattern) => globMatch(pattern, effect.branch!));
+      }
       return globMatch(grantTargetPattern(g), effect.target);
     }) ?? null
   );
