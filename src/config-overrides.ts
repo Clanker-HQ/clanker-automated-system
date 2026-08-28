@@ -7,6 +7,8 @@ export interface ConfigOverrides {
   dailyBudgetUsd?: number;
   maxConcurrent?: number;
   disabledAgents?: string[];
+  /** Unset/true = normal (breaker trips a "trigger" admit after 3 consecutive failures). False = a tripped breaker no longer refuses admission. */
+  breakerEnabled?: boolean;
 }
 
 export class ConfigOverridesStore {

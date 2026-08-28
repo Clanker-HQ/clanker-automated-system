@@ -137,6 +137,29 @@ describe("DiscordBot", () => {
     expect(transport.sent.some((m) => m.text.includes("25"))).toBe(true);
   });
 
+  it("!breaker off disables the circuit breaker", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!breaker off" });
+    expect((await overrides.read()).breakerEnabled).toBe(false);
+  });
+
+  it("!breaker on re-enables the circuit breaker", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!breaker off" });
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!breaker on" });
+    expect((await overrides.read()).breakerEnabled).toBe(true);
+  });
+
+  it("!breaker with no/unknown argument replies with usage and leaves the override untouched", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!breaker" });
+    expect((await overrides.read()).breakerEnabled).toBeUndefined();
+    expect(transport.sent.map((m) => m.text).join("\n")).toContain("Usage");
+  });
+
   it("!quiet off disables quiet hours", async () => {
     const { transport, bot, overrides } = setup();
     await bot.start();

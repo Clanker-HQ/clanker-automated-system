@@ -104,6 +104,8 @@ try again later, the id stays valid. Entries older than
 | `!concurrency <n>` | Set how many runs may be in flight at once |
 | `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `22:00-07:00` would never actually suppress anything, since `from` must be earlier than `to`; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |
 | `!quiet off` | Disable quiet hours |
+| `!breaker off` | Disable the circuit breaker — a tripped agent no longer refuses a trigger |
+| `!breaker on` | Re-enable it |
 | `!runs` | The last 20 runs — id, status, cost |
 | `!task [-d] <text>` | Queue a free-form request; replies with its task id. `-d` asks for a longer final summary |
 | `!tasks` | Tasks not yet finished — id, status, truncated text |
@@ -147,8 +149,14 @@ early on.
 governor is live: it enforces `maxConcurrent`, `dailyBudgetUsd`, `quietHours`,
 a manual `!disable`, the STOP file, and a circuit breaker that trips after
 three consecutive failed or timed-out runs of the same agent (`!enable <agent>`
-resets it). It admits runs with an eye on the SDK's own `rate_limit_event`
-utilisation reporting.
+resets it; `!breaker off` disables the check entirely). It admits runs with an
+eye on the SDK's own `rate_limit_event` utilisation reporting.
+
+If Claude usage runs through a dedicated subscription/account that this
+project doesn't need to budget against, `!quiet off`, a high `!budget`, and
+`!breaker off` together turn the governor's admission checks into a no-op
+(short of the STOP file, which stays a manual, deliberate switch — folding it
+in would mean `!stop` no longer stops anything).
 
 **A refused run is skipped, not queued.** Only `maxConcurrent` makes a run
 *wait* — it holds until a slot frees. Every other refusal (quiet hours, budget

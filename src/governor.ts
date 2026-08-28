@@ -54,11 +54,16 @@ export class Governor {
       return { kind: "refuse", reason: "STOP file present; refusing all new runs", alert: false };
     }
 
-    if (kind === "trigger" && (await this.breaker.isTripped(agent.name))) {
+    const overrides = await this.overrides.read();
+
+    // breakerEnabled: false is an explicit opt-out (e.g. a dedicated,
+    // unmetered account where a run failing repeatedly costs nothing you're
+    // trying to protect) — unlike the checks below it, off is off, there is no
+    // "resume ignores it" carve-out to preserve since a resume already ignores
+    // the breaker unconditionally.
+    if (kind === "trigger" && overrides.breakerEnabled !== false && (await this.breaker.isTripped(agent.name))) {
       return { kind: "refuse", reason: `circuit breaker tripped for "${agent.name}" (3 consecutive failures)`, alert: true };
     }
-
-    const overrides = await this.overrides.read();
 
     // A manual `!disable <agent>` kill-switch: like the breaker check above,
     // it only gates a fresh `trigger` — a human resuming an already-parked

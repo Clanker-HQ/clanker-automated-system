@@ -57,6 +57,16 @@ describe("Governor.admit", () => {
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("breaker"), alert: true });
   });
 
+  it("does not refuse a tripped breaker once overridden off", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const breaker = new BreakerStore(dir);
+    await breaker.recordResult("smoke", "failed");
+    await breaker.recordResult("smoke", "failed");
+    await breaker.recordResult("smoke", "failed");
+    await new ConfigOverridesStore(dir).set("breakerEnabled", false, "test");
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
   it("a resume ignores the breaker", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const breaker = new BreakerStore(dir);

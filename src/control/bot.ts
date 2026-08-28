@@ -257,6 +257,17 @@ export class DiscordBot {
         await this.overrides.set("quietHours", parsed.data, "discord");
         return void reply(`🌙 Quiet hours set to ${parsed.data.from}-${parsed.data.to} ${parsed.data.timezone}.`);
       }
+      case "!breaker": {
+        if (arg === "off") {
+          await this.overrides.set("breakerEnabled", false, "discord");
+          return void reply("🔓 Circuit breaker disabled — repeated failures no longer auto-refuse a trigger.");
+        }
+        if (arg === "on") {
+          await this.overrides.set("breakerEnabled", true, "discord");
+          return void reply("🔒 Circuit breaker re-enabled.");
+        }
+        return void reply("Usage: `!breaker off` or `!breaker on`");
+      }
       case "!runs": {
         const recent = await this.store.listRecent(20);
         const lines = recent.map((r) => `${r.runId} — ${r.status} — $${r.costUsd.toFixed(4)}`);
