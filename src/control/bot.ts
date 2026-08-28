@@ -8,7 +8,7 @@ import { formatZodError } from "../errors.js";
 import type { GovernorStatus } from "../governor.js";
 import type { RunResult, RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
-import type { Task, TaskStore } from "./task-store.js";
+import { MAX_TASK_TEXT_LENGTH, type Task, type TaskStore } from "./task-store.js";
 
 export interface IncomingMessage {
   channelId: string;
@@ -66,16 +66,6 @@ interface StatusCapableGovernor {
 
 const RESUME_REFUSED =
   "the pending entry is still open, so you can try again later.";
-
-/**
- * Generous for a real request, but a bound: nothing today caps how much text
- * `!task` accepts before queuing it, so an accidental giant paste would go
- * straight into a run's prompt with no warning. Independent of any one
- * transport's own limit (Discord's real messages already cap at 2000
- * characters, but a task's text is assembled from `msg.content`, which a
- * different transport could hand over uncapped).
- */
-const MAX_TASK_TEXT_LENGTH = 4000;
 
 /**
  * `!tasks` only lists what's still active, so a finished task's completion

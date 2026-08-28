@@ -5,6 +5,15 @@ import { writeFileAtomic } from "../atomic-write.js";
 import { KeyedMutex } from "../keyed-mutex.js";
 
 /**
+ * Generous for a real request, but a bound: nothing caps how much text ends
+ * up in a task's `text` field before it's queued, so an accidental giant
+ * paste (via `!task`) or a runaway tool call (via `queueTask`) would go
+ * straight into a run's prompt with no warning otherwise. Shared by every
+ * caller that creates a task from free-form text.
+ */
+export const MAX_TASK_TEXT_LENGTH = 4000;
+
+/**
  * "waiting" is a live run that stopped mid-execution to await a human
  * approve/deny/answer (a `parked`/`question` RunResult). It is neither finished
  * nor failed — the run resumes its original session once the owner replies —
