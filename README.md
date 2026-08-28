@@ -102,7 +102,7 @@ try again later, the id stays valid. Entries older than
 | `!enable <agent>` | Re-enable it, and reset its circuit breaker. Still applied for a name matching no currently-loaded agent (the only way to clear a stale override left by an agent since removed from config), but the reply says so rather than implying a real agent was re-enabled |
 | `!budget <n>` | Set the daily spend ceiling in USD, e.g. `!budget 25` |
 | `!concurrency <n>` | Set how many runs may be in flight at once |
-| `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `22:00-07:00` would never actually suppress anything, since `from` must be earlier than `to`; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |
+| `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `from` must be earlier than `to`, so an overnight window like `22:00-07:00` (or `from` equal to `to`) is refused outright rather than written and then silently never suppressing anything; the timezone must also be a canonical IANA name, and a bad one is likewise rejected with the reason rather than written |
 | `!quiet off` | Disable quiet hours |
 | `!breaker off` | Disable the circuit breaker — a tripped agent no longer refuses a trigger |
 | `!breaker on` | Re-enable it |

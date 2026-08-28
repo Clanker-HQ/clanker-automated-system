@@ -12,7 +12,7 @@ Send these in the bot's channel.
 | Command | Effect |
 |---|---|
 | `!budget <n>` | Daily spend ceiling in USD, e.g. `!budget 25` |
-| `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin` |
+| `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `from` must be earlier than `to`, so an overnight window like `22:00-07:00` is refused |
 | `!quiet off` | Disable quiet hours |
 | `!breaker off` | Disable the circuit breaker (a tripped agent stops refusing triggers) |
 | `!breaker on` | Re-enable it |

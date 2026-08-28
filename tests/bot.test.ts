@@ -392,11 +392,28 @@ describe("DiscordBot", () => {
     expect(transport.sent.map((m) => m.text).join("\n")).toContain("from");
   });
 
-  it("!quiet accepts a valid window and stores it", async () => {
+  it("!quiet accepts a valid same-day window and stores it", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!quiet 02:00-03:00 Europe/Berlin" });
+    expect((await overrides.read()).quietHours).toEqual({ from: "02:00", to: "03:00", timezone: "Europe/Berlin" });
+  });
+
+  it("!quiet rejects an overnight window, which could never actually suppress anything, and leaves the override untouched", async () => {
     const { transport, bot, overrides } = setup();
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!quiet 22:00-07:00 Europe/Berlin" });
-    expect((await overrides.read()).quietHours).toEqual({ from: "22:00", to: "07:00", timezone: "Europe/Berlin" });
+    expect((await overrides.read()).quietHours).toBeUndefined();
+    const reply = transport.sent.map((m) => m.text).join("\n");
+    expect(reply).toContain("22:00");
+    expect(reply).toContain("07:00");
+  });
+
+  it("!quiet rejects a zero-length window (from equal to to)", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!quiet 03:00-03:00 Europe/Berlin" });
+    expect((await overrides.read()).quietHours).toBeUndefined();
   });
 
   it("!runs reports the most recent runs", async () => {

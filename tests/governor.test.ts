@@ -20,6 +20,22 @@ function agent(name = "smoke"): AgentDef {
   return { name } as AgentDef;
 }
 
+/**
+ * Polls rather than sleeping a fixed duration: admit() awaits overrides/
+ * rate-limit/run-history reads before ever reaching acquireSlot's waiter
+ * queue, so a fixed sleep is a race under load (CI, or the full suite running
+ * many files at once) — too short and adjustConcurrency() runs before a
+ * waiter is actually registered, hanging the test on a promise nothing will
+ * ever resolve.
+ */
+async function waitForWaiters(governor: Governor, count: number): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while ((governor as unknown as { waiters: unknown[] }).waiters.length < count) {
+    if (Date.now() > deadline) throw new Error(`waiters never reached ${count}`);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
 function build(dataDir: string, now: () => Date = () => new Date("2026-08-26T12:00:00.000Z")) {
   return new Governor({
     dataDir, config: CONFIG, store: new RunStore(dataDir),
@@ -218,7 +234,7 @@ describe("Governor.admit", () => {
       return r;
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForWaiters(governor, 2);
     expect(secondResolved).toBe(false);
     expect(thirdResolved).toBe(false);
 
@@ -258,7 +274,7 @@ describe("Governor.admit", () => {
     // adjusting — admit() awaits overrides/rate-limit reads first, so calling
     // adjustConcurrency() synchronously right after starting them would find
     // an empty waiters queue.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForWaiters(governor, 2);
 
     // Raised to 2, not 3: only room for one more of the two queued waiters.
     governor.adjustConcurrency(2);

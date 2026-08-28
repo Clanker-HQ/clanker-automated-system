@@ -61,7 +61,28 @@ export const QuietHoursSchema = z
     to: TimeOfDay,
     timezone: IanaTimezone,
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    // Governor.isWithinQuietHours only ever checks `current >= from && current
+    // < to` (a same-day window) — with `from >= to`, that comparison can never
+    // be true for ANY current time, so an overnight window ("22:00"-"07:00")
+    // or a zero-length one ("03:00"-"03:00") would pass validation, get
+    // written/echoed back as if it worked, and then silently suppress
+    // nothing, forever. Same bug class as `approval: "auto"` on a
+    // non-autonomous tier: config that looks like it should do something but
+    // structurally cannot, caught here instead of discovered by a human
+    // wondering why quiet hours never once kicked in.
+    if (v.from >= v.to) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["from"],
+        message:
+          `"${v.from}"-"${v.to}" can never suppress anything — quiet hours only support a same-day ` +
+          `window, so \`from\` must be earlier than \`to\`. An overnight window (e.g. "22:00"-"07:00") ` +
+          `isn't representable; pick two same-day windows instead if you need to cover midnight`,
+      });
+    }
+  });
 
 /**
  * A bad cron expression here used to fail silently: nothing calls startDigest/
