@@ -36,8 +36,15 @@ export interface Task {
   failureReason?: string;
   /** Set when the requester asked for a longer, more substantive final summary than the specialist's default. */
   wantsDetail?: boolean;
-  /** How many times the dispatcher has silently auto-retried this task after a failed run — capped at 1 before it's actually marked "failed". */
+  /** How many times the dispatcher has silently auto-retried this task after a failed run — capped at 3 (see MAX_RETRIES in dispatcher.ts) before it's actually marked "failed". */
   retryCount?: number;
+  /**
+   * Set together with retryCount on a failed run: the earliest time this
+   * task is eligible to be claimed again. nextPending/claimNextPending
+   * exclude it until then, so a transient failure backs off instead of
+   * being retried on the very next dispatcher tick.
+   */
+  nextRetryAt?: string;
   /** Set alongside status: "waiting" — lets a later approve/deny/answer find its way back to this task once the run it belongs to actually finishes. */
   runId?: string;
 }
@@ -132,8 +139,10 @@ export class TaskStore {
    * plain read, so two concurrent callers could still both pick the same
    * task; that's exactly what claimNextPending exists to prevent.
    */
-  async nextPending(exclude: ReadonlySet<string> = new Set()): Promise<Task | null> {
-    const pending = (await this.list()).filter((t) => t.status === "pending" && !exclude.has(t.id));
+  async nextPending(exclude: ReadonlySet<string> = new Set(), now: Date = new Date()): Promise<Task | null> {
+    const pending = (await this.list()).filter(
+      (t) => t.status === "pending" && !exclude.has(t.id) && (!t.nextRetryAt || new Date(t.nextRetryAt) <= now),
+    );
     if (pending.length === 0) return null;
     pending.sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
     return pending[0]!;
@@ -148,7 +157,7 @@ export class TaskStore {
    */
   async claimNextPending(exclude: ReadonlySet<string>, startedAt: string): Promise<Task | null> {
     return this.mutex.run(TaskStore.CLAIM_KEY, async () => {
-      const task = await this.nextPending(exclude);
+      const task = await this.nextPending(exclude, new Date(startedAt));
       if (!task) return null;
       return this.update(task.id, { status: "running", startedAt });
     });

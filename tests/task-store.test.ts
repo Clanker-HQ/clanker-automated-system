@@ -158,6 +158,36 @@ describe("TaskStore", () => {
     expect(claimedIds).toEqual([a.id, b.id].sort());
   });
 
+  it("nextPending skips a task whose nextRetryAt is still in the future", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    await s.update(task.id, { nextRetryAt: "2026-08-28T01:00:00.000Z" });
+    expect(await s.nextPending(new Set(), new Date("2026-08-28T00:30:00.000Z"))).toBeNull();
+  });
+
+  it("nextPending picks up a task once its nextRetryAt has passed", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    await s.update(task.id, { nextRetryAt: "2026-08-28T01:00:00.000Z" });
+    expect((await s.nextPending(new Set(), new Date("2026-08-28T01:00:01.000Z")))?.id).toBe(task.id);
+  });
+
+  it("claimNextPending skips a task whose nextRetryAt is still in the future relative to startedAt", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    await s.update(task.id, { nextRetryAt: "2026-08-28T01:00:00.000Z" });
+    expect(await s.claimNextPending(new Set(), "2026-08-28T00:30:00.000Z")).toBeNull();
+    expect((await s.get(task.id))?.status).toBe("pending");
+  });
+
+  it("claimNextPending claims a task once startedAt is past its nextRetryAt", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    await s.update(task.id, { nextRetryAt: "2026-08-28T01:00:00.000Z" });
+    const claimed = await s.claimNextPending(new Set(), "2026-08-28T01:00:01.000Z");
+    expect(claimed?.id).toBe(task.id);
+  });
+
   it("reconcile resets a running task back to pending and clears its specialistAgent", async () => {
     const s = store();
     const task = await s.create({ text: "x", createdBy: "discord:owner" });
