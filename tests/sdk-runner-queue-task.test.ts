@@ -227,3 +227,86 @@ describe("SdkRunner listMyTasks tool", () => {
     expect(mine!.text).toBe(`${"x".repeat(200)}…`);
   });
 });
+
+describe("SdkRunner recentFailures tool", () => {
+  async function failedTask(
+    tasks: TaskStore,
+    opts: { text: string; specialistAgent?: string; failureReason?: string; finishedAt: string },
+  ) {
+    const t = await tasks.create({ text: opts.text, createdBy: "discord:owner" });
+    return tasks.update(t.id, {
+      status: "failed",
+      specialistAgent: opts.specialistAgent,
+      failureReason: opts.failureReason,
+      finishedAt: opts.finishedAt,
+    });
+  }
+
+  it("is registered whenever tasks is wired in, independent of wake", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.recentFailures).toBeDefined();
+  });
+
+  it("groups failures by specialist and truncated reason, sorted by count descending", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const recent = "2026-08-28T00:00:00.000Z";
+    await failedTask(tasks, { text: "a", specialistAgent: "research", failureReason: "boom", finishedAt: recent });
+    await failedTask(tasks, { text: "b", specialistAgent: "research", failureReason: "boom", finishedAt: recent });
+    await failedTask(tasks, { text: "c", specialistAgent: "research", failureReason: "boom", finishedAt: recent });
+    await failedTask(tasks, { text: "d", specialistAgent: "builder", failureReason: "other", finishedAt: recent });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.recentFailures!.handler;
+
+    const result = (await handler({})) as { content: { type: string; text: string }[] };
+    const buckets = JSON.parse(result.content[0]!.text) as { specialistAgent: string; reason: string; count: number }[];
+    expect(buckets[0]).toMatchObject({ specialistAgent: "research", reason: "boom", count: 3 });
+    expect(buckets[1]).toMatchObject({ specialistAgent: "builder", reason: "other", count: 1 });
+  });
+
+  it("excludes failures older than 14 days", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+    await failedTask(tasks, { text: "a", specialistAgent: "research", failureReason: "boom", finishedAt: old });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.recentFailures!.handler;
+
+    const result = (await handler({})) as { content: { type: string; text: string }[] };
+    expect(JSON.parse(result.content[0]!.text)).toEqual([]);
+  });
+
+  it("never includes raw task text in its output", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    await failedTask(tasks, {
+      text: "a very specific and sensitive task description",
+      specialistAgent: "research",
+      failureReason: "boom",
+      finishedAt: "2026-08-28T00:00:00.000Z",
+    });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.recentFailures!.handler;
+
+    const result = (await handler({})) as { content: { type: string; text: string }[] };
+    expect(result.content[0]!.text).not.toContain("sensitive task description");
+  });
+});

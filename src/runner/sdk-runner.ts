@@ -417,6 +417,9 @@ export class SdkRunner implements Runner {
     const MAX_QUEUE_TASK_CALLS_PER_RUN = 3;
     const LIST_MY_TASKS_LIMIT = 20;
     const LIST_MY_TASKS_TEXT_TRUNCATE = 200;
+    const RECENT_FAILURES_WINDOW_DAYS = 14;
+    const RECENT_FAILURES_TOP_N = 10;
+    const RECENT_FAILURES_REASON_TRUNCATE = 80;
     let queueTaskCalls = 0;
     const tasksDep = this.deps.tasks;
     const wakeDep = this.deps.wake;
@@ -482,6 +485,28 @@ export class SdkRunner implements Runner {
                     createdAt: t.createdAt,
                   }));
                 return { content: [{ type: "text" as const, text: JSON.stringify(mine, null, 2) }] };
+              },
+            ),
+            tool(
+              "recentFailures",
+              "See aggregate patterns in recently failed tasks across the whole system — which specialist, what kind of failure, how often — over the last 14 days. Never includes the original task text.",
+              {},
+              async () => {
+                const cutoff = Date.now() - RECENT_FAILURES_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+                const failed = (await tasksDep.list()).filter(
+                  (t) => t.status === "failed" && t.finishedAt !== undefined && new Date(t.finishedAt).getTime() >= cutoff,
+                );
+                const buckets = new Map<string, { specialistAgent: string; reason: string; count: number; exampleTaskId: string }>();
+                for (const t of failed) {
+                  const specialistAgent = t.specialistAgent ?? "unrouted";
+                  const reason = (t.failureReason ?? "(no reason recorded)").slice(0, RECENT_FAILURES_REASON_TRUNCATE);
+                  const key = `${specialistAgent} ${reason}`;
+                  const existing = buckets.get(key);
+                  if (existing) existing.count += 1;
+                  else buckets.set(key, { specialistAgent, reason, count: 1, exampleTaskId: t.id });
+                }
+                const top = [...buckets.values()].sort((a, b) => b.count - a.count).slice(0, RECENT_FAILURES_TOP_N);
+                return { content: [{ type: "text" as const, text: JSON.stringify(top, null, 2) }] };
               },
             ),
           ],
