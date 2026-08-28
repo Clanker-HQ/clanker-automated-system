@@ -385,11 +385,15 @@ describe("Dispatcher.wake", () => {
     expect(remaining).toEqual([]);
   });
 
-  it("stops draining after a governor refusal instead of spinning on the same task", async () => {
-    // Regression test: with `while (outcome.ran)` this looped forever —
-    // nextPending() returns the same refused task, it is re-routed (a real,
-    // unbudgeted LLM call in production) and refused again, for as long as the
-    // refusal lasts. A 12-hour quiet-hours window made that a 12-hour hot loop.
+  it("attempts every task once even when the governor refuses every one of them, deferring each rather than hot-looping", async () => {
+    // Regression test: with the old `while (outcome.ran)` sequential drain,
+    // this looped forever on ONE task — nextPending() returns the same
+    // refused task, it is re-routed (a real, unbudgeted LLM call in
+    // production) and refused again, for as long as the refusal lasts. A
+    // 12-hour quiet-hours window made that a 12-hour hot loop. Now that
+    // claiming excludes a just-deferred task for the rest of this wake()
+    // call, a refusal on one task no longer prevents a genuinely different
+    // task from getting its own attempt too — both get tried exactly once.
     const { tasks, dataDir } = taskStore();
     await tasks.create({ text: "a", createdBy: "discord:owner" });
     await tasks.create({ text: "b", createdBy: "discord:owner" });
@@ -400,13 +404,29 @@ describe("Dispatcher.wake", () => {
       orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     await dispatcher.wake();
-    expect(executeRun).toHaveBeenCalledTimes(1);
-    expect(router.calls).toHaveLength(1);
+    expect(executeRun).toHaveBeenCalledTimes(2);
+    expect(router.calls).toHaveLength(2);
     // Both tasks are still queued for a later tick — neither is lost.
     expect((await tasks.list()).filter((t) => t.status === "pending")).toHaveLength(2);
   });
 
-  it("stops draining after a silent auto-retry, same as a governor refusal", async () => {
+  it("does not re-attempt a single task again within the same wake() call once it's deferred", async () => {
+    // The actual hot-loop guard: a lone task that gets refused/auto-retried
+    // must not be reclaimed again and again in the same drain — nextPending()
+    // would just hand it right back forever.
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "a", createdBy: "discord:owner" });
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const dispatcher = new Dispatcher({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+    });
+    await dispatcher.wake();
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect((await tasks.get(task.id))?.status).toBe("pending");
+  });
+
+  it("attempts two tasks that both silently auto-retry once each, rather than hammering either one", async () => {
     const { tasks, dataDir } = taskStore();
     await tasks.create({ text: "a", createdBy: "discord:owner" });
     await tasks.create({ text: "b", createdBy: "discord:owner" });
@@ -416,10 +436,39 @@ describe("Dispatcher.wake", () => {
       orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
     await dispatcher.wake();
-    expect(executeRun).toHaveBeenCalledTimes(1);
-    // Both tasks are still queued for a later tick — the retried one isn't
-    // hammered again immediately, and the other one wasn't skipped.
+    expect(executeRun).toHaveBeenCalledTimes(2);
+    // Both tasks are still queued for a later tick — the retried ones aren't
+    // hammered again immediately.
     expect((await tasks.list()).filter((t) => t.status === "pending")).toHaveLength(2);
+  });
+
+  it("processes multiple pending tasks concurrently rather than one at a time", async () => {
+    // The whole point of this change: previously Dispatcher.wake() awaited
+    // one task's ENTIRE run (up to hours long) before even looking at the
+    // next pending task. If that were still true, executeRun would only have
+    // been called once at the checkpoint below, since the first call's
+    // promise deliberately never resolves until this test resolves it.
+    const { tasks, dataDir } = taskStore();
+    await tasks.create({ text: "a", createdBy: "discord:owner" });
+    await tasks.create({ text: "b", createdBy: "discord:owner" });
+    const resolvers: Array<(r: RunResult) => void> = [];
+    const executeRun = vi.fn().mockImplementation(
+      () => new Promise<RunResult>((resolve) => resolvers.push(resolve)),
+    );
+    const dispatcher = new Dispatcher({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+    });
+    const wakePromise = dispatcher.wake();
+    // Poll rather than trust a fixed delay: claiming goes through real
+    // (temp-dir) disk I/O, which can take longer than a single event-loop
+    // tick, especially under the load of the full suite running in parallel.
+    await vi.waitFor(() => expect(executeRun).toHaveBeenCalledTimes(2));
+    expect((await tasks.list()).map((t) => t.status).sort()).toEqual(["running", "running"]);
+
+    resolvers.forEach((resolve) => resolve(successResult()));
+    await wakePromise;
+    expect((await tasks.list()).map((t) => t.status)).toEqual(["done", "done"]);
   });
 
   it("keeps draining past a task that threw — a thrown error is not a deferral", async () => {

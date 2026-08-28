@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { writeFileAtomic } from "../atomic-write.js";
 import { KeyedMutex } from "../keyed-mutex.js";
 
 /**
@@ -34,6 +35,8 @@ export interface Task {
 
 export class TaskStore {
   private readonly mutex = new KeyedMutex();
+  /** A fixed mutex key for claimNextPending — safe from ever colliding with a real task id, which is always a randomUUID(). */
+  private static readonly CLAIM_KEY = "__claim__";
 
   constructor(private readonly dataDir: string) {}
 
@@ -57,7 +60,7 @@ export class TaskStore {
       ...(input.parentId ? { parentId: input.parentId } : {}),
       ...(input.wantsDetail ? { wantsDetail: true } : {}),
     };
-    await writeFile(this.path(task.id), JSON.stringify(task, null, 2) + "\n");
+    await writeFileAtomic(this.path(task.id), JSON.stringify(task, null, 2) + "\n");
     return task;
   }
 
@@ -108,17 +111,38 @@ export class TaskStore {
       const existing = await this.get(id);
       if (!existing) throw new Error(`TaskStore: no task "${id}" to update`);
       const updated: Task = { ...existing, ...patch };
-      await writeFile(this.path(id), JSON.stringify(updated, null, 2) + "\n");
+      await writeFileAtomic(this.path(id), JSON.stringify(updated, null, 2) + "\n");
       return updated;
     });
   }
 
-  /** Highest priority first, ties broken by creation order (FIFO). Null when nothing is pending. */
-  async nextPending(): Promise<Task | null> {
-    const pending = (await this.list()).filter((t) => t.status === "pending");
+  /**
+   * Highest priority first, ties broken by creation order (FIFO). Null when
+   * nothing is pending. `exclude` skips ids a concurrent dispatch drain has
+   * already decided not to reclaim this pass (see claimNextPending) — a
+   * plain read, so two concurrent callers could still both pick the same
+   * task; that's exactly what claimNextPending exists to prevent.
+   */
+  async nextPending(exclude: ReadonlySet<string> = new Set()): Promise<Task | null> {
+    const pending = (await this.list()).filter((t) => t.status === "pending" && !exclude.has(t.id));
     if (pending.length === 0) return null;
     pending.sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
     return pending[0]!;
+  }
+
+  /**
+   * Atomically picks the next eligible pending task (see nextPending) and
+   * marks it "running" in the same step, so two dispatch attempts racing
+   * concurrently can never both claim the same task — nextPending() alone is
+   * just a read, with nothing stopping two callers from picking the same
+   * result before either one flags it as taken.
+   */
+  async claimNextPending(exclude: ReadonlySet<string>, startedAt: string): Promise<Task | null> {
+    return this.mutex.run(TaskStore.CLAIM_KEY, async () => {
+      const task = await this.nextPending(exclude);
+      if (!task) return null;
+      return this.update(task.id, { status: "running", startedAt });
+    });
   }
 
   /**

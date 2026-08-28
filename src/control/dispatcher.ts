@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
 import type { Router, Specialist } from "./router.js";
-import type { TaskStore } from "./task-store.js";
+import type { Task, TaskStore } from "./task-store.js";
 
 export interface RunTrigger {
   executeRun(agent: AgentDef, now?: Date, promptContext?: string): Promise<RunResult | undefined>;
@@ -91,55 +91,79 @@ export interface DispatchOutcome {
   deferred?: boolean;
 }
 
-/** Attempts exactly one pending task, if one exists. Pure enough to unit test without a timer, a real Router, or a real Orchestrator. */
-export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOutcome> {
-  const task = await deps.tasks.nextPending();
-  if (!task) return { ran: false };
+/**
+ * "empty": nothing eligible left to claim this pass (queue empty, or
+ * everything remaining is excluded). "resolved": claimed, but already
+ * terminal — failed before ever reaching executeRun (no specialists exist,
+ * or none matched), so there is no run to track. "running": claimed,
+ * routed, and executeRun has been started — `run` is NOT yet awaited here,
+ * so a caller can go claim the next eligible task immediately instead of
+ * blocking on this one's entire (up to hours-long) execution.
+ */
+type ClaimResult =
+  | { kind: "empty" }
+  | { kind: "resolved"; taskId: string }
+  | { kind: "running"; taskId: string; run: Promise<DispatchOutcome> };
 
+/**
+ * Atomically claims the next eligible pending task (see
+ * TaskStore.claimNextPending) and, if routing succeeds, starts its run
+ * without awaiting it — this split is what lets Dispatcher.wake() run
+ * multiple tasks concurrently instead of one at a time: claiming must stay
+ * sequential (so two attempts can never grab the same task), but nothing
+ * about actually running a claimed task needs to block claiming the next one.
+ */
+async function claimAndStart(deps: DispatcherDeps, exclude: ReadonlySet<string>): Promise<ClaimResult> {
   const now = deps.now ?? (() => new Date());
+  const task = await deps.tasks.claimNextPending(exclude, now().toISOString());
+  if (!task) return { kind: "empty" };
 
-  try {
-    const specialists = specialistsOf(deps.agents);
+  const specialists = specialistsOf(deps.agents);
 
-    if (specialists.length === 0) {
-      await deps.tasks.update(task.id, {
-        status: "failed",
-        finishedAt: now().toISOString(),
-        failureReason: "no dispatched specialist agents are registered",
-      });
-      await notifyBestEffort(deps, `⚠️ Task \`${task.id}\` failed: no dispatched specialist agents are registered.`);
-      return { ran: true, taskId: task.id };
-    }
+  if (specialists.length === 0) {
+    await deps.tasks.update(task.id, {
+      status: "failed",
+      finishedAt: now().toISOString(),
+      failureReason: "no dispatched specialist agents are registered",
+    });
+    await notifyBestEffort(deps, `⚠️ Task \`${task.id}\` failed: no dispatched specialist agents are registered.`);
+    return { kind: "resolved", taskId: task.id };
+  }
 
-    // A task deferred by a previous governor refusal keeps the specialist it
-    // was already routed to, so a retry costs no second routing call. Only an
-    // unrouted task pays for the router.
-    let agent = task.specialistAgent
-      ? deps.agents.find((a) => a.name === task.specialistAgent && a.trigger.type === "dispatched" && a.enabled)
+  // A task deferred by a previous governor refusal (or retry) keeps the
+  // specialist it was already routed to, so a retry costs no second routing
+  // call. Only an unrouted task pays for the router.
+  let agent = task.specialistAgent
+    ? deps.agents.find((a) => a.name === task.specialistAgent && a.trigger.type === "dispatched" && a.enabled)
+    : undefined;
+
+  if (!agent) {
+    const chosenName = await deps.router.route(task.text, specialists);
+    agent = chosenName
+      ? deps.agents.find((a) => a.name === chosenName && a.trigger.type === "dispatched" && a.enabled)
       : undefined;
 
     if (!agent) {
-      const chosenName = await deps.router.route(task.text, specialists);
-      agent = chosenName
-        ? deps.agents.find((a) => a.name === chosenName && a.trigger.type === "dispatched" && a.enabled)
-        : undefined;
-
-      if (!agent) {
-        const reason = chosenName
-          ? `router chose "${chosenName}", which is not a registered dispatched specialist`
-          : "no specialist matched this task";
-        await deps.tasks.update(task.id, { status: "failed", finishedAt: now().toISOString(), failureReason: reason });
-        await notifyBestEffort(deps, `⚠️ Task \`${task.id}\` failed: ${reason}. Text: ${task.text}`);
-        return { ran: true, taskId: task.id };
-      }
-
-      // Persist the routing decision before attempting admission, so a refusal
-      // on this very attempt still leaves the choice cached for the next one.
-      await deps.tasks.update(task.id, { specialistAgent: agent.name });
+      const reason = chosenName
+        ? `router chose "${chosenName}", which is not a registered dispatched specialist`
+        : "no specialist matched this task";
+      await deps.tasks.update(task.id, { status: "failed", finishedAt: now().toISOString(), failureReason: reason });
+      await notifyBestEffort(deps, `⚠️ Task \`${task.id}\` failed: ${reason}. Text: ${task.text}`);
+      return { kind: "resolved", taskId: task.id };
     }
 
-    await deps.tasks.update(task.id, { status: "running", specialistAgent: agent.name, startedAt: now().toISOString() });
+    // Persist the routing decision before attempting admission, so a refusal
+    // on this very attempt still leaves the choice cached for the next one.
+    await deps.tasks.update(task.id, { specialistAgent: agent.name });
+  }
 
+  return { kind: "running", taskId: task.id, run: executeAndFinalize(deps, task, agent) };
+}
+
+async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: AgentDef): Promise<DispatchOutcome> {
+  const now = deps.now ?? (() => new Date());
+
+  try {
     // Applied here, not in each specialist's own prompt.md, so every current
     // and future dispatched agent gets the same "-d" behavior for free rather
     // than each needing its own copy of this instruction.
@@ -223,7 +247,23 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
 }
 
 /**
- * Thin loop over runDispatchTick — a periodic tick, plus a reactive wake() a
+ * Attempts exactly one pending task, if one exists, start to finish — claim,
+ * route, run, and record the outcome. Pure enough to unit test without a
+ * timer, a real Router, or a real Orchestrator. A thin wrapper over
+ * claimAndStart + executeAndFinalize: single-task callers (this function,
+ * and every existing test) get the exact same claim-then-await-the-whole-run
+ * behavior as before; Dispatcher.wake() is what actually uses the split to
+ * run multiple tasks concurrently.
+ */
+export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOutcome> {
+  const claim = await claimAndStart(deps, new Set());
+  if (claim.kind === "empty") return { ran: false };
+  if (claim.kind === "resolved") return { ran: true, taskId: claim.taskId };
+  return claim.run;
+}
+
+/**
+ * Thin loop over claimAndStart — a periodic tick, plus a reactive wake() a
  * caller (a new `!task`, or a run finishing) can call to attempt work
  * immediately rather than waiting for the next timer. Re-entrant: a wake()
  * that arrives mid-drain is a no-op, since the in-progress drain will reach
@@ -251,16 +291,49 @@ export class Dispatcher {
     this.timer = null;
   }
 
+  /**
+   * Claims and starts every eligible pending task without waiting for any one
+   * of them to finish, so independent tasks actually run concurrently —
+   * bounded not by this loop but by the Governor's own admission/slot
+   * mechanism (governor.maxConcurrent), the same throttle a cron agent's
+   * trigger is already subject to.
+   *
+   * A task that comes back deferred (a governor refusal, or the one silent
+   * auto-retry) is excluded from being reclaimed for the REST of this wake()
+   * call — nextPending() would hand it right back, and for a refusal that
+   * spins for as long as the refusal lasts (quiet hours: hours). It's still
+   * eligible again on the next wake()/periodic tick. Excluding only that one
+   * task, rather than stopping the whole drain, is what lets an unrelated
+   * still-pending task get a turn instead of queuing behind a stuck one.
+   */
   async wake(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
     try {
-      // Stop on a deferral, not just on an empty queue: a governor refusal
-      // leaves the same task at the head of the queue, so continuing would
-      // re-pick it immediately and spin until the refusal lifts. The periodic
-      // tick (or the next !task / completed run) is what retries it.
-      let outcome = await runDispatchTick(this.deps);
-      while (outcome.ran && !outcome.deferred) outcome = await runDispatchTick(this.deps);
+      const deferredIds = new Set<string>();
+      const inFlight = new Set<Promise<void>>();
+      for (;;) {
+        const claim = await claimAndStart(this.deps, deferredIds);
+        if (claim.kind === "empty") break;
+        if (claim.kind === "resolved") continue;
+
+        const tracked: Promise<void> = claim.run
+          .then((outcome) => {
+            if (outcome.deferred && outcome.taskId) deferredIds.add(outcome.taskId);
+          })
+          .catch((error: unknown) => {
+            // executeAndFinalize already catches everything it can attribute
+            // to a specific task — this is a last-resort backstop so one
+            // tracked run's surprise rejection can never take the others
+            // (or the process, absent the global crash handler) down with it.
+            console.error(`[dispatcher] tracked run for task ${claim.taskId} threw unexpectedly`, error);
+          })
+          .finally(() => {
+            inFlight.delete(tracked);
+          });
+        inFlight.add(tracked);
+      }
+      await Promise.all(inFlight);
     } finally {
       this.draining = false;
     }

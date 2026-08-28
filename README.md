@@ -119,12 +119,16 @@ admission check; they override `config.yaml` until changed back.
 
 **The task queue.** `!task <text>` durably queues a free-form request under
 `data/tasks/<id>.json` — it survives a restart. Capped at 4000 characters,
-so an accidental giant paste is rejected up front rather than queued. A dispatcher picks the
-highest-priority pending task, asks a cheap routing call which specialist
-should handle it, and runs that specialist through the same Governor as every
-other agent. Today there is exactly one specialist, `research`: it searches and
-reads the open web and writes up what it finds, with no code changes, no
-publishing, and no spending. When the run finishes, the channel gets a
+so an accidental giant paste is rejected up front rather than queued. A
+dispatcher claims pending tasks highest-priority first, asks a cheap routing
+call which specialist should handle each one, and runs it through the same
+Governor as every other agent. Claimed tasks run concurrently, not one at a
+time — actual concurrency is bounded by `governor.maxConcurrent`, the same
+limit a cron agent's trigger is already subject to, not by how many tasks
+happen to be queued. Today there is exactly one specialist, `research`: it
+searches and reads the open web and writes up what it finds, with no code
+changes, no publishing, and no spending. When the run finishes, the channel
+gets a
 task-id-correlated line (`✅ Task <id> done: …` or `❌ Task <id> failed: …`)
 alongside the agent's own run report, and the full artifact is on disk under
 `data/runs/<runId>/`. That completion line is a short summary by default;

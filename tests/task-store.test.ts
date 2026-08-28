@@ -121,6 +121,43 @@ describe("TaskStore", () => {
     expect((await s2.nextPending())?.id).toBe(first.id);
   });
 
+  it("nextPending skips ids in the exclude set", async () => {
+    const s = store();
+    const low = await s.create({ text: "low", createdBy: "discord:owner", priority: 10 });
+    const high = await s.create({ text: "high", createdBy: "discord:owner", priority: 90 });
+    expect((await s.nextPending(new Set([high.id])))?.id).toBe(low.id);
+    expect(await s.nextPending(new Set([high.id, low.id]))).toBeNull();
+  });
+
+  it("claimNextPending atomically picks the next pending task and marks it running", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    const claimed = await s.claimNextPending(new Set(), "2026-08-28T00:00:00.000Z");
+    expect(claimed?.id).toBe(task.id);
+    expect(claimed?.status).toBe("running");
+    expect(claimed?.startedAt).toBe("2026-08-28T00:00:00.000Z");
+    expect((await s.get(task.id))?.status).toBe("running");
+  });
+
+  it("claimNextPending returns null, and claims nothing, when everything is excluded", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    expect(await s.claimNextPending(new Set([task.id]), "2026-08-28T00:00:00.000Z")).toBeNull();
+    expect((await s.get(task.id))?.status).toBe("pending");
+  });
+
+  it("two concurrent claimNextPending calls never claim the same task", async () => {
+    const s = store();
+    const a = await s.create({ text: "a", createdBy: "discord:owner" });
+    const b = await s.create({ text: "b", createdBy: "discord:owner" });
+    const [first, second] = await Promise.all([
+      s.claimNextPending(new Set(), "2026-08-28T00:00:00.000Z"),
+      s.claimNextPending(new Set(), "2026-08-28T00:00:00.000Z"),
+    ]);
+    const claimedIds = [first?.id, second?.id].sort();
+    expect(claimedIds).toEqual([a.id, b.id].sort());
+  });
+
   it("reconcile resets a running task back to pending and clears its specialistAgent", async () => {
     const s = store();
     const task = await s.create({ text: "x", createdBy: "discord:owner" });
