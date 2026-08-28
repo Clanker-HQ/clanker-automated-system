@@ -176,12 +176,6 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
   agent's timeout caps at 3 hours), it's one the process crashed mid-way
   through.
 
-**A process crash is no longer invisible.** An uncaught exception or
-unhandled rejection anywhere is caught, written to `data/state/crash.log`,
-and posted to Discord as a best-effort alert before the process exits.
-Docker's `restart: unless-stopped` was already bringing it back either way —
-this just means a 3am crash leaves a trace instead of an unexplained restart.
-
 **The system can queue its own tasks, not just yours.** Two cron-triggered
 agents run daily and each propose up to 3 tasks via a `queueTask` tool —
 no human approval needed to queue, matching every other read-only or
@@ -195,6 +189,12 @@ plausible ways to earn money and queues research questions for `research`
 to investigate. `improvement-scout` reads this project's own source and
 docs and queues concrete gaps or capability ideas. Neither can write,
 push, fetch, or spend beyond proposing — both run at `tier: readonly`.
+
+**A process crash is no longer invisible.** An uncaught exception or
+unhandled rejection anywhere is caught, written to `data/state/crash.log`,
+and posted to Discord as a best-effort alert before the process exits.
+Docker's `restart: unless-stopped` was already bringing it back either way —
+this just means a 3am crash leaves a trace instead of an unexplained restart.
 
 **Agent config that can never do what it says fails to load.** `tier:
 "granted"` (or anything but `"autonomous"`) combined with `approval: "auto"`
