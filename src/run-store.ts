@@ -26,6 +26,18 @@ export function newRunId(agentName: string, now: Date = new Date()): string {
   return `${agentName}-${now.toISOString().replace(/[:.]/g, "-")}`;
 }
 
+/** The trailing timestamp newRunId embeds, e.g. "-2026-08-26T12-00-00-000Z" — anchored to the end so a dash anywhere in the agent name can't be mistaken for part of it. */
+const RUN_ID_TIMESTAMP = /-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)$/;
+
+/** Reverses newRunId's `:`/`.` -> `-` substitution and parses it, or null if runId doesn't end in the expected shape (defensive — every real runId does). */
+function runIdTimestamp(runId: string): Date | null {
+  const match = runId.match(RUN_ID_TIMESTAMP);
+  if (!match) return null;
+  const iso = match[1]!.replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "T$1:$2:$3.$4Z");
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export interface RunWriter {
   readonly runId: string;
   append(event: RunEvent): Promise<void>;
@@ -136,5 +148,44 @@ export class RunStore {
     // Sort by startedAt descending (most recent first)
     results.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
     return results.slice(0, limit);
+  }
+
+  /**
+   * Like listRecent, but for a caller that only cares about a bounded time
+   * window (Governor's daily-budget check: "today"; the digest: "the last
+   * 24h") — reading and JSON-parsing every result.json ever retained
+   * (`retention.days` defaults to 30, and can be raised or disabled) on every
+   * single admission check doesn't scale with how much history has piled up,
+   * only with how much of it falls in the window actually being asked about.
+   *
+   * The pre-filter uses the timestamp newRunId embeds in the directory name
+   * itself, with a full day of slack on both sides of [from, to] — enough to
+   * absorb the (sub-second, in practice) gap between that embedded timestamp
+   * and the run's real recorded `startedAt` (see RunStore.open's seeding for
+   * a resumed run). Every candidate that survives the pre-filter still gets
+   * its result.json read and its REAL startedAt checked exactly as
+   * listRecent does — this changes how many files get read, never which runs
+   * end up counted.
+   */
+  async listSince(from: Date, to: Date = new Date()): Promise<RunResult[]> {
+    const root = join(this.dataDir, "runs");
+    const dirs = await readdir(root).catch(() => [] as string[]);
+    const SLOP_MS = 24 * 60 * 60 * 1000;
+    const fromMs = from.getTime() - SLOP_MS;
+    const toMs = to.getTime() + SLOP_MS;
+    const results: RunResult[] = [];
+    for (const runId of dirs) {
+      const embedded = runIdTimestamp(runId);
+      // No parseable timestamp (an unexpected runId shape) is read anyway,
+      // never silently skipped — only a runId that PROVES it's out of range
+      // gets to skip the read.
+      if (embedded && (embedded.getTime() < fromMs || embedded.getTime() > toMs)) continue;
+      const result = await this.readResult(runId).catch(() => null);
+      if (result && new Date(result.startedAt) >= from && new Date(result.startedAt) <= to) {
+        results.push(result);
+      }
+    }
+    results.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+    return results;
   }
 }

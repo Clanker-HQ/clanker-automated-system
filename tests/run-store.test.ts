@@ -1,8 +1,22 @@
 import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore, newRunId } from "../src/run-store.js";
+
+/** RunWriter.close() stamps startedAt from the real system clock, not from any date embedded in the runId — so faking the clock is the only way to land a run at a chosen startedAt. */
+async function recordRunAt(store: RunStore, agentName: string, at: Date, status: "success" | "failed" = "success") {
+  vi.useFakeTimers();
+  vi.setSystemTime(at);
+  try {
+    const writer = await store.open(newRunId(agentName, at), agentName);
+    await writer.close({ status, summary: "" });
+    return writer;
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 describe("newRunId", () => {
   it("contains no characters illegal in a Windows filename", () => {
@@ -13,6 +27,10 @@ describe("newRunId", () => {
 });
 
 describe("RunStore", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("writes each event as it arrives, before the run is closed", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "cai-runs-"));
     const store = new RunStore(dataDir);
@@ -135,5 +153,58 @@ describe("RunStore", () => {
     expect(stored.costUsd).toBeCloseTo(0.015);
     expect(stored.inputTokens).toBe(140);
     expect(stored.turns).toBe(2);
+  });
+
+  describe("listSince", () => {
+    it("includes only runs whose startedAt falls within [from, to]", async () => {
+      const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+      await recordRunAt(store, "a", new Date("2026-08-24T12:00:00.000Z"));
+      const within = await recordRunAt(store, "a", new Date("2026-08-26T12:00:00.000Z"));
+      await recordRunAt(store, "a", new Date("2026-08-28T12:00:00.000Z"));
+
+      const results = await store.listSince(new Date("2026-08-26T00:00:00.000Z"), new Date("2026-08-27T00:00:00.000Z"));
+      expect(results.map((r) => r.runId)).toEqual([within.runId]);
+    });
+
+    it("skips reading a run whose runId-embedded timestamp proves it's well outside the window", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "cai-runs-"));
+      const store = new RunStore(dataDir);
+      // A directory whose result.json is corrupt: readResult would throw if
+      // this were ever actually read. Its runId-embedded date (2020, miles
+      // outside the window below) must be enough to skip it entirely.
+      const staleDir = join(dataDir, "runs", "a-2020-01-01T00-00-00-000Z");
+      await mkdir(staleDir, { recursive: true });
+      await writeFile(join(staleDir, "result.json"), "{not valid json");
+
+      const within = await recordRunAt(store, "a", new Date("2026-08-26T12:00:00.000Z"));
+
+      const results = await store.listSince(new Date("2026-08-26T00:00:00.000Z"), new Date("2026-08-27T00:00:00.000Z"));
+      expect(results.map((r) => r.runId)).toEqual([within.runId]);
+    });
+
+    it("still reads a runId with no parseable embedded timestamp, rather than silently dropping it", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "cai-runs-"));
+      const store = new RunStore(dataDir);
+      const oddDir = join(dataDir, "runs", "not-a-normal-run-id");
+      await mkdir(oddDir, { recursive: true });
+      await writeFile(
+        join(oddDir, "result.json"),
+        JSON.stringify({
+          runId: "not-a-normal-run-id", agent: "a", status: "success",
+          startedAt: "2026-08-26T12:00:00.000Z", endedAt: "2026-08-26T12:00:01.000Z",
+          durationMs: 1000, costUsd: 1, inputTokens: 1, outputTokens: 1, turns: 0, summary: "",
+        }),
+      );
+
+      const results = await store.listSince(new Date("2026-08-26T00:00:00.000Z"), new Date("2026-08-27T00:00:00.000Z"));
+      expect(results.map((r) => r.runId)).toEqual(["not-a-normal-run-id"]);
+    });
+
+    it("defaults `to` to now", async () => {
+      const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+      const writer = await recordRunAt(store, "a", new Date("2026-08-26T12:00:00.000Z"));
+      const results = await store.listSince(new Date("2020-01-01T00:00:00.000Z"));
+      expect(results.map((r) => r.runId)).toEqual([writer.runId]);
+    });
   });
 });

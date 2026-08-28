@@ -199,6 +199,19 @@ small in-process `KeyedMutex` (`src/keyed-mutex.ts`) queues same-key callers
 instead. In-process only — this runs as one supervisor process per data
 directory, so there's no cross-process case to guard against.
 
+**The daily-budget check no longer rescans all of retained run history on
+every admission.** `Governor.admit()` runs on every cron trigger and every
+dispatched task, and used to sum today's spend by reading and JSON-parsing
+every `result.json` under `data/runs/` — cost scaling with total retained
+history (`retention.days`, 30 by default, or unbounded if raised/disabled),
+not with today's run count. `RunStore.listSince()` pre-filters candidates
+using the timestamp `newRunId` already embeds in the run's directory name,
+so a run outside the window (with a full day of slack on each side) is
+skipped without ever being read — the exact per-run check still happens
+against its real recorded `startedAt`, so this changes how much gets read,
+never which runs count. The daily digest's "last 24h" query uses the same
+method for the same reason.
+
 ## Development
 
 - `npm test` — full suite, consumes no quota

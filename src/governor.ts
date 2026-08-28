@@ -108,10 +108,22 @@ export class Governor {
   }
 
   private async spentToday(settings: { quietHours: QuietHours | null }, now: Date): Promise<number> {
-    const today = startOfDay(now, settings.quietHours?.timezone ?? "UTC");
-    const recent = await this.store.listRecent(10_000);
+    const timezone = settings.quietHours?.timezone ?? "UTC";
+    const today = startOfDay(now, timezone);
+    // "Today" (in ANY timezone) is the 24h-long calendar day containing
+    // `now`, so it can start no more than 24h before `now` and end no more
+    // than 24h after it — this bound is what lets listSince skip reading
+    // months of retention-kept run history on every single admission check.
+    // The window is symmetric (not just backward from `now`) because `now`
+    // is Governor's own injectable clock, not necessarily identical to the
+    // real wall-clock time a run's startedAt was recorded against (tests
+    // exploit exactly this to hold "now" fixed while runs are written) — the
+    // exact `startOfDay` filter below, not this window, is what actually
+    // decides which runs count.
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    const recent = await this.store.listSince(new Date(now.getTime() - oneDayMs), new Date(now.getTime() + oneDayMs));
     return recent
-      .filter((r) => startOfDay(new Date(r.startedAt), settings.quietHours?.timezone ?? "UTC") === today)
+      .filter((r) => startOfDay(new Date(r.startedAt), timezone) === today)
       .reduce((sum, r) => sum + r.costUsd, 0);
   }
 

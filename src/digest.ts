@@ -7,7 +7,14 @@ import type { RunStore } from "./run-store.js";
  * against a plain RunStore/TaskStore fixture.
  */
 export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore; since: Date }): Promise<string> {
-  const recentRuns = (await opts.store.listRecent(10_000)).filter((r) => new Date(r.startedAt) >= opts.since);
+  // listSince, not listRecent(10_000): the digest only ever looks at the last
+  // 24h, so there's no reason to read/parse every result.json retention has
+  // kept around (up to 30 days by default, or more/forever if raised/disabled).
+  // The upper bound is derived from `since` (double the digest's normal 24h
+  // window), not `new Date()` — this must stay correct against whatever
+  // clock `since` itself was computed from, not the real wall clock, the
+  // same reasoning that made Governor.spentToday's window symmetric.
+  const recentRuns = await opts.store.listSince(opts.since, new Date(opts.since.getTime() + 48 * 60 * 60 * 1000));
   const spentUsd = recentRuns.reduce((sum, r) => sum + r.costUsd, 0);
   const byStatus = new Map<string, number>();
   for (const r of recentRuns) byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
