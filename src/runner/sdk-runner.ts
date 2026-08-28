@@ -413,60 +413,80 @@ export class SdkRunner implements Runner {
         })
       : undefined;
 
-    /**
-     * Lets any agent queue new work the same way a human's `!task` does — no
-     * outward effect (it writes to this process's own task queue, not the
-     * network), so it needs no grant and is available at every tier, the
-     * same as `askHuman` above. Only registered when both `tasks` and `wake`
-     * are wired in: production always wires both; a test or script that
-     * doesn't care about task-queueing simply never sees this tool, the same
-     * optional-dependency shape `github`/`githubPrServer` above already use.
-     */
     const DEFAULT_SELF_QUEUED_PRIORITY = 30;
     const MAX_QUEUE_TASK_CALLS_PER_RUN = 3;
+    const LIST_MY_TASKS_LIMIT = 20;
+    const LIST_MY_TASKS_TEXT_TRUNCATE = 200;
     let queueTaskCalls = 0;
     const tasksDep = this.deps.tasks;
     const wakeDep = this.deps.wake;
-    const taskQueueServer =
-      tasksDep && wakeDep
-        ? createSdkMcpServer({
-            name: "taskQueue",
-            tools: [
-              tool(
-                "queueTask",
-                "Queue a new task for the system to work on later — the same durable queue a human's !task command adds to. Use this to propose research or an improvement rather than doing it yourself in this run.",
-                { text: z.string().min(1).max(MAX_TASK_TEXT_LENGTH), priority: z.number().int().nonnegative().optional() },
-                async ({ text, priority }) => {
-                  // A hard cap enforced here, not just in the prompt: the code is
-                  // the boundary, the same posture detectOutwardEffect already
-                  // uses for outward effects — an over-eager or confused model
-                  // must not be able to flood the queue in a single run.
-                  if (queueTaskCalls >= MAX_QUEUE_TASK_CALLS_PER_RUN) {
-                    return {
-                      content: [
-                        {
-                          type: "text" as const,
-                          text: `Refused: already queued ${MAX_QUEUE_TASK_CALLS_PER_RUN} tasks this run, the maximum allowed in one run.`,
-                        },
-                      ],
-                    };
-                  }
-                  queueTaskCalls += 1;
-                  const created = await tasksDep.create({
-                    text,
-                    priority: Math.min(priority ?? DEFAULT_SELF_QUEUED_PRIORITY, DEFAULT_SELF_QUEUED_PRIORITY),
-                    createdBy: `agent:${agent.name}`,
-                    wantsDetail: true,
-                  });
-                  void wakeDep().catch((err: unknown) => {
-                    console.error(`[queueTask] dispatcher wake failed after queuing ${created.id} (agent ${agent.name})`, err);
-                  });
-                  return { content: [{ type: "text" as const, text: `Queued task ${created.id}.` }] };
-                },
-              ),
-            ],
-          })
-        : undefined;
+    /**
+     * `listMyTasks` and `recentFailures` need only `tasksDep` — they never
+     * touch the dispatcher. `queueTask` additionally needs `wakeDep`, so it's
+     * included conditionally within this same server rather than gating the
+     * whole server on both, the way it did before this tool existed.
+     */
+    const taskQueueServer = tasksDep
+      ? createSdkMcpServer({
+          name: "taskQueue",
+          tools: [
+            ...(wakeDep
+              ? [
+                  tool(
+                    "queueTask",
+                    "Queue a new task for the system to work on later — the same durable queue a human's !task command adds to. Use this to propose research or an improvement rather than doing it yourself in this run.",
+                    { text: z.string().min(1).max(MAX_TASK_TEXT_LENGTH), priority: z.number().int().nonnegative().optional() },
+                    async ({ text, priority }) => {
+                      // A hard cap enforced here, not just in the prompt: the code is
+                      // the boundary, the same posture detectOutwardEffect already
+                      // uses for outward effects — an over-eager or confused model
+                      // must not be able to flood the queue in a single run.
+                      if (queueTaskCalls >= MAX_QUEUE_TASK_CALLS_PER_RUN) {
+                        return {
+                          content: [
+                            {
+                              type: "text" as const,
+                              text: `Refused: already queued ${MAX_QUEUE_TASK_CALLS_PER_RUN} tasks this run, the maximum allowed in one run.`,
+                            },
+                          ],
+                        };
+                      }
+                      queueTaskCalls += 1;
+                      const created = await tasksDep.create({
+                        text,
+                        priority: Math.min(priority ?? DEFAULT_SELF_QUEUED_PRIORITY, DEFAULT_SELF_QUEUED_PRIORITY),
+                        createdBy: `agent:${agent.name}`,
+                        wantsDetail: true,
+                      });
+                      void wakeDep().catch((err: unknown) => {
+                        console.error(`[queueTask] dispatcher wake failed after queuing ${created.id} (agent ${agent.name})`, err);
+                      });
+                      return { content: [{ type: "text" as const, text: `Queued task ${created.id}.` }] };
+                    },
+                  ),
+                ]
+              : []),
+            tool(
+              "listMyTasks",
+              "List the tasks you've queued yourself via queueTask, most recent first — use this before proposing new work so you don't repeat an idea you already queued.",
+              {},
+              async () => {
+                const mine = (await tasksDep.list())
+                  .filter((t) => t.createdBy === `agent:${agent.name}`)
+                  .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                  .slice(0, LIST_MY_TASKS_LIMIT)
+                  .map((t) => ({
+                    id: t.id,
+                    text: t.text.length > LIST_MY_TASKS_TEXT_TRUNCATE ? `${t.text.slice(0, LIST_MY_TASKS_TEXT_TRUNCATE)}…` : t.text,
+                    status: t.status,
+                    createdAt: t.createdAt,
+                  }));
+                return { content: [{ type: "text" as const, text: JSON.stringify(mine, null, 2) }] };
+              },
+            ),
+          ],
+        })
+      : undefined;
 
     const stream = query({
       prompt: ctx.prompt,

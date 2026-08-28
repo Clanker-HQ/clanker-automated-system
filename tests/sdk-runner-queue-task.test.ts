@@ -174,3 +174,56 @@ describe("SdkRunner queueTask tool", () => {
     await client.close();
   });
 });
+
+describe("SdkRunner listMyTasks tool", () => {
+  it("is registered even without wake — read-only, no dispatcher nudge needed", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    expect(params.options.mcpServers.taskQueue).toBeDefined();
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask).toBeUndefined();
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.listMyTasks).toBeDefined();
+  });
+
+  it("returns only the calling agent's own tasks, most recent first, capped at 20", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    for (let i = 0; i < 25; i++) {
+      await tasks.create({ text: `mine ${i}`, createdBy: "agent:opportunity-scout" });
+    }
+    await tasks.create({ text: "not mine", createdBy: "agent:improvement-scout" });
+    await tasks.create({ text: "human", createdBy: "discord:owner" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.listMyTasks!.handler;
+
+    const result = (await handler({})) as { content: { type: string; text: string }[] };
+    const mine = JSON.parse(result.content[0]!.text) as { text: string }[];
+    expect(mine).toHaveLength(20);
+    expect(mine.every((t) => t.text.startsWith("mine "))).toBe(true);
+    expect(mine[0]!.text).toBe("mine 24");
+  });
+
+  it("truncates a long task's text to 200 characters", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    await tasks.create({ text: "x".repeat(300), createdBy: "agent:opportunity-scout" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.listMyTasks!.handler;
+
+    const result = (await handler({})) as { content: { type: string; text: string }[] };
+    const [mine] = JSON.parse(result.content[0]!.text) as { text: string }[];
+    expect(mine!.text).toBe(`${"x".repeat(200)}…`);
+  });
+});
