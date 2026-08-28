@@ -34,3 +34,18 @@ grants:
     method: GET
     urlPattern: "*"
     secret: WEB_READ_TOKEN
+
+  # Backs agents/builder's grantRefs. BUILDER_PUSH_TOKEN is a fine-grained
+  # PAT on the same dedicated bot account infra-repo uses, scoped to
+  # Contents:Write + Pull requests:Write on this repo only — broader than
+  # infra-repo's Contents:Read, so it's a separate token, not a reused one.
+  # branches restricts this grant to the agent/builder/ namespace as real,
+  # enforced scope (see matchGrant's extended git-push case) — pushBranch's
+  # own hardcoded regex enforces the same boundary unconditionally, so a
+  # typo here narrows nothing that matters, but widens nothing dangerous
+  # either.
+  - id: builder-push
+    kind: git-push
+    remote: "owner/repo"   # placeholder: the actual infra repo's "owner/repo"
+    branches: ["agent/builder/*"]
+    secret: BUILDER_PUSH_TOKEN

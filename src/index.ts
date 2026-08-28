@@ -6,6 +6,7 @@ import { reconcileAndConnectBot } from "./control/boot-wiring.js";
 import { buildRouter } from "./control/build-router.js";
 import { Dispatcher } from "./control/dispatcher.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
+import { RealGitPusher } from "./control/git-pusher.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
 import { TaskStore } from "./control/task-store.js";
@@ -86,6 +87,7 @@ function main(): void {
     github = new GithubApiTransport({ token: githubToken });
     runner = buildRunner({
       grants, pending: new PendingStore(DATA_DIR), github,
+      gitPusher: new RealGitPusher(),
       tasks,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound

@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakeGitPusher } from "../src/control/git-pusher.js";
 import { PendingStore } from "../src/control/pending.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { buildRunner } from "../src/runner/build-runner.js";
@@ -41,6 +42,13 @@ describe("buildRunner", () => {
     const tasks = new TaskStore(mkdtempSync(join(tmpdir(), "cai-buildrunner-")));
     const wake = async () => {};
     const runner = buildRunner({ grants, pending, tasks, wake }, {}) as SdkRunner;
+    expect(runner).toBeInstanceOf(SdkRunner);
+  });
+
+  it("accepts a gitPusher and still returns the real runner when provided", () => {
+    const { grants, pending } = opts();
+    const gitPusher = new FakeGitPusher();
+    const runner = buildRunner({ grants, pending, gitPusher }, {}) as SdkRunner;
     expect(runner).toBeInstanceOf(SdkRunner);
   });
 });
