@@ -475,6 +475,7 @@ export class DiscordBot {
         // own silent auto-retry if this next run also fails transiently.
         await this.tasks.update(task.id, {
           status: "pending", failureReason: undefined, finishedAt: undefined, startedAt: undefined, retryCount: undefined,
+          nextRetryAt: undefined,
         });
         void this.dispatcher.wake().catch((err: unknown) => {
           console.error(`[bot] dispatcher wake failed after !retry ${task.id}:`, err);

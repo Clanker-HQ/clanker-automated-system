@@ -115,6 +115,32 @@ describe("runDispatchTick", () => {
     expect(updated?.failureReason).toBe("boom");
   });
 
+  for (const status of ["denied", "timeout"] as const) {
+    it(`fails the task immediately, on the very first attempt, when the run ends "${status}" (a deterministic outcome backoff can't fix)`, async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(successResult({ status, error: `${status} reason` }));
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir,
+      });
+      // Not deferred: this is a terminal failure on attempt 1, not a backoff retry.
+      expect(outcome).toEqual({ ran: true, taskId: task.id });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("failed");
+      expect(updated?.retryCount ?? 0).toBe(0);
+      expect(updated?.nextRetryAt).toBeUndefined();
+      expect(updated?.failureReason).toBe(`${status} reason`);
+      expect(updated?.finishedAt).toBeDefined();
+      // Unlike a transient failure's silent retry, the owner is told right away.
+      expect(notify).toHaveBeenCalledTimes(1);
+      const text = notify.mock.calls[0]![0] as string;
+      expect(text).toContain(task.id);
+      expect(text).toContain(`${status} reason`);
+    });
+  }
+
   it("backs off for 1 minute, keeping the task pending, after the first failure", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });

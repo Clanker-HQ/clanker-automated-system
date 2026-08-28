@@ -163,7 +163,7 @@ improvement-scout (cron) --listMyTasks--> own last 20 proposals
 
 dispatcher tick/wake --claimNextPending--> excludes future nextRetryAt
   on failure --> nextRetryAt = now + backoff[retryCount], retryCount++
-  after 3 failures --> status: "failed" (unchanged terminal behavior)
+  after 3 retries (4th total execution) --> status: "failed" (unchanged terminal behavior)
 ```
 
 ## 5. Testing

@@ -137,7 +137,9 @@ export class TaskStore {
    * nothing is pending. `exclude` skips ids a concurrent dispatch drain has
    * already decided not to reclaim this pass (see claimNextPending) — a
    * plain read, so two concurrent callers could still both pick the same
-   * task; that's exactly what claimNextPending exists to prevent.
+   * task; that's exactly what claimNextPending exists to prevent. A task
+   * whose `nextRetryAt` is still in the future (relative to `now`) is also
+   * excluded — it's backing off after a failed attempt, not actually ready.
    */
   async nextPending(exclude: ReadonlySet<string> = new Set(), now: Date = new Date()): Promise<Task | null> {
     const pending = (await this.list()).filter(

@@ -207,7 +207,14 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
     } else {
       const reason = result.error ?? `run ended with status "${result.status}"`;
       const previousRetries = task.retryCount ?? 0;
-      if (previousRetries < MAX_RETRIES) {
+      // "denied" (a grant/tier refusal) and "timeout" are deterministic: the
+      // same grant will refuse again, and a timeout will very likely time out
+      // again at the same budget cost. Backing off doesn't help either one,
+      // unlike the transient failures (a flaky fetch, a momentary rate limit)
+      // this schedule exists for — so they skip straight to failing instead of
+      // burning all 3 attempts (21 minutes + up to 4x the run's budget) first.
+      const isDeterministic = result.status === "denied" || result.status === "timeout";
+      if (!isDeterministic && previousRetries < MAX_RETRIES) {
         // Exponential backoff before bothering the owner: a lot of these are
         // transient (a flaky fetch, a momentary rate limit) rather than a
         // real problem with the task or the agent. specialistAgent is kept,
@@ -311,8 +318,8 @@ export class Dispatcher {
    * mechanism (governor.maxConcurrent), the same throttle a cron agent's
    * trigger is already subject to.
    *
-   * A task that comes back deferred (a governor refusal, or the one silent
-   * auto-retry) is excluded from being reclaimed for the REST of this wake()
+   * A task that comes back deferred (a governor refusal, or a backoff retry)
+   * is excluded from being reclaimed for the REST of this wake()
    * call — nextPending() would hand it right back, and for a refusal that
    * spins for as long as the refusal lasts (quiet hours: hours). It's still
    * eligible again on the next wake()/periodic tick. Excluding only that one

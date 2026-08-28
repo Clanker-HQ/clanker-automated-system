@@ -424,10 +424,14 @@ export class SdkRunner implements Runner {
     const tasksDep = this.deps.tasks;
     const wakeDep = this.deps.wake;
     /**
-     * `listMyTasks` and `recentFailures` need only `tasksDep` — they never
-     * touch the dispatcher. `queueTask` additionally needs `wakeDep`, so it's
-     * included conditionally within this same server rather than gating the
-     * whole server on both, the way it did before this tool existed.
+     * None of these three tools has an outward effect (they only touch this
+     * process's own task queue, not the network), so none of them needs a
+     * grant and all are available at every tier, the same as `askHuman`
+     * above. `listMyTasks` and `recentFailures` need only `tasksDep` — they
+     * never touch the dispatcher. `queueTask` additionally needs `wakeDep`,
+     * so it's included conditionally within this same server rather than
+     * gating the whole server on both, the way it did before this tool
+     * existed.
      */
     const taskQueueServer = tasksDep
       ? createSdkMcpServer({
@@ -500,7 +504,7 @@ export class SdkRunner implements Runner {
                 for (const t of failed) {
                   const specialistAgent = t.specialistAgent ?? "unrouted";
                   const reason = (t.failureReason ?? "(no reason recorded)").slice(0, RECENT_FAILURES_REASON_TRUNCATE);
-                  const key = `${specialistAgent} ${reason}`;
+                  const key = `${specialistAgent}\u0000${reason}`;
                   const existing = buckets.get(key);
                   if (existing) existing.count += 1;
                   else buckets.set(key, { specialistAgent, reason, count: 1, exampleTaskId: t.id });
