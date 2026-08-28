@@ -393,6 +393,50 @@ describe("DiscordBot task commands", () => {
     expect(reply).not.toContain("a broken one");
   });
 
+  it("!result <short-id> reports a done task's full summary", async () => {
+    const { transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "find a profitable SaaS idea", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "done", result: { summary: "Found three promising niches.", path: "/data/runs/x" } });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!result ${task.id.slice(0, 8)}` });
+    const reply = transport.sent[0]!.text;
+    expect(reply).toContain("done");
+    expect(reply).toContain("Found three promising niches.");
+  });
+
+  it("!result reports a failed task's reason", async () => {
+    const { transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "failed", failureReason: "no specialist matched this task" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!result ${task.id}` });
+    expect(transport.sent[0]!.text).toContain("no specialist matched this task");
+  });
+
+  it("!result with an unmatched prefix says so and creates nothing", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!result deadbeef" });
+    expect(transport.sent[0]!.text).toContain("No task found");
+  });
+
+  it("!result with an ambiguous prefix lists the matches instead of picking one", async () => {
+    const { transport, bot, tasks } = setup();
+    const a = await tasks.create({ text: "a", createdBy: "discord:owner" });
+    const b = await tasks.create({ text: "b", createdBy: "discord:owner" });
+    vi.spyOn(tasks, "findByPrefix").mockResolvedValue([a, b]);
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!result shared-prefix" });
+    expect(transport.sent[0]!.text).toContain("2 tasks");
+  });
+
+  it("!result with no argument replies with usage", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!result" });
+    expect(transport.sent[0]!.text).toContain("Usage");
+  });
+
   it("ignores !task from a non-owner author", async () => {
     const { transport, bot, tasks } = setup();
     await bot.start();

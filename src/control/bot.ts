@@ -7,7 +7,7 @@ import type { ConfigOverridesStore } from "../config-overrides.js";
 import { formatZodError } from "../errors.js";
 import type { RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
-import type { TaskStore } from "./task-store.js";
+import type { Task, TaskStore } from "./task-store.js";
 
 export interface IncomingMessage {
   channelId: string;
@@ -59,6 +59,34 @@ interface WakeableDispatcher {
 
 const RESUME_REFUSED =
   "the pending entry is still open, so you can try again later.";
+
+/**
+ * `!tasks` only lists what's still active, so a finished task's completion
+ * message in the channel is the only other record of it — easy to lose in
+ * scrollback. `!result <id>` exists specifically to look one back up
+ * regardless of status, so this shows the full picture, not a truncated one.
+ */
+function formatTaskDetail(task: Task): string {
+  const lines = [`\`${task.id}\` — **${task.status}**`, `Request: ${task.text}`, `Created: ${task.createdAt}`];
+  switch (task.status) {
+    case "done":
+      lines.push(`Result: ${task.result?.summary ?? "(no summary recorded)"}`);
+      break;
+    case "failed":
+      lines.push(`Failed: ${task.failureReason ?? "(no reason recorded)"}`);
+      break;
+    case "waiting":
+      lines.push("Waiting on you to approve/deny/answer — check for an earlier prompt in this channel.");
+      break;
+    case "running":
+      lines.push(`Still running (started ${task.startedAt ?? "?"}).`);
+      break;
+    case "pending":
+      lines.push("Still queued.");
+      break;
+  }
+  return lines.join("\n");
+}
 
 export class DiscordBot {
   private readonly transport: BotTransport;
@@ -293,6 +321,17 @@ export class DiscordBot {
           console.error(`[bot] dispatcher wake failed after !task ${task.id}:`, err);
         });
         return void reply(`📋 Task \`${task.id}\` queued.`);
+      }
+      case "!result": {
+        const prefix = arg.trim();
+        if (!prefix) return void reply("Usage: `!result <task-id-or-prefix>` (the short id `!tasks` shows works)");
+        const matches = await this.tasks.findByPrefix(prefix);
+        if (matches.length === 0) return void reply(`No task found starting with \`${prefix}\`.`);
+        if (matches.length > 1) {
+          const ids = matches.map((t) => t.id.slice(0, 8)).join(", ");
+          return void reply(`\`${prefix}\` matches ${matches.length} tasks — be more specific: ${ids}`);
+        }
+        return void reply(formatTaskDetail(matches[0]!));
       }
       case "!tasks": {
         const all = await this.tasks.list();

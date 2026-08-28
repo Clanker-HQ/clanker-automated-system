@@ -109,6 +109,7 @@ try again later, the id stays valid. Entries older than
 | `!runs` | The last 20 runs — id, status, cost |
 | `!task [-d] <text>` | Queue a free-form request; replies with its task id. `-d` asks for a longer final summary |
 | `!tasks` | Tasks not yet finished — id, status, truncated text |
+| `!result <id-or-prefix>` | Look up any task, finished or not, by full id or the short id `!tasks` shows |
 
 These write to `data/config-overrides.json` and take effect on the next
 admission check; they override `config.yaml` until changed back.
@@ -131,6 +132,11 @@ as `waiting` in `!tasks` — the run is alive, not failed. Known limitation: the
 resume path knows about runs, not tasks, so a resumed task stays `waiting` on
 record even after the run itself completes; the run's own report is the source
 of truth for how it ended.
+
+`!tasks` only lists what's still active, so once a task finishes its
+completion message in the channel is the only other record of it —
+`!result <id-or-prefix>` looks any task back up regardless of status (queued,
+running, waiting, done, or failed) and shows the full, untruncated detail.
 
 ## Development
 

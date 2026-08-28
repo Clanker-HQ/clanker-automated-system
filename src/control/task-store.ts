@@ -80,6 +80,11 @@ export class TaskStore {
     return tasks;
   }
 
+  /** Tasks whose id starts with `prefix` — how `!result <short-id>` resolves the truncated id `!tasks` shows. */
+  async findByPrefix(prefix: string): Promise<Task[]> {
+    return (await this.list()).filter((t) => t.id.startsWith(prefix));
+  }
+
   async update(id: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task> {
     const existing = await this.get(id);
     if (!existing) throw new Error(`TaskStore: no task "${id}" to update`);

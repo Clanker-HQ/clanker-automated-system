@@ -63,6 +63,14 @@ describe("TaskStore", () => {
     expect(plain.wantsDetail).toBeUndefined();
   });
 
+  it("findByPrefix matches on id prefix, and returns all matches when ambiguous", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    expect(await s.findByPrefix(task.id.slice(0, 8))).toEqual([task]);
+    expect(await s.findByPrefix(task.id)).toEqual([task]);
+    expect(await s.findByPrefix("not-a-real-prefix")).toEqual([]);
+  });
+
   it("update merges a patch and persists it", async () => {
     const s = store();
     const task = await s.create({ text: "x", createdBy: "discord:owner" });
