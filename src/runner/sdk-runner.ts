@@ -454,7 +454,7 @@ export class SdkRunner implements Runner {
                   queueTaskCalls += 1;
                   const created = await tasksDep.create({
                     text,
-                    priority: priority ?? DEFAULT_SELF_QUEUED_PRIORITY,
+                    priority: Math.min(priority ?? DEFAULT_SELF_QUEUED_PRIORITY, DEFAULT_SELF_QUEUED_PRIORITY),
                     createdBy: `agent:${agent.name}`,
                     wantsDetail: true,
                   });

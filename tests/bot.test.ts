@@ -692,6 +692,14 @@ describe("DiscordBot task commands", () => {
     expect(reply).toContain("Found three promising niches.");
   });
 
+  it("!result shows who requested a self-queued task", async () => {
+    const { transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "look into X", createdBy: "agent:opportunity-scout" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!result ${task.id}` });
+    expect(transport.sent[0]!.text).toContain("Requested by: agent:opportunity-scout");
+  });
+
   it("!result reports a failed task's reason", async () => {
     const { transport, bot, tasks } = setup();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });

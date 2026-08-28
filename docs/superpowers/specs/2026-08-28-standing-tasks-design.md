@@ -97,9 +97,10 @@ a glance that a task was self-generated, without adding a new field.
 
 **Default priority:** a self-queued task defaults to **30**, not the human
 default of 50 — so a real human ask, submitted at any time, is never queued
-behind a scout's own speculative proposal. A scout may still request a
-specific `priority` if it has reason to (kept as an option for symmetry with
-`!task -p`, not expected to be used much in practice).
+behind a scout's own speculative proposal. This is enforced in code, not just
+by convention: a scout-supplied `priority` is clamped to never exceed 30
+(`Math.min(priority ?? 30, 30)` in `queueTask`'s handler), so a self-generated
+task can never outrank a human's `!task` regardless of what a scout requests.
 
 **Default `wantsDetail`:** `true`. A human-issued task defaults to a short
 completion summary because the person is usually right there to ask a
@@ -215,6 +216,8 @@ anyway, for reasons specific to how small the resulting blast radius is:
   is a natural, isolated follow-up — it slots in between `queueTask` being
   called and the task actually persisting, without touching anything else
   built here.
+
+**This argument covers low-value proposals, not adversarially-shaped ones — that's a separate, already-contained risk.** `opportunity-scout`'s `WebSearch` results shape the task text it queues, and that text becomes `research`'s prompt verbatim once routed — so a page an attacker controls could indirectly steer what `research` investigates next. This is not a new containment gap: `research` has no `Read` tool (so nothing local to exfiltrate), no `Bash`, and its `web-read` grant authorizes fetching pages, not writing, publishing, or spending — the same tool/grant restrictions that already bound a directly `!task`-issued research request bound a scout-issued one identically. The realistic worst case is a skewed or misdirected report, not a destructive or exfiltrating action. Worth knowing, not worth building against here.
 
 ---
 

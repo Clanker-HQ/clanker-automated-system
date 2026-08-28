@@ -64,6 +64,8 @@ function main(): void {
   let github: GithubApiTransport;
   let dispatcher: Dispatcher | undefined;
 
+  const tasks = new TaskStore(DATA_DIR);
+
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
     agents = loadRegistry({ agentsDir: join(ROOT, "agents"), dataDir: DATA_DIR, config });
@@ -84,7 +86,7 @@ function main(): void {
     github = new GithubApiTransport({ token: githubToken });
     runner = buildRunner({
       grants, pending: new PendingStore(DATA_DIR), github,
-      tasks: new TaskStore(DATA_DIR),
+      tasks,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound
       // too) — but this closure is only ever CALLED much later, once a real
@@ -141,7 +143,6 @@ function main(): void {
   });
 
   const pending = new PendingStore(DATA_DIR);
-  const tasks = new TaskStore(DATA_DIR);
 
   // The orchestrator needs the bot (to announce a live park) and the bot needs
   // the orchestrator (to resume one), so one of the two references has to be

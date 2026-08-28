@@ -17,6 +17,12 @@ services:
       - ./agents:/app/agents:ro
       - ./config.yaml:/app/config.yaml:ro
       - ./grants.yaml:/app/grants.yaml:ro
+      # Read-only reference material improvement-scout's prompt names but the
+      # image doesn't bake in: docs/ (specs/plans, for the "already deferred"
+      # guard), README.md, and CONFIGURING.md.
+      - ./docs:/app/docs:ro
+      - ./README.md:/app/README.md:ro
+      - ./CONFIGURING.md:/app/CONFIGURING.md:ro
     restart: unless-stopped
 
 volumes:

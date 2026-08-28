@@ -74,7 +74,7 @@ const RESUME_REFUSED =
  * regardless of status, so this shows the full picture, not a truncated one.
  */
 function formatTaskDetail(task: Task): string {
-  const lines = [`\`${task.id}\` — **${task.status}**`, `Request: ${task.text}`, `Created: ${task.createdAt}`];
+  const lines = [`\`${task.id}\` — **${task.status}**`, `Request: ${task.text}`, `Requested by: ${task.createdBy}`, `Created: ${task.createdAt}`];
   switch (task.status) {
     case "done":
       lines.push(`Result: ${task.result?.summary ?? "(no summary recorded)"}`);

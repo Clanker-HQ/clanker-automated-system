@@ -93,7 +93,24 @@ describe("SdkRunner queueTask tool", () => {
     expect(wake).toHaveBeenCalledTimes(1);
   });
 
-  it("uses an explicit priority when one is given, instead of the self-queued default", async () => {
+  it("honors an explicit priority below the self-queued default", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    await handler({ text: "Low-urgency idea.", priority: 10 });
+
+    const created = await tasks.list();
+    expect(created[0]?.priority).toBe(10);
+  });
+
+  it("clamps an explicit priority above the self-queued default, so a scout can never outrank a human !task", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const tasks = new TaskStore(dir);
@@ -107,7 +124,7 @@ describe("SdkRunner queueTask tool", () => {
     await handler({ text: "Urgent-ish idea.", priority: 70 });
 
     const created = await tasks.list();
-    expect(created[0]?.priority).toBe(70);
+    expect(created[0]?.priority).toBe(30);
   });
 
   it("refuses a 4th queueTask call in the same run, and does not queue it", async () => {
@@ -147,9 +164,12 @@ describe("SdkRunner queueTask tool", () => {
     const client = new Client({ name: "test-client", version: "0.0.0" });
     await Promise.all([instance.connect(serverTransport), client.connect(clientTransport)]);
 
-    const result = await client.callTool({ name: "queueTask", arguments: { text: "x".repeat(MAX_TASK_TEXT_LENGTH + 1) } });
+    const oversized = await client.callTool({ name: "queueTask", arguments: { text: "x".repeat(MAX_TASK_TEXT_LENGTH + 1) } });
+    expect(oversized.isError).toBe(true);
 
-    expect(result.isError).toBe(true);
+    const empty = await client.callTool({ name: "queueTask", arguments: { text: "" } });
+    expect(empty.isError).toBe(true);
+
     expect(await tasks.list()).toEqual([]);
     await client.close();
   });
