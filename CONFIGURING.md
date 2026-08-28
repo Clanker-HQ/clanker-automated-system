@@ -53,14 +53,30 @@ governor:
 discord:
   channels:      { smoke: DISCORD_WEBHOOK_SMOKE }      # webhook URL, routine reports
   botChannels:   { smoke: DISCORD_CHANNEL_ID_SMOKE }   # channel id, for the bot commands above
+
+digest:
+  enabled: true
+  schedule: "0 8 * * *"   # once a day, croner's 5-field cron syntax
+  timezone: Europe/Berlin
+  channel: smoke          # a key into discord.channels
+
+retention:
+  enabled: true
+  days: 30                # delete run data / workspace files older than this
+  schedule: "0 4 * * 0"   # weekly (Sunday 04:00)
+  timezone: Europe/Berlin
+  channel: smoke
 ```
 
 Edit this file only for the *baseline* you want across restarts. For a
 one-off or temporary change, use the Discord commands instead — no restart
-needed, and it's reversible from your phone.
+needed, and it's reversible from your phone. `digest`/`retention` have no
+Discord equivalent — they only ever run on their own schedule, so a
+`config.yaml` edit + restart is the only way to change them.
 
 ## Things that are NOT configurable via Discord (edit + redeploy required)
 
 - Adding/removing agents, or what an agent is allowed to do (`agents/*/agent.yaml`, `grants.yaml`)
 - Discord channel/webhook wiring (`config.yaml`'s `discord:` block, plus the env vars it names)
 - The owner id allowed to use any of this (env var, checked once at boot)
+- The daily digest and weekly data-retention sweep (`digest:`/`retention:` in `config.yaml`)

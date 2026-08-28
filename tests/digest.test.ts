@@ -1,0 +1,91 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { TaskStore } from "../src/control/task-store.js";
+import { buildDigestText } from "../src/digest.js";
+import { RunStore, newRunId } from "../src/run-store.js";
+
+function stores() {
+  const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-"));
+  return { store: new RunStore(dataDir), tasks: new TaskStore(dataDir) };
+}
+
+const SINCE = new Date("2026-08-27T00:00:00.000Z");
+const WITHIN_WINDOW = new Date("2026-08-27T12:00:00.000Z");
+const BEFORE_WINDOW = new Date("2026-08-26T12:00:00.000Z");
+
+/** RunWriter.close() stamps startedAt from the real system clock, not from any date embedded in the runId — so faking the clock is the only way to land a run at a chosen time. */
+async function recordRun(store: RunStore, at: Date, status: "success" | "failed", costUsd: number) {
+  vi.useFakeTimers();
+  vi.setSystemTime(at);
+  try {
+    const writer = await store.open(newRunId("smoke", at), "smoke");
+    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd, durationMs: 1 });
+    await writer.close({ status, summary: "" });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+describe("buildDigestText", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+
+  it("says nothing happened when the window is empty", async () => {
+    const { store, tasks } = stores();
+    expect(await buildDigestText({ store, tasks, since: SINCE })).toBe("📅 Daily digest: nothing happened in the last 24h.");
+  });
+
+  it("counts runs and spend within the window, ignoring runs before it", async () => {
+    const { store, tasks } = stores();
+    // Distinct timestamps: newRunId derives its id from agent name + time, so
+    // two runs at the identical instant would collide into one run directory.
+    await recordRun(store, WITHIN_WINDOW, "success", 1.5);
+    await recordRun(store, new Date(WITHIN_WINDOW.getTime() + 1000), "failed", 0.5);
+    await recordRun(store, BEFORE_WINDOW, "success", 100);
+    const text = await buildDigestText({ store, tasks, since: SINCE });
+    expect(text).toContain("Runs: 2");
+    expect(text).toContain("1 success");
+    expect(text).toContain("1 failed");
+    expect(text).toContain("$2.00 spent");
+    expect(text).not.toContain("100");
+  });
+
+  it("counts tasks finished within the window, ignoring ones finished before it", async () => {
+    const { store, tasks } = stores();
+    const done = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(done.id, { status: "done", finishedAt: WITHIN_WINDOW.toISOString() });
+    const failed = await tasks.create({ text: "y", createdBy: "discord:owner" });
+    await tasks.update(failed.id, { status: "failed", finishedAt: WITHIN_WINDOW.toISOString(), failureReason: "boom" });
+    const oldDone = await tasks.create({ text: "z", createdBy: "discord:owner" });
+    await tasks.update(oldDone.id, { status: "done", finishedAt: BEFORE_WINDOW.toISOString() });
+
+    const text = await buildDigestText({ store, tasks, since: SINCE });
+    expect(text).toContain("Tasks: 1 done, 1 failed");
+    expect(text).toContain(`\`${failed.id.slice(0, 8)}\``);
+    expect(text).toContain("boom");
+  });
+
+  it("lists tasks waiting on the owner regardless of how long they've been waiting", async () => {
+    const { store, tasks } = stores();
+    const waiting = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(waiting.id, { status: "waiting" });
+    const text = await buildDigestText({ store, tasks, since: WITHIN_WINDOW });
+    expect(text).toContain("Waiting on you");
+    expect(text).toContain(waiting.id.slice(0, 8));
+  });
+
+  it("caps the listed failed tasks at 5 and notes the rest", async () => {
+    const { store, tasks } = stores();
+    for (let i = 0; i < 7; i++) {
+      const t = await tasks.create({ text: `t${i}`, createdBy: "discord:owner" });
+      await tasks.update(t.id, { status: "failed", finishedAt: WITHIN_WINDOW.toISOString(), failureReason: `reason ${i}` });
+    }
+    const text = await buildDigestText({ store, tasks, since: SINCE });
+    expect(text).toContain("Tasks: 0 done, 7 failed");
+    expect(text).toContain("…and 2 more failed task(s)");
+  });
+});

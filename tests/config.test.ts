@@ -81,6 +81,22 @@ describe("parseConfig", () => {
     const yaml = VALID + "\nunexpected: true\n";
     expect(() => parseConfig("config.yaml", yaml)).toThrow(/unexpected/);
   });
+
+  it("defaults digest to enabled, 08:00 UTC, the 'smoke' channel, when absent", () => {
+    const config = parseConfig("config.yaml", VALID);
+    expect(config.digest).toEqual({ enabled: true, schedule: "0 8 * * *", timezone: "UTC", channel: "smoke" });
+  });
+
+  it("honours an explicit digest block", () => {
+    const yaml = VALID + "\ndigest:\n  enabled: false\n  schedule: \"0 9 * * *\"\n  timezone: Europe/Berlin\n  channel: research\n";
+    const config = parseConfig("config.yaml", yaml);
+    expect(config.digest).toEqual({ enabled: false, schedule: "0 9 * * *", timezone: "Europe/Berlin", channel: "research" });
+  });
+
+  it("rejects a non-canonical digest timezone the same way quietHours does", () => {
+    const yaml = VALID + "\ndigest:\n  timezone: PST\n";
+    expect(() => parseConfig("config.yaml", yaml)).toThrow(/digest\.timezone.*IANA/s);
+  });
 });
 
 describe("loadConfig", () => {

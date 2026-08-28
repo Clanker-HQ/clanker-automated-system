@@ -14,6 +14,19 @@ discord:
   botChannels:
     smoke: DISCORD_CHANNEL_ID_SMOKE   # numeric Discord channel id, for the bot
 
+digest:
+  enabled: true
+  schedule: "0 8 * * *"   # once a day, croner's 5-field cron syntax
+  timezone: Europe/Berlin
+  channel: smoke          # a key into discord.channels above
+
+retention:
+  enabled: true
+  days: 30                # delete run transcripts/results and workspace files older than this
+  schedule: "0 4 * * 0"   # weekly (Sunday 04:00) — bulk deletion, not routine reporting
+  timezone: Europe/Berlin
+  channel: smoke
+
 # github:
 #   prToken: GITHUB_PR_TOKEN   # (documented here for discoverability; the
 #                               # env var itself is read directly, not via

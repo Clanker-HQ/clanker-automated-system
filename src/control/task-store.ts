@@ -25,6 +25,8 @@ export interface Task {
   failureReason?: string;
   /** Set when the requester asked for a longer, more substantive final summary than the specialist's default. */
   wantsDetail?: boolean;
+  /** How many times the dispatcher has silently auto-retried this task after a failed run — capped at 1 before it's actually marked "failed". */
+  retryCount?: number;
 }
 
 export class TaskStore {

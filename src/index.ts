@@ -224,6 +224,40 @@ function main(): void {
     },
   );
 
+  if (config.digest.enabled) {
+    void import("./triggers/digest.js")
+      .then(({ startDigest }) => {
+        startDigest({
+          schedule: config.digest.schedule,
+          timezone: config.digest.timezone,
+          channel: config.digest.channel,
+          store: runStore,
+          tasks,
+          outbox,
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the daily digest", error);
+      });
+  }
+
+  if (config.retention.enabled) {
+    void import("./triggers/retention.js")
+      .then(({ startRetention }) => {
+        startRetention({
+          schedule: config.retention.schedule,
+          timezone: config.retention.timezone,
+          dataDir: DATA_DIR,
+          days: config.retention.days,
+          channel: config.retention.channel,
+          outbox,
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the data-retention schedule", error);
+      });
+  }
+
   // Imported lazily so a boot failure above never starts a schedule.
   void import("./triggers/cron.js")
     .then(({ startCron }) => {

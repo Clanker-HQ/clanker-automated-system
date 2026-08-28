@@ -79,12 +79,14 @@ export interface DispatchOutcome {
   ran: boolean;
   taskId?: string;
   /**
-   * True only when the Governor refused admission and the task went back to
-   * "pending". The drain loop in Dispatcher.wake() must stop on this: the very
-   * next nextPending() would return the SAME task, hit the same refusal, and
-   * spin — burning CPU (and, before the routing cache below, an unbudgeted
-   * routing LLM call per iteration) for as long as the refusal lasts, which
-   * for quiet hours is measured in hours.
+   * True whenever a task went back to "pending" without being retried
+   * immediately in this same drain: a Governor refusal, or the one silent
+   * auto-retry on a failed run. The drain loop in Dispatcher.wake() must stop
+   * on this either way — nextPending() would return the SAME task right back,
+   * and for a refusal that spins for as long as the refusal lasts (quiet
+   * hours: hours), while for an auto-retry it at least gives whatever was
+   * transient (a flaky fetch, a momentary rate limit) the ~30s until the next
+   * periodic tick to clear, instead of hammering it back-to-back.
    */
   deferred?: boolean;
 }
@@ -176,6 +178,17 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
       await deps.tasks.update(task.id, { status: "waiting" });
     } else {
       const reason = result.error ?? `run ended with status "${result.status}"`;
+      const previousRetries = task.retryCount ?? 0;
+      if (previousRetries < 1) {
+        // One silent retry before bothering the owner: a lot of these are
+        // transient (a flaky fetch, a momentary rate limit) rather than a
+        // real problem with the task or the agent. specialistAgent is kept,
+        // same as every other requeue-to-pending path here, so the retry
+        // doesn't pay for a second routing call.
+        console.log(`[dispatcher] task ${task.id} failed (${reason}); retrying once before giving up`);
+        await deps.tasks.update(task.id, { status: "pending", retryCount: previousRetries + 1, startedAt: undefined });
+        return { ran: true, taskId: task.id, deferred: true };
+      }
       await deps.tasks.update(task.id, {
         status: "failed",
         finishedAt: now().toISOString(),

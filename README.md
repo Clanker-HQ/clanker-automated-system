@@ -141,6 +141,24 @@ completion message in the channel is the only other record of it —
 `!result <id-or-prefix>` looks any task back up regardless of status (queued,
 running, waiting, done, or failed) and shows the full, untruncated detail.
 
+A task whose run doesn't succeed is silently retried once — a lot of failures
+are transient (a flaky fetch, a momentary rate limit) — before it's actually
+marked `failed` and posted to the channel. The retry waits for the next
+dispatcher tick rather than firing immediately, so a genuinely broken task
+doesn't burn two attempts back-to-back. `!retry` on an already-failed task
+resets this, so a manual retry always gets its own fresh silent attempt too.
+
+**Daily digest and data retention.** Two scheduled jobs, both configured under
+`digest:`/`retention:` in `config.yaml`, neither needing a command:
+- `digest` posts once a day (08:00 by default): runs and spend in the last
+  24h, tasks done/failed, and anything still `waiting` on you regardless of
+  how old — so a day away doesn't mean piecing state back together from
+  `!status`/`!tasks`/memory of what you last checked.
+- `retention` runs weekly and deletes run transcripts/results and specialist
+  workspace files (e.g. research findings) older than `retention.days`
+  (30 by default). A run still in progress (no `result.json` yet) is never
+  touched. Posts to the channel only when it actually removed something.
+
 ## Development
 
 - `npm test` — full suite, consumes no quota

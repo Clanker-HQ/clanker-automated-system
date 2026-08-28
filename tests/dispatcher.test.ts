@@ -80,14 +80,36 @@ describe("runDispatchTick", () => {
     expect(promptContext).toContain("Discord doesn't render markdown tables");
   });
 
-  it("marks the task failed, with the run's own error, when the run doesn't succeed", async () => {
+  it("retries once, silently, before failing a task whose run doesn't succeed", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
     const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
-    await runDispatchTick({
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const outcome = await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify, dataDir,
+    });
+    // deferred: true, same as a governor refusal, so Dispatcher.wake()'s drain
+    // doesn't hammer the same transient failure back-to-back.
+    expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("pending");
+    expect(updated?.retryCount).toBe(1);
+    expect(updated?.finishedAt).toBeUndefined();
+    // Silent: the owner isn't bothered for a failure that might not recur.
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("marks the task failed, with the run's own error, on a second consecutive failure", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(task.id, { retryCount: 1 });
+    const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
+    const outcome = await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
       orchestrator: { executeRun }, notify: vi.fn(), dataDir,
     });
+    expect(outcome).toEqual({ ran: true, taskId: task.id });
     const updated = await tasks.get(task.id);
     expect(updated?.status).toBe("failed");
     expect(updated?.failureReason).toBe("boom");
@@ -186,6 +208,7 @@ describe("runDispatchTick", () => {
   it("notifies with the task id and the error on a failed run", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(task.id, { retryCount: 1 }); // past the silent auto-retry, so this failure actually notifies
     const notify = vi.fn().mockResolvedValue(undefined);
     await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
@@ -243,6 +266,7 @@ describe("runDispatchTick", () => {
     it("keeps the run's own failureReason when the failure notify rejects", async () => {
       const { tasks, dataDir } = taskStore();
       const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await tasks.update(task.id, { retryCount: 1 }); // past the silent auto-retry
       const notify = vi.fn().mockRejectedValue(new Error("DISCORD_WEBHOOK_SMOKE is unset"));
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
@@ -377,6 +401,22 @@ describe("Dispatcher.wake", () => {
     expect(executeRun).toHaveBeenCalledTimes(1);
     expect(router.calls).toHaveLength(1);
     // Both tasks are still queued for a later tick — neither is lost.
+    expect((await tasks.list()).filter((t) => t.status === "pending")).toHaveLength(2);
+  });
+
+  it("stops draining after a silent auto-retry, same as a governor refusal", async () => {
+    const { tasks, dataDir } = taskStore();
+    await tasks.create({ text: "a", createdBy: "discord:owner" });
+    await tasks.create({ text: "b", createdBy: "discord:owner" });
+    const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
+    const dispatcher = new Dispatcher({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+    });
+    await dispatcher.wake();
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    // Both tasks are still queued for a later tick — the retried one isn't
+    // hammered again immediately, and the other one wasn't skipped.
     expect((await tasks.list()).filter((t) => t.status === "pending")).toHaveLength(2);
   });
 
