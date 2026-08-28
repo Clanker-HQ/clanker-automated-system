@@ -1,0 +1,29 @@
+name: builder
+enabled: true
+authoredBy: claude-local
+description: >-
+  Implements a small, well-described code change, commits it, pushes it
+  to a dedicated namespace, and opens a PR. Never merges — pr-reviewer
+  and mergePR own that decision, unchanged.
+
+trigger:
+  type: dispatched
+
+run:
+  model: claude-sonnet-5
+  effort: medium
+  maxTurns: 60
+  timeoutMinutes: 30
+  maxBudgetUsd: 3.00
+
+permissions:
+  allowedTools: [Read, Write, Edit, Glob, Grep, Bash]
+  disallowedTools: []
+
+tier: autonomous
+approval: auto
+grantRefs: [builder-push]
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]
