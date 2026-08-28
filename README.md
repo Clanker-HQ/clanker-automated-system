@@ -98,8 +98,8 @@ try again later, the id stays valid. Entries older than
 |---|---|
 | `!stop` | Write the STOP file — no new runs, and no resumes, until `!resume` |
 | `!resume` | Remove the STOP file |
-| `!disable <agent>` | Stop triggering that one agent (a human resume still works) |
-| `!enable <agent>` | Re-enable it, and reset its circuit breaker |
+| `!disable <agent>` | Stop triggering that one agent (a human resume still works). Refused, naming the agents that do exist, if `<agent>` matches none of them — a typo has no legitimate effect to have |
+| `!enable <agent>` | Re-enable it, and reset its circuit breaker. Still applied for a name matching no currently-loaded agent (the only way to clear a stale override left by an agent since removed from config), but the reply says so rather than implying a real agent was re-enabled |
 | `!budget <n>` | Set the daily spend ceiling in USD, e.g. `!budget 25` |
 | `!concurrency <n>` | Set how many runs may be in flight at once |
 | `!quiet HH:MM-HH:MM Area/City` | Set quiet hours, e.g. `!quiet 02:00-03:00 Europe/Berlin`. Same-day windows only — `22:00-07:00` would never actually suppress anything, since `from` must be earlier than `to`; the timezone must be a canonical IANA name, and a bad one is rejected with the reason rather than written |

@@ -287,6 +287,25 @@ describe("DiscordBot", () => {
     expect((await overrides.read()).disabledAgents).toEqual(["smoke"]);
   });
 
+  it("!disable <unknown-agent> refuses, naming the known agents, and never touches disabledAgents", async () => {
+    const { transport, bot, overrides } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!disable reasearch" });
+    expect((await overrides.read()).disabledAgents).toBeUndefined();
+    const reply = transport.sent.map((m) => m.text).join("\n");
+    expect(reply).toContain("No agent named");
+    expect(reply).toContain("smoke");
+  });
+
+  it("!enable <unknown-agent> still clears a stale override but flags that nothing is currently loaded by that name", async () => {
+    const { transport, bot, overrides } = setup();
+    await overrides.set("disabledAgents", ["removed-agent"], "test");
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!enable removed-agent" });
+    expect((await overrides.read()).disabledAgents ?? []).toEqual([]);
+    expect(transport.sent.some((m) => m.text.includes("no agent by that name is currently loaded"))).toBe(true);
+  });
+
   // Critical: approve/deny/answer IS the human decision the whole tier/grant
   // system exists to require. Anyone who can see the channel must not be able
   // to supply it, or to run an admin command.

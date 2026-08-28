@@ -340,6 +340,13 @@ export class DiscordBot {
       }
       case "!disable": {
         if (!arg.trim()) return void reply("Usage: `!disable <agent-name>`");
+        // Unlike !enable below, there's no legitimate reason to disable a name
+        // that matches no loaded agent — it can only be a typo, and writing it
+        // anyway would silently do nothing while replying as if it worked.
+        if (!this.agents.some((a) => a.name === arg)) {
+          const known = this.agents.map((a) => a.name).join(", ") || "(none loaded)";
+          return void reply(`No agent named "${arg}" is loaded — nothing disabled. Known agents: ${known}`);
+        }
         const overrides = await this.overrides.read();
         const disabled = new Set(overrides.disabledAgents ?? []);
         disabled.add(arg);
@@ -353,6 +360,13 @@ export class DiscordBot {
         disabled.delete(arg);
         await this.overrides.set("disabledAgents", [...disabled], "discord");
         await this.breaker.reset(arg);
+        // Still applied even for an unknown name (harmless, and the only way
+        // to clear a stale disabledAgents entry left by an agent that was
+        // since removed from config) — just flagged, rather than replying as
+        // if a currently-loaded agent was actually re-enabled.
+        if (!this.agents.some((a) => a.name === arg)) {
+          return void reply(`▶️ ${arg} enabled — but no agent by that name is currently loaded, so this only cleared a stale override, if any.`);
+        }
         return void reply(`▶️ ${arg} enabled.`);
       }
       case "!budget": {
