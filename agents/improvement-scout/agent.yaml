@@ -1,0 +1,31 @@
+name: improvement-scout
+enabled: true
+authoredBy: claude-local
+description: >-
+  Reads this project's own source and docs, and queues concrete
+  improvement/bugfix/capability ideas as tasks for later review. Proposes
+  only — never writes or changes anything itself.
+
+trigger:
+  type: cron
+  schedule: "0 7 * * *"
+  timezone: Europe/Berlin
+
+run:
+  model: claude-haiku-4-5
+  effort: low
+  maxTurns: 30
+  timeoutMinutes: 15
+  maxBudgetUsd: 1.00
+
+permissions:
+  allowedTools: [Read, Glob, Grep]
+  disallowedTools: []
+
+tier: readonly
+approval: notify
+grantRefs: []
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]
