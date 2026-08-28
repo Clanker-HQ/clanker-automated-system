@@ -1,0 +1,31 @@
+name: opportunity-scout
+enabled: true
+authoredBy: claude-local
+description: >-
+  Looks for plausible ways this system or its operator could earn money,
+  and queues well-scoped research questions for the research specialist to
+  investigate. Proposes only — never researches or spends itself.
+
+trigger:
+  type: cron
+  schedule: "0 6 * * *"
+  timezone: Europe/Berlin
+
+run:
+  model: claude-haiku-4-5
+  effort: low
+  maxTurns: 15
+  timeoutMinutes: 5
+  maxBudgetUsd: 0.50
+
+permissions:
+  allowedTools: [WebSearch]
+  disallowedTools: []
+
+tier: readonly
+approval: notify
+grantRefs: []
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]

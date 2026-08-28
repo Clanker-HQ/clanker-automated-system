@@ -182,6 +182,20 @@ and posted to Discord as a best-effort alert before the process exits.
 Docker's `restart: unless-stopped` was already bringing it back either way —
 this just means a 3am crash leaves a trace instead of an unexplained restart.
 
+**The system can queue its own tasks, not just yours.** Two cron-triggered
+agents run daily and each propose up to 3 tasks via a `queueTask` tool —
+no human approval needed to queue, matching every other read-only or
+proposal-only action in this system. A self-queued task is
+indistinguishable from a `!task` one once it exists — same routing, same
+Governor admission, same `!tasks`/`!result`/digest visibility — except its
+`createdBy` reads `agent:<name>` instead of `discord:<id>`, and it starts
+at a lower default priority (30 vs. 50) so it never queues ahead of
+something a human actually asked for. `opportunity-scout` looks for
+plausible ways to earn money and queues research questions for `research`
+to investigate. `improvement-scout` reads this project's own source and
+docs and queues concrete gaps or capability ideas. Neither can write,
+push, fetch, or spend beyond proposing — both run at `tier: readonly`.
+
 **Agent config that can never do what it says fails to load.** `tier:
 "granted"` (or anything but `"autonomous"`) combined with `approval: "auto"`
 looks like it should skip human approval, but `decide()` only ever
