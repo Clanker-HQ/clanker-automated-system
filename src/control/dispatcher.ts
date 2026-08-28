@@ -69,6 +69,10 @@ const DETAIL_INSTRUCTION =
   "side-by-side comparison genuinely helps, use a fenced code block to keep " +
   "it aligned, or two labeled bullet lists instead.)";
 
+/** 1min, 5min, 15min — index i is the delay after the (i+1)th failure. */
+const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
+const MAX_RETRIES = RETRY_BACKOFF_MS.length;
+
 function specialistsOf(agents: AgentDef[]): Specialist[] {
   return agents
     .filter((a) => a.enabled && a.trigger.type === "dispatched")
@@ -80,13 +84,13 @@ export interface DispatchOutcome {
   taskId?: string;
   /**
    * True whenever a task went back to "pending" without being retried
-   * immediately in this same drain: a Governor refusal, or the one silent
-   * auto-retry on a failed run. The drain loop in Dispatcher.wake() must stop
-   * on this either way — nextPending() would return the SAME task right back,
-   * and for a refusal that spins for as long as the refusal lasts (quiet
-   * hours: hours), while for an auto-retry it at least gives whatever was
-   * transient (a flaky fetch, a momentary rate limit) the ~30s until the next
-   * periodic tick to clear, instead of hammering it back-to-back.
+   * immediately in this same drain: a Governor refusal, or a backoff retry on
+   * a failed run. The drain loop in Dispatcher.wake() must stop on this
+   * either way — nextPending() would return the SAME task right back, and for
+   * a refusal that spins for as long as the refusal lasts (quiet hours:
+   * hours), while for an auto-retry it at least gives whatever was transient
+   * (a flaky fetch, a momentary rate limit) the ~30s until the next periodic
+   * tick to clear, instead of hammering it back-to-back.
    */
   deferred?: boolean;
 }
@@ -202,14 +206,22 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
     } else {
       const reason = result.error ?? `run ended with status "${result.status}"`;
       const previousRetries = task.retryCount ?? 0;
-      if (previousRetries < 1) {
-        // One silent retry before bothering the owner: a lot of these are
+      if (previousRetries < MAX_RETRIES) {
+        // Exponential backoff before bothering the owner: a lot of these are
         // transient (a flaky fetch, a momentary rate limit) rather than a
         // real problem with the task or the agent. specialistAgent is kept,
         // same as every other requeue-to-pending path here, so the retry
         // doesn't pay for a second routing call.
-        console.log(`[dispatcher] task ${task.id} failed (${reason}); retrying once before giving up`);
-        await deps.tasks.update(task.id, { status: "pending", retryCount: previousRetries + 1, startedAt: undefined });
+        const delayMs = RETRY_BACKOFF_MS[previousRetries]!;
+        console.log(
+          `[dispatcher] task ${task.id} failed (${reason}); retrying in ${delayMs / 1000}s (attempt ${previousRetries + 1}/${MAX_RETRIES})`,
+        );
+        await deps.tasks.update(task.id, {
+          status: "pending",
+          retryCount: previousRetries + 1,
+          startedAt: undefined,
+          nextRetryAt: new Date(now().getTime() + delayMs).toISOString(),
+        });
         return { ran: true, taskId: task.id, deferred: true };
       }
       await deps.tasks.update(task.id, {

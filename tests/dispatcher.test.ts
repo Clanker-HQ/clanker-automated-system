@@ -100,10 +100,10 @@ describe("runDispatchTick", () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it("marks the task failed, with the run's own error, on a second consecutive failure", async () => {
+  it("marks the task failed, with the run's own error, once all 3 retries are exhausted", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
-    await tasks.update(task.id, { retryCount: 1 });
+    await tasks.update(task.id, { retryCount: 3 });
     const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
     const outcome = await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
@@ -113,6 +113,51 @@ describe("runDispatchTick", () => {
     const updated = await tasks.get(task.id);
     expect(updated?.status).toBe("failed");
     expect(updated?.failureReason).toBe("boom");
+  });
+
+  it("backs off for 1 minute, keeping the task pending, after the first failure", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const now = () => new Date("2026-08-28T00:00:00.000Z");
+    const outcome = await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify, dataDir, now,
+    });
+    expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("pending");
+    expect(updated?.retryCount).toBe(1);
+    expect(updated?.nextRetryAt).toBe("2026-08-28T00:01:00.000Z");
+    expect(updated?.finishedAt).toBeUndefined();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("backs off for 5 minutes on the second failure, and 15 minutes on the third", async () => {
+    const { tasks, dataDir } = taskStore();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(task.id, { retryCount: 1 });
+    const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
+    const now = () => new Date("2026-08-28T00:00:00.000Z");
+
+    const second = await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir, now,
+    });
+    expect(second).toEqual({ ran: true, taskId: task.id, deferred: true });
+    expect((await tasks.get(task.id))?.retryCount).toBe(2);
+    expect((await tasks.get(task.id))?.nextRetryAt).toBe("2026-08-28T00:05:00.000Z");
+
+    // Simulate the backoff window having passed so this task is claimable again.
+    await tasks.update(task.id, { nextRetryAt: undefined });
+    const third = await runDispatchTick({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir, now,
+    });
+    expect(third).toEqual({ ran: true, taskId: task.id, deferred: true });
+    expect((await tasks.get(task.id))?.retryCount).toBe(3);
+    expect((await tasks.get(task.id))?.nextRetryAt).toBe("2026-08-28T00:15:00.000Z");
   });
 
   it("puts the task back to pending, reports deferred, and keeps its routing, when the governor refuses admission", async () => {
@@ -210,7 +255,7 @@ describe("runDispatchTick", () => {
   it("notifies with the task id and the error on a failed run", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
-    await tasks.update(task.id, { retryCount: 1 }); // past the silent auto-retry, so this failure actually notifies
+    await tasks.update(task.id, { retryCount: 3 }); // past all 3 retries, so this failure actually notifies
     const notify = vi.fn().mockResolvedValue(undefined);
     await runDispatchTick({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
@@ -268,7 +313,7 @@ describe("runDispatchTick", () => {
     it("keeps the run's own failureReason when the failure notify rejects", async () => {
       const { tasks, dataDir } = taskStore();
       const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
-      await tasks.update(task.id, { retryCount: 1 }); // past the silent auto-retry
+      await tasks.update(task.id, { retryCount: 3 }); // past all 3 retries
       const notify = vi.fn().mockRejectedValue(new Error("DISCORD_WEBHOOK_SMOKE is unset"));
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
