@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { pruneOldData } from "../src/retention.js";
+import { findOrphanedRuns, pruneOldData } from "../src/retention.js";
 
 const OLD = new Date("2020-01-01T00:00:00.000Z");
 const RECENT = new Date("2026-08-27T00:00:00.000Z");
@@ -76,5 +76,45 @@ describe("pruneOldData", () => {
     await expect(pruneOldData({ dataDir: dir, olderThan: CUTOFF })).resolves.toEqual({
       removedRuns: [], removedWorkspaceFiles: [],
     });
+  });
+});
+
+async function makeTranscript(dir: string, runId: string, mtime: Date): Promise<void> {
+  const runDir = join(dir, "runs", runId);
+  await mkdir(runDir, { recursive: true });
+  const transcriptPath = join(runDir, "transcript.jsonl");
+  await writeFile(transcriptPath, "{}\n");
+  await utimes(transcriptPath, mtime, mtime);
+}
+
+describe("findOrphanedRuns", () => {
+  it("flags a run with no result.json whose transcript hasn't been touched since the cutoff", async () => {
+    const dir = await dataDir();
+    await makeTranscript(dir, "crashed-run", OLD);
+    expect(await findOrphanedRuns({ dataDir: dir, olderThan: CUTOFF })).toEqual(["crashed-run"]);
+  });
+
+  it("does not flag a run whose transcript was written to recently — plausibly still in progress", async () => {
+    const dir = await dataDir();
+    await makeTranscript(dir, "live-run", RECENT);
+    expect(await findOrphanedRuns({ dataDir: dir, olderThan: CUTOFF })).toEqual([]);
+  });
+
+  it("does not flag a run that has a result.json, no matter how stale its transcript is", async () => {
+    const dir = await dataDir();
+    await makeTranscript(dir, "finished-run", OLD);
+    await writeFile(join(dir, "runs", "finished-run", "result.json"), JSON.stringify({ startedAt: OLD.toISOString() }));
+    expect(await findOrphanedRuns({ dataDir: dir, olderThan: CUTOFF })).toEqual([]);
+  });
+
+  it("does not flag a run directory with no transcript.jsonl at all", async () => {
+    const dir = await dataDir();
+    await mkdir(join(dir, "runs", "empty-dir"), { recursive: true });
+    expect(await findOrphanedRuns({ dataDir: dir, olderThan: CUTOFF })).toEqual([]);
+  });
+
+  it("returns an empty list, without throwing, when runs/ doesn't exist yet", async () => {
+    const dir = await dataDir();
+    await expect(findOrphanedRuns({ dataDir: dir, olderThan: CUTOFF })).resolves.toEqual([]);
   });
 });

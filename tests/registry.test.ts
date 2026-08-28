@@ -100,6 +100,33 @@ describe("parseAgent", () => {
     expect(() => parseAgent("agent.yaml", AGENT + "tier: bogus\n")).toThrow();
   });
 
+  // decide() (src/grants.ts) only short-circuits to `allow` for tier ===
+  // "autonomous" AND approval === "auto" — every other tier parks regardless
+  // of `approval`, because nothing else in the codebase reads that field.
+  // approval: "auto" on any other tier is therefore inert, and reads as a
+  // promise the agent can't keep — exactly the bug that shipped once already
+  // (research as tier: granted, approval: auto).
+  it('rejects approval: "auto" on a non-autonomous tier, naming the fix', () => {
+    const yaml = AGENT + "tier: granted\ngrantRefs: [test-echo]\napproval: auto\n";
+    expect(() => parseAgent("agent.yaml", yaml)).toThrow(/approval/);
+    try {
+      parseAgent("agent.yaml", yaml);
+    } catch (e) {
+      const message = (e as Error).message;
+      expect(message).toContain("autonomous");
+    }
+  });
+
+  it('accepts approval: "auto" on tier: autonomous', () => {
+    const yaml = AGENT + "tier: autonomous\ngrantRefs: [test-echo]\napproval: auto\n";
+    expect(() => parseAgent("agent.yaml", yaml)).not.toThrow();
+  });
+
+  it("accepts approval: notify/approve on a non-autonomous tier — only auto is inert there", () => {
+    expect(() => parseAgent("agent.yaml", AGENT + "tier: sandboxed\napproval: notify\n")).not.toThrow();
+    expect(() => parseAgent("agent.yaml", AGENT + "tier: granted\ngrantRefs: [test-echo]\napproval: approve\n")).not.toThrow();
+  });
+
   // Task 16 lifted the blanket "grantRefs are not available yet" rejection —
   // correctly for granted/autonomous, but too broadly: decide() denies every
   // outward effect for readonly/sandboxed BEFORE it consults grantRefs, so a

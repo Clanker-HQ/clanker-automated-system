@@ -157,7 +157,25 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
 - `retention` runs weekly and deletes run transcripts/results and specialist
   workspace files (e.g. research findings) older than `retention.days`
   (30 by default). A run still in progress (no `result.json` yet) is never
-  touched. Posts to the channel only when it actually removed something.
+  touched. Posts to the channel only when it actually removed something, and
+  separately reports (never deletes) any run whose transcript went stale
+  with no result ever recorded — that's not a run still in progress (every
+  agent's timeout caps at 3 hours), it's one the process crashed mid-way
+  through.
+
+**A process crash is no longer invisible.** An uncaught exception or
+unhandled rejection anywhere is caught, written to `data/state/crash.log`,
+and posted to Discord as a best-effort alert before the process exits.
+Docker's `restart: unless-stopped` was already bringing it back either way —
+this just means a 3am crash leaves a trace instead of an unexplained restart.
+
+**Agent config that can never do what it says fails to load.** `tier:
+"granted"` (or anything but `"autonomous"`) combined with `approval: "auto"`
+looks like it should skip human approval, but `decide()` only ever
+auto-allows for `tier: "autonomous"` — every other tier parks regardless,
+making `approval: "auto"` silently inert. This is exactly the bug `research`
+briefly shipped with; it's now a boot-time validation error instead of
+something only a reviewer might catch.
 
 ## Development
 

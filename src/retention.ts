@@ -51,3 +51,28 @@ export async function pruneOldData(opts: { dataDir: string; olderThan: Date }): 
 
   return { removedRuns, removedWorkspaceFiles };
 }
+
+/**
+ * A run directory with no result.json is normally just still running — but a
+ * real run finishes well within its `timeoutMinutes` cap (180 minutes, max),
+ * so one whose transcript hasn't been written to in `olderThan` almost
+ * certainly means the process died mid-run rather than that it's still going.
+ * pruneOldData() deliberately never deletes these (see its own comment) — this
+ * only reports them, so a crash that would otherwise sit invisible on disk
+ * forever gets surfaced instead.
+ */
+export async function findOrphanedRuns(opts: { dataDir: string; olderThan: Date }): Promise<string[]> {
+  const orphaned: string[] = [];
+  const runsRoot = join(opts.dataDir, "runs");
+  for (const runId of await readdir(runsRoot).catch(() => [] as string[])) {
+    const runDir = join(runsRoot, runId);
+    const hasResult = await stat(join(runDir, "result.json")).then(
+      () => true,
+      () => false,
+    );
+    if (hasResult) continue;
+    const transcript = await stat(join(runDir, "transcript.jsonl")).catch(() => null);
+    if (transcript && transcript.mtime < opts.olderThan) orphaned.push(runId);
+  }
+  return orphaned;
+}

@@ -151,6 +151,23 @@ export const AgentSchema = z
         message: `tool(s) ${overlap.join(", ")} appear in both allowedTools and disallowedTools. List each tool in exactly one`,
       });
     }
+    // decide() (src/grants.ts) only short-circuits a matched grant to `allow`
+    // when tier === "autonomous" AND approval === "auto" — every other tier
+    // still parks regardless of what `approval` says, because `approval` is
+    // consulted nowhere else in the codebase. `approval: auto` on any other
+    // tier is therefore not a looser setting, it's an inert one: the agent
+    // will park for a human on every single matched effect exactly as if
+    // approval were "notify", while reading like it shouldn't have to. This
+    // is precisely the bug already found once in this project's history
+    // (research shipped as tier: granted, approval: auto, and silently never
+    // ran unattended) — catching it here means it can't happen silently again.
+    if (agent.approval === "auto" && agent.tier !== "autonomous") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["approval"],
+        message: `approval: "auto" has no effect unless tier is "autonomous" — decide() only auto-allows a matched grant for that exact combination; every other tier parks regardless of approval. Use tier: autonomous if this agent should really run unattended, or approval: notify/approve to describe what "${agent.tier}" already does`,
+      });
+    }
     if (agent.trigger.type === "dispatched" && !agent.description.trim()) {
       ctx.addIssue({
         code: "custom",

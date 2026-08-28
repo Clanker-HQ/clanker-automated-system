@@ -11,6 +11,7 @@ import { PendingStore } from "./control/pending.js";
 import { TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { makeWebhookHandler } from "./control/webhook-wiring.js";
+import { installCrashHandlers } from "./crash-handlers.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
@@ -141,6 +142,11 @@ function main(): void {
   let bot: DiscordBot | undefined;
 
   const outbox = new DiscordOutbox({ config, dataDir: DATA_DIR });
+
+  // Installed as early as an outbox exists to alert through, so it covers
+  // everything from here on — the config/credential loading above is already
+  // covered by its own formatted ValidationError path.
+  installCrashHandlers({ dataDir: DATA_DIR, outbox, channel: config.digest.channel });
 
   const orchestrator = new Orchestrator({
     runner,
