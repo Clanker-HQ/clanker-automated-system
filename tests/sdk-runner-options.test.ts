@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakeGitPusher } from "../src/control/git-pusher.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { PendingStore } from "../src/control/pending.js";
 import type { Grant } from "../src/grants.js";
@@ -726,5 +727,136 @@ describe("SdkRunner GitHub PR tools", () => {
 
     expect(github.postedComments).toEqual([{ repo: "owner/repo", number: 1, body: "Looks clean." }]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("posted") }] });
+  });
+
+  describe("pushBranch", () => {
+    const GIT_PUSH_GRANT: Grant = { id: "builder-push", kind: "git-push", remote: "owner/repo", branches: ["agent/builder/*"], secret: "BUILDER_PUSH_TOKEN" };
+
+    function builderAgent(grantRefs: string[] = ["builder-push"]) {
+      return { ...AGENT, name: "builder", tier: "autonomous", approval: "auto", grantRefs } as unknown as AgentDef;
+    }
+
+    interface PushBranchParams {
+      options: {
+        mcpServers: {
+          githubPr?: {
+            instance: { _registeredTools: Record<string, { handler: (input: unknown) => Promise<unknown> }> };
+          };
+        };
+      };
+    }
+    function pushBranchHandler(params: PushBranchParams): (input: unknown) => Promise<unknown> {
+      return params.options.mcpServers.githubPr!.instance._registeredTools.pushBranch!.handler;
+    }
+    function mergeHandler(params: PushBranchParams): (input: unknown) => Promise<unknown> {
+      return params.options.mcpServers.githubPr!.instance._registeredTools.mergePR!.handler;
+    }
+
+    it("is not registered when gitPusher is not wired in, even with github present", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as PushBranchParams;
+      expect(params.options.mcpServers.githubPr!.instance._registeredTools.pushBranch).toBeUndefined();
+    });
+
+    it("refuses a branch outside agent/builder/, before any grant is even consulted (Gate 1, unconditional)", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("BUILDER_PUSH_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitPusher = new FakeGitPusher();
+      // Deliberately permissive grant (branches: "*") to prove Gate 1 alone stops this.
+      const permissive: Grant = { id: "builder-push", kind: "git-push", remote: "*", branches: ["*"], secret: "BUILDER_PUSH_TOKEN" };
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [permissive], pending: new PendingStore(dir), github, gitPusher });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as PushBranchParams;
+
+      const result = await pushBranchHandler(params)({ repo: "owner/repo", branch: "main" });
+
+      expect(gitPusher.pushed).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/agent\/builder\//) }] });
+    });
+
+    it("pushes via GitPusher when the branch namespace and grant both check out", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("BUILDER_PUSH_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitPusher = new FakeGitPusher();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitPusher });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as PushBranchParams;
+
+      const result = await pushBranchHandler(params)({ repo: "owner/repo", branch: "agent/builder/add-x" });
+
+      expect(gitPusher.pushed).toEqual([
+        { cwd: CTX.workspace, remoteUrl: "https://x-access-token:tok@github.com/owner/repo.git", branch: "agent/builder/add-x" },
+      ]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Pushed HEAD to owner/repo:agent/builder/add-x") }] });
+    });
+
+    it("denies when no git-push grant matches the repo, and never calls GitPusher", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitPusher = new FakeGitPusher();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitPusher });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as PushBranchParams;
+
+      const result = await pushBranchHandler(params)({ repo: "owner/other-repo", branch: "agent/builder/add-x" });
+
+      expect(gitPusher.pushed).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/no grant authorises/i) }] });
+    });
+
+    it("refuses with a clear message when the grant's secret env var isn't set, without calling GitPusher", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      // BUILDER_PUSH_TOKEN deliberately left unset.
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitPusher = new FakeGitPusher();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitPusher });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as PushBranchParams;
+
+      const result = await pushBranchHandler(params)({ repo: "owner/repo", branch: "agent/builder/add-x" });
+
+      expect(gitPusher.pushed).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("BUILDER_PUSH_TOKEN") }] });
+    });
+
+    // This is the single most important test in this plan (spec §6): a
+    // successful pushBranch must NOT also authorize mergePR, even for the
+    // exact same agent/repo in the exact same run — proving the git-push and
+    // github-pr grant kinds stay independently revocable.
+    it("does not let a successful pushBranch also authorise mergePR — builder has no github-pr grant at all", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("BUILDER_PUSH_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/x.ts"], diff: "", title: "t", body: "b" });
+      const gitPusher = new FakeGitPusher();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      // builder's ONLY grant is the git-push one — no github-pr grant, per spec §3.
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitPusher });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as PushBranchParams;
+
+      const pushResult = await pushBranchHandler(params)({ repo: "owner/repo", branch: "agent/builder/add-x" });
+      expect(pushResult).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Pushed HEAD") }] });
+
+      const mergeResult = await mergeHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+      expect(github.merged).toEqual([]);
+      expect(mergeResult).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/no grant authorises/i) }] });
+    });
   });
 });

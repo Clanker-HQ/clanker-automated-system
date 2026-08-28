@@ -1,10 +1,11 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { touchesExcludedPath } from "../control/excluded-paths.js";
+import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../control/task-store.js";
-import { decide, type Grant } from "../grants.js";
+import { decide, detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { AgentDef } from "../registry.js";
 import { resolveCredentials } from "./credentials.js";
 import type { RunContext, RunEvent, Runner } from "./types.js";
@@ -206,6 +207,7 @@ export class SdkRunner implements Runner {
       grants: Grant[];
       pending: PendingStore;
       github?: GithubTransport;
+      gitPusher?: GitPusher;
       /** Wired in production (src/index.ts); optional so tests/scripts that don't care about task-queueing can skip it, the same shape `github` already uses. */
       tasks?: TaskStore;
       /** Wakes the dispatcher after queueTask adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
@@ -338,6 +340,7 @@ export class SdkRunner implements Runner {
     //      before merging (defense in depth against a commit landing in the
     //      gap between the fetch above and the merge call).
     const github = this.deps.github;
+    const gitPusher = this.deps.gitPusher;
     const githubPrServer = github
       ? createSdkMcpServer({
           name: "githubPr",
@@ -409,6 +412,62 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: `Comment posted on ${repo}#${number}.` }] };
               },
             ),
+            ...(gitPusher
+              ? [
+                  tool(
+                    "pushBranch",
+                    "Push the current branch to a new remote branch and prepare it for a PR. Refuses any branch outside the agent/builder/ namespace, and refuses if no grant authorises pushing to the target repo.",
+                    { repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'), branch: z.string().min(1) },
+                    async ({ repo, branch }: { repo: string; branch: string }) => {
+                      // Gate 1 — unconditional, same pattern as mergePR's excluded-path
+                      // lock. No grant, no tier, nothing below this can override it.
+                      if (!/^agent\/builder\//.test(branch)) {
+                        return {
+                          content: [
+                            {
+                              type: "text" as const,
+                              text: `Refused: branch "${branch}" is outside the agent/builder/ namespace this tool will ever push to.`,
+                            },
+                          ],
+                        };
+                      }
+
+                      // Gate 2 — does this agent hold a git-push grant covering this repo+branch?
+                      const decision = decide(agent, this.deps.grants, "pushBranch", { repo, branch });
+                      if (decision.kind !== "allow") {
+                        const text =
+                          decision.kind === "park"
+                            ? `Refused: pushing to "${repo}" requires human approval of grant "${decision.grantRef}", which this tool cannot wait for.`
+                            : `Refused: no grant authorises pushing to "${repo}".`;
+                        return { content: [{ type: "text" as const, text }] };
+                      }
+
+                      // decide()'s "allow" carries no grantRef (only "park" does), so
+                      // the matched Grant is looked up directly here via matchGrant —
+                      // this is the one spot this tool needs the grant object itself
+                      // (for its `secret`), not just the yes/no decision.
+                      const effect = detectOutwardEffect("pushBranch", { repo, branch })!;
+                      const relevantGrants = this.deps.grants.filter((g) => agent.grantRefs.includes(g.id));
+                      const grant = matchGrant(relevantGrants, effect);
+                      const token = grant ? process.env[grant.secret] : undefined;
+                      if (!grant || !token) {
+                        return {
+                          content: [
+                            { type: "text" as const, text: `Refused: grant "${grant?.id}" has no ${grant?.secret} set.` },
+                          ],
+                        };
+                      }
+
+                      await gitPusher.push({
+                        cwd: ctx.workspace,
+                        remoteUrl: `https://x-access-token:${token}@github.com/${repo}.git`,
+                        branch,
+                      });
+                      return { content: [{ type: "text" as const, text: `Pushed HEAD to ${repo}:${branch}.` }] };
+                    },
+                  ),
+                ]
+              : []),
           ],
         })
       : undefined;
