@@ -212,6 +212,15 @@ against its real recorded `startedAt`, so this changes how much gets read,
 never which runs count. The daily digest's "last 24h" query uses the same
 method for the same reason.
 
+**A stalled task-routing call can no longer freeze the whole task queue.**
+`Dispatcher.wake()` claims and routes pending tasks one at a time — only
+actually *running* a routed task happens concurrently — so a routing call
+that hangs (not errors, hangs: a stalled connection, a dropped response)
+used to block every other queued task behind it indefinitely, with no
+recovery short of a process restart. `LlmRouter` now aborts a routing call
+after 60 seconds and treats it as "no specialist matched," the same outcome
+as the model genuinely replying "none."
+
 ## Development
 
 - `npm test` — full suite, consumes no quota

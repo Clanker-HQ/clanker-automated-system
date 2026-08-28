@@ -72,4 +72,53 @@ describe("LlmRouter", () => {
     expect(result).toBeNull();
     expect(queryMock).not.toHaveBeenCalled();
   });
+
+  describe("timeout", () => {
+    /** A stream that hangs forever unless its AbortSignal fires, mimicking a stalled network call rather than a clean error. */
+    function hangingStream(signal: AbortSignal): AsyncIterable<unknown> {
+      return {
+        async *[Symbol.asyncIterator]() {
+          await new Promise<void>((resolve, reject) => {
+            signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        },
+      };
+    }
+
+    it("aborts a stalled routing call after the timeout and returns null instead of hanging forever", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      queryMock.mockImplementation((opts: { options: { abortController: AbortController } }) =>
+        hangingStream(opts.options.abortController.signal),
+      );
+      const result = await new LlmRouter(10).route("x", [{ name: "research", description: "d" }]);
+      expect(result).toBeNull();
+    });
+
+    it("keeps an answer already received before the timeout fires, rather than discarding it", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      queryMock.mockImplementation((opts: { options: { abortController: AbortController } }) => ({
+        async *[Symbol.asyncIterator]() {
+          yield assistantMessage("research");
+          await new Promise<void>((resolve, reject) => {
+            opts.options.abortController.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        },
+      }));
+      const result = await new LlmRouter(10).route("x", [{ name: "research", description: "d" }]);
+      expect(result).toBe("research");
+    });
+
+    it("propagates a rejection unrelated to the timeout", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      queryMock.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          await Promise.resolve();
+          throw new Error("transport exploded");
+        },
+      });
+      await expect(new LlmRouter(60_000).route("x", [{ name: "research", description: "d" }])).rejects.toThrow(
+        "transport exploded",
+      );
+    });
+  });
 });
