@@ -5,6 +5,7 @@ import type { AgentDef } from "../registry.js";
 import { QuietHoursSchema } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import { formatZodError } from "../errors.js";
+import type { GovernorStatus } from "../governor.js";
 import type { RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
 import type { Task, TaskStore } from "./task-store.js";
@@ -57,6 +58,10 @@ interface WakeableDispatcher {
   wake(): Promise<void>;
 }
 
+interface StatusCapableGovernor {
+  status(): Promise<GovernorStatus>;
+}
+
 const RESUME_REFUSED =
   "the pending entry is still open, so you can try again later.";
 
@@ -101,6 +106,7 @@ export class DiscordBot {
   private readonly ownerId: string;
   private readonly tasks: TaskStore;
   private readonly dispatcher: WakeableDispatcher;
+  private readonly governor: StatusCapableGovernor;
   /** Pending ids currently mid-resume, so a repeated `approve <id>` cannot start a second resume of the same entry while the first is still running. */
   private readonly resuming = new Set<string>();
 
@@ -110,7 +116,7 @@ export class DiscordBot {
     store: RunStore; overrides: ConfigOverridesStore; breaker: BreakerStore; dataDir: string;
     /** The one Discord user id allowed to approve/deny/answer or run any `!` admin command. */
     ownerId: string;
-    tasks: TaskStore; dispatcher: WakeableDispatcher;
+    tasks: TaskStore; dispatcher: WakeableDispatcher; governor: StatusCapableGovernor;
   }) {
     this.transport = opts.transport;
     this.pending = opts.pending;
@@ -123,6 +129,7 @@ export class DiscordBot {
     this.dataDir = opts.dataDir;
     this.ownerId = opts.ownerId;
     this.tasks = opts.tasks;
+    this.governor = opts.governor;
     this.dispatcher = opts.dispatcher;
   }
 
@@ -219,6 +226,17 @@ export class DiscordBot {
     await this.transport.start();
   }
 
+  /** Shared by `!result`/`!retry`/`!cancel`: resolves the short id `!tasks` shows (or a full id) to exactly one task. */
+  private async resolveTaskByPrefix(prefix: string): Promise<{ task: Task } | { error: string }> {
+    const matches = await this.tasks.findByPrefix(prefix);
+    if (matches.length === 0) return { error: `No task found starting with \`${prefix}\`.` };
+    if (matches.length > 1) {
+      const ids = matches.map((t) => t.id.slice(0, 8)).join(", ");
+      return { error: `\`${prefix}\` matches ${matches.length} tasks — be more specific: ${ids}` };
+    }
+    return { task: matches[0]! };
+  }
+
   private async handleCommand(msg: IncomingMessage): Promise<void> {
     const [command, ...rest] = msg.content.trim().split(/\s+/);
     const arg = rest.join(" ");
@@ -306,16 +324,35 @@ export class DiscordBot {
         // join(" "), which collapses runs of whitespace and destroys newlines —
         // fine for `!budget 25`, destructive for a multi-line free-form request.
         const raw = msg.content.trim().slice(command.length).trim();
-        // `-d` is a leading flag, not part of the request: matched only as
-        // "-d" alone or "-d" + whitespace, so a real request that happens to
-        // start with a word like "-detailed" is left as literal text.
-        const detailMatch = raw.match(/^-d(?:\s+([\s\S]+))?$/);
-        const text = detailMatch ? (detailMatch[1] ?? "").trim() : raw;
-        if (!text) return void reply("Usage: `!task [-d] <free-form request>`");
+        // `-d` and `-p <n>` are leading flags, not part of the request: each is
+        // stripped only when followed by whitespace or end-of-string, in
+        // either order, so a real request that happens to start with a word
+        // like "-detailed" is left as literal text (matches the pre-existing
+        // `-d` behavior this generalizes).
+        let text = raw;
+        let wantsDetail = false;
+        let priority: number | undefined;
+        for (;;) {
+          if (!wantsDetail && /^-d(?:\s+|$)/.test(text)) {
+            wantsDetail = true;
+            text = text.replace(/^-d(?:\s+|$)/, "");
+            continue;
+          }
+          const priorityMatch = priority === undefined ? text.match(/^-p\s+(\d+)(?:\s+|$)/) : null;
+          if (priorityMatch) {
+            priority = Number(priorityMatch[1]);
+            text = text.slice(priorityMatch[0].length);
+            continue;
+          }
+          break;
+        }
+        text = text.trim();
+        if (!text) return void reply("Usage: `!task [-d] [-p <n>] <free-form request>`");
         const task = await this.tasks.create({
           text,
           createdBy: `discord:${msg.authorId}`,
-          ...(detailMatch ? { wantsDetail: true } : {}),
+          ...(wantsDetail ? { wantsDetail: true } : {}),
+          ...(priority !== undefined ? { priority } : {}),
         });
         void this.dispatcher.wake().catch((err: unknown) => {
           console.error(`[bot] dispatcher wake failed after !task ${task.id}:`, err);
@@ -325,13 +362,62 @@ export class DiscordBot {
       case "!result": {
         const prefix = arg.trim();
         if (!prefix) return void reply("Usage: `!result <task-id-or-prefix>` (the short id `!tasks` shows works)");
-        const matches = await this.tasks.findByPrefix(prefix);
-        if (matches.length === 0) return void reply(`No task found starting with \`${prefix}\`.`);
-        if (matches.length > 1) {
-          const ids = matches.map((t) => t.id.slice(0, 8)).join(", ");
-          return void reply(`\`${prefix}\` matches ${matches.length} tasks — be more specific: ${ids}`);
+        const resolved = await this.resolveTaskByPrefix(prefix);
+        if ("error" in resolved) return void reply(resolved.error);
+        return void reply(formatTaskDetail(resolved.task));
+      }
+      case "!retry": {
+        const prefix = arg.trim();
+        if (!prefix) return void reply("Usage: `!retry <task-id-or-prefix>`");
+        const resolved = await this.resolveTaskByPrefix(prefix);
+        if ("error" in resolved) return void reply(resolved.error);
+        const { task } = resolved;
+        if (task.status !== "failed") {
+          return void reply(`Task \`${task.id.slice(0, 8)}\` is ${task.status}, not failed — nothing to retry.`);
         }
-        return void reply(formatTaskDetail(matches[0]!));
+        // specialistAgent is deliberately kept: the earlier routing decision
+        // still stands, same as a dispatcher-deferred retry — only a task that
+        // was never routed pays for another router call.
+        await this.tasks.update(task.id, { status: "pending", failureReason: undefined, finishedAt: undefined, startedAt: undefined });
+        void this.dispatcher.wake().catch((err: unknown) => {
+          console.error(`[bot] dispatcher wake failed after !retry ${task.id}:`, err);
+        });
+        return void reply(`🔁 Task \`${task.id.slice(0, 8)}\` requeued.`);
+      }
+      case "!cancel": {
+        const prefix = arg.trim();
+        if (!prefix) return void reply("Usage: `!cancel <task-id-or-prefix>`");
+        const resolved = await this.resolveTaskByPrefix(prefix);
+        if ("error" in resolved) return void reply(resolved.error);
+        const { task } = resolved;
+        // Only "pending": a running task has no cancellation hook today, and
+        // silently discarding the record of a finished/waiting one would be
+        // surprising rather than useful.
+        if (task.status !== "pending") {
+          return void reply(`Task \`${task.id.slice(0, 8)}\` is ${task.status}, not pending — can't cancel it.`);
+        }
+        await this.tasks.remove(task.id);
+        return void reply(`🗑️ Task \`${task.id.slice(0, 8)}\` canceled.`);
+      }
+      case "!status": {
+        const status = await this.governor.status();
+        const active = await this.tasks.list();
+        const counts = { pending: 0, running: 0, waiting: 0 };
+        for (const t of active) {
+          if (t.status === "pending" || t.status === "running" || t.status === "waiting") counts[t.status]++;
+        }
+        const lines = [
+          status.stopped ? "🛑 STOPPED — no new runs or resumes until `!resume`" : "▶️ running",
+          `Budget: $${status.spentTodayUsd.toFixed(2)} of $${status.dailyBudgetUsd} spent today`,
+          `Concurrency: ${status.maxConcurrent}`,
+          status.quietHours
+            ? `Quiet hours: ${status.quietHours.from}-${status.quietHours.to} ${status.quietHours.timezone}${status.quietHoursActive ? " (active now)" : ""}`
+            : "Quiet hours: off",
+          `Circuit breaker: ${status.breakerEnabled ? "on" : "off"}`,
+          `Disabled agents: ${status.disabledAgents.length > 0 ? status.disabledAgents.join(", ") : "none"}`,
+          `Tasks: ${counts.pending} pending, ${counts.running} running, ${counts.waiting} waiting`,
+        ];
+        return void reply(lines.join("\n"));
       }
       case "!tasks": {
         const all = await this.tasks.list();

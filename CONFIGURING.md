@@ -22,9 +22,12 @@ Send these in the bot's channel.
 | `!stop` | Hard stop — no new runs or resumes at all, until `!resume` |
 | `!resume` | Undo `!stop` |
 | `!runs` | Last 20 runs — id, status, cost |
-| `!task [-d] <text>` | Queue a free-form request; `-d` for a longer summary back |
+| `!status` | One-shot snapshot of everything above, plus budget spent today and task counts |
+| `!task [-d] [-p <n>] <text>` | Queue a free-form request; `-d` for a longer summary back, `-p <n>` for its priority (default 50) |
 | `!tasks` | Tasks not yet finished |
 | `!result <id-or-prefix>` | Look up any task, finished or not, by full id or short prefix |
+| `!retry <id-or-prefix>` | Requeue a failed task |
+| `!cancel <id-or-prefix>` | Remove a still-pending task |
 
 ### "This runs on its own dedicated Claude subscription, don't budget-limit it"
 

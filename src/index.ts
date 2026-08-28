@@ -195,7 +195,7 @@ function main(): void {
       return varName ? (process.env[varName] ?? "") : "";
     },
     store: runStore, overrides, breaker, dataDir: DATA_DIR,
-    tasks, dispatcher,
+    tasks, dispatcher, governor,
   });
 
   void reconcileAndConnectBot({ pending, bot, timeoutHours: config.governor.pendingTimeoutHours });

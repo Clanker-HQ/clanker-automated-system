@@ -194,6 +194,65 @@ describe("Governor.admit", () => {
   });
 });
 
+describe("Governor.status", () => {
+  it("reports the config defaults with nothing overridden and nothing spent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const status = await build(dir).status();
+    expect(status).toEqual({
+      stopped: false,
+      quietHours: { from: "02:00", to: "03:00", timezone: "Europe/Berlin" },
+      quietHoursActive: false,
+      dailyBudgetUsd: 10,
+      spentTodayUsd: 0,
+      maxConcurrent: 2,
+      breakerEnabled: true,
+      disabledAgents: [],
+    });
+  });
+
+  it("reflects the STOP file, quiet-hours-active, overrides, and today's spend", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    writeFileSync(join(dir, "STOP"), "");
+    const overrides = new ConfigOverridesStore(dir);
+    await overrides.set("breakerEnabled", false, "test");
+    await overrides.set("disabledAgents", ["smoke"], "test");
+    await overrides.set("maxConcurrent", 5, "test");
+
+    const runStore = new RunStore(dir);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T08:00:00.000Z"));
+    try {
+      const writer = await runStore.open(newRunId("smoke", new Date("2026-08-26T08:00:00.000Z")), "smoke");
+      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 3, durationMs: 1 });
+      await writer.close({ status: "success", summary: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // 02:30 Europe/Berlin falls inside the 02:00-03:00 window in CONFIG.
+    const inWindow = () => new Date("2026-08-26T00:30:00.000Z");
+    const status = await build(dir, inWindow).status();
+    expect(status.stopped).toBe(true);
+    expect(status.quietHoursActive).toBe(true);
+    expect(status.breakerEnabled).toBe(false);
+    expect(status.disabledAgents).toEqual(["smoke"]);
+    expect(status.maxConcurrent).toBe(5);
+    expect(status.spentTodayUsd).toBe(3);
+  });
+
+  it("does not itself consume a concurrency slot — a read-only snapshot", async () => {
+    // A real acquireSlot() that hung (the bug this guards) would make this
+    // test hang too, rather than fail cleanly — so assert the private counter
+    // directly instead of proving it via a second admit() that could block
+    // forever on a regression.
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir);
+    await governor.status();
+    await governor.status();
+    expect((governor as unknown as { activeSlots: number }).activeSlots).toBe(0);
+  });
+});
+
 describe("Governor rate-limit recording", () => {
   it("recordRateLimit persists a live-streamed snapshot that a later admit() consults", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));

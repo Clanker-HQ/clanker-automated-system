@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -83,6 +83,11 @@ export class TaskStore {
   /** Tasks whose id starts with `prefix` — how `!result <short-id>` resolves the truncated id `!tasks` shows. */
   async findByPrefix(prefix: string): Promise<Task[]> {
     return (await this.list()).filter((t) => t.id.startsWith(prefix));
+  }
+
+  /** Deletes a task's record outright — used only for `!cancel`, and only ever on a still-"pending" task. `force: true` makes a repeat call harmless. */
+  async remove(id: string): Promise<void> {
+    await rm(this.path(id), { force: true });
   }
 
   async update(id: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task> {

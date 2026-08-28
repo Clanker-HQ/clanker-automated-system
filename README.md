@@ -107,9 +107,12 @@ try again later, the id stays valid. Entries older than
 | `!breaker off` | Disable the circuit breaker — a tripped agent no longer refuses a trigger |
 | `!breaker on` | Re-enable it |
 | `!runs` | The last 20 runs — id, status, cost |
-| `!task [-d] <text>` | Queue a free-form request; replies with its task id. `-d` asks for a longer final summary |
+| `!status` | One-shot live snapshot: STOP state, quiet hours, budget spent today, concurrency, breaker, disabled agents, task counts |
+| `!task [-d] [-p <n>] <text>` | Queue a free-form request; replies with its task id. `-d` asks for a longer final summary, `-p <n>` sets its priority (default 50) |
 | `!tasks` | Tasks not yet finished — id, status, truncated text |
 | `!result <id-or-prefix>` | Look up any task, finished or not, by full id or the short id `!tasks` shows |
+| `!retry <id-or-prefix>` | Requeue a failed task, keeping its earlier routing decision |
+| `!cancel <id-or-prefix>` | Remove a still-pending task before it runs |
 
 These write to `data/config-overrides.json` and take effect on the next
 admission check; they override `config.yaml` until changed back.

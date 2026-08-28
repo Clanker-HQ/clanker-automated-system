@@ -105,6 +105,7 @@ async function main(): Promise<void> {
       store: runStore, overrides, breaker, dataDir: DATA_DIR,
       tasks: new TaskStore(DATA_DIR),
       dispatcher: { wake: async () => {} },
+      governor,
     });
 
     await bot.start();

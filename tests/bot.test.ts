@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DiscordBot, FakeBotTransport } from "../src/control/bot.js";
 import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { PendingStore } from "../src/control/pending.js";
+import type { GovernorStatus } from "../src/governor.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
 import { BreakerStore } from "../src/state/breaker.js";
@@ -25,13 +26,22 @@ function setup() {
   const breaker = new BreakerStore(dataDir);
   const tasks = new TaskStore(dataDir);
   const dispatcher = { wake: vi.fn().mockResolvedValue(undefined) };
+  // Mutable so a test can adjust a field and see !status reflect it, without
+  // needing a real Governor (and the config/run-store/rate-limit fixtures
+  // that would drag along).
+  const governorStatus: GovernorStatus = {
+    stopped: false, quietHours: null, quietHoursActive: false,
+    dailyBudgetUsd: 10, spentTodayUsd: 0, maxConcurrent: 2,
+    breakerEnabled: true, disabledAgents: [],
+  };
+  const governor = { status: async () => governorStatus };
   const bot = new DiscordBot({
     transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
     channelFor: () => "smoke-channel",
     store, overrides, breaker, dataDir, ownerId: OWNER,
-    tasks, dispatcher,
+    tasks, dispatcher, governor,
   });
-  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher };
+  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus };
 }
 
 describe("DiscordBot", () => {
@@ -367,6 +377,153 @@ describe("DiscordBot task commands", () => {
     const all = await tasks.list();
     expect(all[0]?.text).toBe("-detailed report please");
     expect(all[0]?.wantsDetail).toBeUndefined();
+  });
+
+  it("!task -p <n> sets priority and strips the flag from the text", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task -p 90 find a profitable SaaS idea" });
+    const all = await tasks.list();
+    expect(all[0]?.text).toBe("find a profitable SaaS idea");
+    expect(all[0]?.priority).toBe(90);
+    expect(all[0]?.wantsDetail).toBeUndefined();
+  });
+
+  it("!task -d and -p combine in either order", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task -p 90 -d find idea" });
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task -d -p 90 find idea" });
+    const all = await tasks.list();
+    expect(all).toHaveLength(2);
+    for (const t of all) {
+      expect(t.text).toBe("find idea");
+      expect(t.priority).toBe(90);
+      expect(t.wantsDetail).toBe(true);
+    }
+  });
+
+  it("a -p flag with a non-numeric argument is left as literal text", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task -p urgent find idea" });
+    const all = await tasks.list();
+    expect(all[0]?.text).toBe("-p urgent find idea");
+    expect(all[0]?.priority).toBe(50);
+  });
+
+  it("!retry requeues a failed task, keeping its routing, and wakes the dispatcher", async () => {
+    const { transport, bot, tasks, dispatcher } = setup();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "failed", failureReason: "boom", specialistAgent: "research", finishedAt: "t" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!retry ${task.id.slice(0, 8)}` });
+    const after = await tasks.get(task.id);
+    expect(after?.status).toBe("pending");
+    expect(after?.failureReason).toBeUndefined();
+    expect(after?.finishedAt).toBeUndefined();
+    expect(after?.specialistAgent).toBe("research");
+    expect(dispatcher.wake).toHaveBeenCalled();
+    expect(transport.sent[0]!.text).toContain("requeued");
+  });
+
+  it("!retry on a task that isn't failed says so and leaves it untouched", async () => {
+    const { transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!retry ${task.id.slice(0, 8)}` });
+    expect((await tasks.get(task.id))?.status).toBe("pending");
+    expect(transport.sent[0]!.text).toContain("not failed");
+  });
+
+  it("!retry with an unmatched prefix says so", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!retry deadbeef" });
+    expect(transport.sent[0]!.text).toContain("No task found");
+  });
+
+  it("!retry with no argument replies with usage", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!retry" });
+    expect(transport.sent[0]!.text).toContain("Usage");
+  });
+
+  it("!cancel removes a pending task", async () => {
+    const { transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!cancel ${task.id.slice(0, 8)}` });
+    expect(await tasks.get(task.id)).toBeNull();
+    expect(transport.sent[0]!.text).toContain("canceled");
+  });
+
+  it("!cancel on a non-pending task refuses and leaves it in place", async () => {
+    const { transport, bot, tasks } = setup();
+    const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "running" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!cancel ${task.id.slice(0, 8)}` });
+    expect(await tasks.get(task.id)).not.toBeNull();
+    expect(transport.sent[0]!.text).toContain("not pending");
+  });
+
+  it("!cancel with an unmatched prefix says so", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!cancel deadbeef" });
+    expect(transport.sent[0]!.text).toContain("No task found");
+  });
+
+  it("!cancel with no argument replies with usage", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!cancel" });
+    expect(transport.sent[0]!.text).toContain("Usage");
+  });
+
+  it("!status reports the default live state", async () => {
+    const { transport, bot } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
+    const reply = transport.sent[0]!.text;
+    expect(reply).toContain("running");
+    expect(reply).toContain("$0.00 of $10");
+    expect(reply).toContain("Quiet hours: off");
+    expect(reply).toContain("Circuit breaker: on");
+    expect(reply).toContain("Disabled agents: none");
+    expect(reply).toContain("0 pending, 0 running, 0 waiting");
+  });
+
+  it("!status reflects a stopped, quiet-hours-active, breaker-off state with disabled agents", async () => {
+    const { transport, bot, governorStatus } = setup();
+    governorStatus.stopped = true;
+    governorStatus.quietHours = { from: "02:00", to: "03:00", timezone: "Europe/Berlin" };
+    governorStatus.quietHoursActive = true;
+    governorStatus.breakerEnabled = false;
+    governorStatus.disabledAgents = ["research"];
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
+    const reply = transport.sent[0]!.text;
+    expect(reply).toContain("STOPPED");
+    expect(reply).toContain("02:00-03:00 Europe/Berlin (active now)");
+    expect(reply).toContain("Circuit breaker: off");
+    expect(reply).toContain("Disabled agents: research");
+  });
+
+  it("!status counts pending, running, and waiting tasks", async () => {
+    const { transport, bot, tasks } = setup();
+    await tasks.create({ text: "a", createdBy: "discord:owner" });
+    const running = await tasks.create({ text: "b", createdBy: "discord:owner" });
+    await tasks.update(running.id, { status: "running" });
+    const waiting = await tasks.create({ text: "c", createdBy: "discord:owner" });
+    await tasks.update(waiting.id, { status: "waiting" });
+    const done = await tasks.create({ text: "d", createdBy: "discord:owner" });
+    await tasks.update(done.id, { status: "done" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
+    expect(transport.sent[0]!.text).toContain("1 pending, 1 running, 1 waiting");
   });
 
   it("!tasks lists pending, running, and waiting tasks, not finished ones", async () => {

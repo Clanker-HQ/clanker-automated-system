@@ -9,6 +9,17 @@ import { RateLimitTracker } from "./state/rate-limit.js";
 
 export type AdmitResult = { kind: "admit" } | { kind: "refuse"; reason: string; alert: boolean };
 
+export interface GovernorStatus {
+  stopped: boolean;
+  quietHours: QuietHours | null;
+  quietHoursActive: boolean;
+  dailyBudgetUsd: number;
+  spentTodayUsd: number;
+  maxConcurrent: number;
+  breakerEnabled: boolean;
+  disabledAgents: string[];
+}
+
 function isWithinQuietHours(quietHours: QuietHours, now: Date): boolean {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: quietHours.timezone, hour: "2-digit", minute: "2-digit", hour12: false,
@@ -82,11 +93,7 @@ export class Governor {
       return { kind: "refuse", reason: `quiet hours (${settings.quietHours.from}-${settings.quietHours.to} ${settings.quietHours.timezone})`, alert: false };
     }
 
-    const today = startOfDay(now, settings.quietHours?.timezone ?? "UTC");
-    const recent = await this.store.listRecent(10_000);
-    const spentToday = recent
-      .filter((r) => startOfDay(new Date(r.startedAt), settings.quietHours?.timezone ?? "UTC") === today)
-      .reduce((sum, r) => sum + r.costUsd, 0);
+    const spentToday = await this.spentToday(settings, now);
     if (spentToday >= settings.dailyBudgetUsd) {
       return { kind: "refuse", reason: `daily budget reached ($${spentToday.toFixed(2)} of $${settings.dailyBudgetUsd})`, alert: true };
     }
@@ -98,6 +105,31 @@ export class Governor {
 
     await this.acquireSlot(settings.maxConcurrent);
     return { kind: "admit" };
+  }
+
+  private async spentToday(settings: { quietHours: QuietHours | null }, now: Date): Promise<number> {
+    const today = startOfDay(now, settings.quietHours?.timezone ?? "UTC");
+    const recent = await this.store.listRecent(10_000);
+    return recent
+      .filter((r) => startOfDay(new Date(r.startedAt), settings.quietHours?.timezone ?? "UTC") === today)
+      .reduce((sum, r) => sum + r.costUsd, 0);
+  }
+
+  /** A point-in-time snapshot of everything admit() would currently check, for `!status` — read-only, changes nothing. */
+  async status(): Promise<GovernorStatus> {
+    const overrides = await this.overrides.read();
+    const settings = resolveGovernorSettings(this.config, overrides);
+    const now = this.now();
+    return {
+      stopped: existsSync(join(this.dataDir, "STOP")),
+      quietHours: settings.quietHours,
+      quietHoursActive: settings.quietHours !== null && isWithinQuietHours(settings.quietHours, now),
+      dailyBudgetUsd: settings.dailyBudgetUsd,
+      spentTodayUsd: await this.spentToday(settings, now),
+      maxConcurrent: settings.maxConcurrent,
+      breakerEnabled: overrides.breakerEnabled !== false,
+      disabledAgents: overrides.disabledAgents ?? [],
+    };
   }
 
   private async acquireSlot(maxConcurrent: number): Promise<void> {

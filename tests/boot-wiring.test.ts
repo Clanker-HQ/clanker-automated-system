@@ -26,6 +26,8 @@ function setup() {
     store: new RunStore(dataDir), overrides: new ConfigOverridesStore(dataDir),
     breaker: new BreakerStore(dataDir), dataDir, ownerId: "owner",
     tasks, dispatcher,
+    // Not exercised by this file's tests — !status has its own coverage in bot.test.ts.
+    governor: { status: async () => { throw new Error("not used in this test"); } },
   });
   return { dataDir, pending, transport, bot };
 }
