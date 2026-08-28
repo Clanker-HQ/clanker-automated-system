@@ -3,6 +3,7 @@ import { z } from "zod";
 import { touchesExcludedPath } from "../control/excluded-paths.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
+import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../control/task-store.js";
 import { decide, type Grant } from "../grants.js";
 import type { AgentDef } from "../registry.js";
 import { resolveCredentials } from "./credentials.js";
@@ -201,7 +202,15 @@ export function linkAbort(signal: AbortSignal, controller: AbortController): voi
 
 export class SdkRunner implements Runner {
   constructor(
-    private readonly deps: { grants: Grant[]; pending: PendingStore; github?: GithubTransport } = {
+    private readonly deps: {
+      grants: Grant[];
+      pending: PendingStore;
+      github?: GithubTransport;
+      /** Wired in production (src/index.ts); optional so tests/scripts that don't care about task-queueing can skip it, the same shape `github` already uses. */
+      tasks?: TaskStore;
+      /** Wakes the dispatcher after queueTask adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
+      wake?: () => Promise<void>;
+    } = {
       grants: [],
       pending: new PendingStore(process.cwd()),
     },
@@ -404,6 +413,61 @@ export class SdkRunner implements Runner {
         })
       : undefined;
 
+    /**
+     * Lets any agent queue new work the same way a human's `!task` does — no
+     * outward effect (it writes to this process's own task queue, not the
+     * network), so it needs no grant and is available at every tier, the
+     * same as `askHuman` above. Only registered when both `tasks` and `wake`
+     * are wired in: production always wires both; a test or script that
+     * doesn't care about task-queueing simply never sees this tool, the same
+     * optional-dependency shape `github`/`githubPrServer` above already use.
+     */
+    const DEFAULT_SELF_QUEUED_PRIORITY = 30;
+    const MAX_QUEUE_TASK_CALLS_PER_RUN = 3;
+    let queueTaskCalls = 0;
+    const tasksDep = this.deps.tasks;
+    const wakeDep = this.deps.wake;
+    const taskQueueServer =
+      tasksDep && wakeDep
+        ? createSdkMcpServer({
+            name: "taskQueue",
+            tools: [
+              tool(
+                "queueTask",
+                "Queue a new task for the system to work on later — the same durable queue a human's !task command adds to. Use this to propose research or an improvement rather than doing it yourself in this run.",
+                { text: z.string().min(1).max(MAX_TASK_TEXT_LENGTH), priority: z.number().int().nonnegative().optional() },
+                async ({ text, priority }) => {
+                  // A hard cap enforced here, not just in the prompt: the code is
+                  // the boundary, the same posture detectOutwardEffect already
+                  // uses for outward effects — an over-eager or confused model
+                  // must not be able to flood the queue in a single run.
+                  if (queueTaskCalls >= MAX_QUEUE_TASK_CALLS_PER_RUN) {
+                    return {
+                      content: [
+                        {
+                          type: "text" as const,
+                          text: `Refused: already queued ${MAX_QUEUE_TASK_CALLS_PER_RUN} tasks this run, the maximum allowed in one run.`,
+                        },
+                      ],
+                    };
+                  }
+                  queueTaskCalls += 1;
+                  const created = await tasksDep.create({
+                    text,
+                    priority: priority ?? DEFAULT_SELF_QUEUED_PRIORITY,
+                    createdBy: `agent:${agent.name}`,
+                    wantsDetail: true,
+                  });
+                  void wakeDep().catch((err: unknown) => {
+                    console.error(`[queueTask] dispatcher wake failed after queuing ${created.id} (agent ${agent.name})`, err);
+                  });
+                  return { content: [{ type: "text" as const, text: `Queued task ${created.id}.` }] };
+                },
+              ),
+            ],
+          })
+        : undefined;
+
     const stream = query({
       prompt: ctx.prompt,
       options: {
@@ -433,7 +497,11 @@ export class SdkRunner implements Runner {
         env: childEnv,
         abortController: controller,
         canUseTool,
-        mcpServers: { askHuman: askHumanServer, ...(githubPrServer ? { githubPr: githubPrServer } : {}) },
+        mcpServers: {
+          askHuman: askHumanServer,
+          ...(githubPrServer ? { githubPr: githubPrServer } : {}),
+          ...(taskQueueServer ? { taskQueue: taskQueueServer } : {}),
+        },
         ...(ctx.resume ? { resume: ctx.resume } : {}),
       },
     });
