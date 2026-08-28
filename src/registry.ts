@@ -1,9 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { Cron } from "croner";
 import { parse as parseYaml } from "yaml";
 import { AgentSchema, type AgentYaml } from "./agent-schema.js";
-import type { Config } from "./config.js";
+import { isValidCron, type Config } from "./config.js";
 import { ValidationError, combineValidationErrors, formatZodError } from "./errors.js";
 
 export type AgentDef = AgentYaml & {
@@ -24,16 +23,6 @@ export function parseAgent(source: string, yamlText: string): AgentYaml {
   const result = AgentSchema.safeParse(raw ?? {});
   if (!result.success) throw formatZodError(source, result.error);
   return result.data;
-}
-
-function isValidCron(expression: string, timezone: string): boolean {
-  try {
-    const probe = new Cron(expression, { timezone, paused: true });
-    probe.stop();
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function asString(value: unknown): string | undefined {

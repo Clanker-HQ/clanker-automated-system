@@ -1,7 +1,24 @@
 import { readFileSync } from "node:fs";
+import { Cron } from "croner";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { ValidationError, formatZodError } from "./errors.js";
+
+/**
+ * True only for a schedule croner can actually run — shared by an agent's own
+ * `trigger.schedule` (registry.ts) and `digest`/`retention`'s schedules
+ * below, so a typo'd cron expression fails boot with a named, formatted error
+ * in every one of these places, not just the one that happened to get checked.
+ */
+export function isValidCron(expression: string, timezone: string): boolean {
+  try {
+    const probe = new Cron(expression, { timezone, paused: true });
+    probe.stop();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * True only for canonical IANA zone names.
@@ -46,6 +63,27 @@ export const QuietHoursSchema = z
   })
   .strict();
 
+/**
+ * A bad cron expression here used to fail silently: nothing calls startDigest/
+ * startRetention until well after config is parsed, so `new Cron(...)`
+ * throwing there was only ever caught by index.ts's generic `.catch()` and
+ * logged to console — the digest or retention sweep would just never get
+ * scheduled, with no boot failure naming the actual problem the way every
+ * other bad config value gets. Checked here instead, at the same place (and
+ * in the same shape) as an agent's own `trigger.schedule` in registry.ts.
+ */
+function validateCronSchedule(v: { schedule: string; timezone: string }, ctx: z.RefinementCtx): void {
+  if (!isValidCron(v.schedule, v.timezone)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["schedule"],
+      message:
+        `"${v.schedule}" is not a valid cron expression for timezone "${v.timezone}". Use five or six ` +
+        `fields (croner also accepts a leading seconds field), e.g. "0 8 * * *" for 08:00 daily`,
+    });
+  }
+}
+
 export const DigestSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -55,7 +93,8 @@ export const DigestSchema = z
     // A key into discord.channels/discord.botChannels, same as an agent's outbox.discord.
     channel: z.string().default("smoke"),
   })
-  .strict();
+  .strict()
+  .superRefine(validateCronSchedule);
 
 export const RetentionSchema = z
   .object({
@@ -66,7 +105,8 @@ export const RetentionSchema = z
     timezone: IanaTimezone.default("UTC"),
     channel: z.string().default("smoke"),
   })
-  .strict();
+  .strict()
+  .superRefine(validateCronSchedule);
 
 export const GovernorSchema = z
   .object({

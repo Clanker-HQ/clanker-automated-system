@@ -74,6 +74,10 @@ needed, and it's reversible from your phone. `digest`/`retention` have no
 Discord equivalent — they only ever run on their own schedule, so a
 `config.yaml` edit + restart is the only way to change them.
 
+`digest.schedule` and `retention.schedule` are validated at boot the same way
+an agent's own `trigger.schedule` is — a malformed cron expression fails boot
+with a named error instead of silently never getting scheduled.
+
 ## Things that are NOT configurable via Discord (edit + redeploy required)
 
 - Adding/removing agents, or what an agent is allowed to do (`agents/*/agent.yaml`, `grants.yaml`)

@@ -97,6 +97,45 @@ describe("parseConfig", () => {
     const yaml = VALID + "\ndigest:\n  timezone: PST\n";
     expect(() => parseConfig("config.yaml", yaml)).toThrow(/digest\.timezone.*IANA/s);
   });
+
+  it("rejects an invalid digest.schedule cron expression, naming the field and the value", () => {
+    const yaml = VALID + '\ndigest:\n  schedule: "not a cron expression"\n';
+    try {
+      parseConfig("config.yaml", yaml);
+      throw new Error("expected a failure");
+    } catch (error) {
+      const message = (error as ValidationError).message;
+      expect(message).toContain("digest.schedule");
+      expect(message).toContain("not a cron expression");
+    }
+  });
+
+  it("accepts a valid digest.schedule", () => {
+    const yaml = VALID + '\ndigest:\n  schedule: "*/15 * * * *"\n';
+    expect(parseConfig("config.yaml", yaml).digest.schedule).toBe("*/15 * * * *");
+  });
+
+  it("defaults retention to enabled, 30 days, Sunday 04:00 UTC, the 'smoke' channel, when absent", () => {
+    const config = parseConfig("config.yaml", VALID);
+    expect(config.retention).toEqual({ enabled: true, days: 30, schedule: "0 4 * * 0", timezone: "UTC", channel: "smoke" });
+  });
+
+  it("rejects an invalid retention.schedule cron expression, naming the field and the value", () => {
+    const yaml = VALID + '\nretention:\n  schedule: "not a cron expression"\n';
+    try {
+      parseConfig("config.yaml", yaml);
+      throw new Error("expected a failure");
+    } catch (error) {
+      const message = (error as ValidationError).message;
+      expect(message).toContain("retention.schedule");
+      expect(message).toContain("not a cron expression");
+    }
+  });
+
+  it("rejects a non-canonical retention timezone the same way digest does", () => {
+    const yaml = VALID + "\nretention:\n  timezone: PST\n";
+    expect(() => parseConfig("config.yaml", yaml)).toThrow(/retention\.timezone.*IANA/s);
+  });
 });
 
 describe("loadConfig", () => {
