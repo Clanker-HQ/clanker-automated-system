@@ -401,6 +401,22 @@ describe("DiscordBot task commands", () => {
     expect(transport.sent[0]?.text).toContain("Usage");
   });
 
+  it("!task rejects text over the length cap, creating nothing", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!task ${"x".repeat(4001)}` });
+    expect(await tasks.list()).toEqual([]);
+    expect(transport.sent[0]?.text).toContain("4001");
+    expect(transport.sent[0]?.text).toContain("limit");
+  });
+
+  it("!task accepts text right at the length cap", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!task ${"x".repeat(4000)}` });
+    expect(await tasks.list()).toHaveLength(1);
+  });
+
   it("!task -d flags the task for a detailed summary and strips the flag from the text", async () => {
     const { transport, bot, tasks } = setup();
     await bot.start();

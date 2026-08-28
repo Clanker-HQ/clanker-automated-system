@@ -66,6 +66,16 @@ const RESUME_REFUSED =
   "the pending entry is still open, so you can try again later.";
 
 /**
+ * Generous for a real request, but a bound: nothing today caps how much text
+ * `!task` accepts before queuing it, so an accidental giant paste would go
+ * straight into a run's prompt with no warning. Independent of any one
+ * transport's own limit (Discord's real messages already cap at 2000
+ * characters, but a task's text is assembled from `msg.content`, which a
+ * different transport could hand over uncapped).
+ */
+const MAX_TASK_TEXT_LENGTH = 4000;
+
+/**
  * `!tasks` only lists what's still active, so a finished task's completion
  * message in the channel is the only other record of it — easy to lose in
  * scrollback. `!result <id>` exists specifically to look one back up
@@ -387,6 +397,9 @@ export class DiscordBot {
         }
         text = text.trim();
         if (!text) return void reply("Usage: `!task [-d] [-p <n>] <free-form request>`");
+        if (text.length > MAX_TASK_TEXT_LENGTH) {
+          return void reply(`Task text is ${text.length} characters, over the ${MAX_TASK_TEXT_LENGTH}-character limit — trim it and try again.`);
+        }
         const task = await this.tasks.create({
           text,
           createdBy: `discord:${msg.authorId}`,

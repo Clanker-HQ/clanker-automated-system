@@ -16,6 +16,7 @@ services:
       # them. First physical expression of the privilege boundary (spec §3).
       - ./agents:/app/agents:ro
       - ./config.yaml:/app/config.yaml:ro
+      - ./grants.yaml:/app/grants.yaml:ro
     restart: unless-stopped
 
 volumes:

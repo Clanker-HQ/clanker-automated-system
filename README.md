@@ -118,7 +118,8 @@ These write to `data/config-overrides.json` and take effect on the next
 admission check; they override `config.yaml` until changed back.
 
 **The task queue.** `!task <text>` durably queues a free-form request under
-`data/tasks/<id>.json` — it survives a restart. A dispatcher picks the
+`data/tasks/<id>.json` — it survives a restart. Capped at 4000 characters,
+so an accidental giant paste is rejected up front rather than queued. A dispatcher picks the
 highest-priority pending task, asks a cheap routing call which specialist
 should handle it, and runs that specialist through the same Governor as every
 other agent. Today there is exactly one specialist, `research`: it searches and
