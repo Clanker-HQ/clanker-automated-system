@@ -6,7 +6,7 @@ import { QuietHoursSchema } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import { formatZodError } from "../errors.js";
 import type { GovernorStatus } from "../governor.js";
-import type { RunStore } from "../run-store.js";
+import type { RunResult, RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
 import type { Task, TaskStore } from "./task-store.js";
 
@@ -51,7 +51,7 @@ export class FakeBotTransport implements BotTransport {
 
 interface ResumeCapableOrchestrator {
   /** Resolves to `undefined` when the resume was refused and never ran (governor refusal, or a pending entry with no session to continue). */
-  resumeRun(entry: PendingEntry, decision: { approved: boolean } | { answer: string }, agent: AgentDef): Promise<unknown>;
+  resumeRun(entry: PendingEntry, decision: { approved: boolean } | { answer: string }, agent: AgentDef): Promise<RunResult | undefined>;
 }
 
 interface WakeableDispatcher {
@@ -198,7 +198,7 @@ export class DiscordBot {
       if (this.resuming.has(id)) return;
       this.resuming.add(id);
       try {
-        let outcome: unknown;
+        let outcome: RunResult | undefined;
         if (approve) {
           outcome = await this.orchestrator.resumeRun(entry, { approved: true }, agent);
         } else if (deny) {
@@ -216,6 +216,7 @@ export class DiscordBot {
           return;
         }
 
+        await this.reconcileTaskForResumedRun(entry, outcome);
         await this.pending.resolve(id);
       } catch (error) {
         console.error(`[bot] failed to resolve/resume pending entry ${id}:`, error);
@@ -224,6 +225,44 @@ export class DiscordBot {
       }
     });
     await this.transport.start();
+  }
+
+  /**
+   * A parked/question run remembers which task it belongs to (Task.runId,
+   * set by the dispatcher when it first marks the task "waiting"). Without
+   * this, a task whose run gets approved/denied/answered to completion never
+   * finds out — `!tasks`/`!result`/the digest would keep reporting it as
+   * "waiting" forever, even though the run itself finished normally minutes
+   * or hours later.
+   *
+   * Not every parked run came from a dispatched task — cron/webhook agents
+   * park too — so finding no match here is the common, expected case, not
+   * an error.
+   *
+   * Known residual gap: an entry that expires and is auto-denied on restart
+   * (reconcileAndConnectBot) never goes through resumeRun at all, so a task
+   * behind THAT specific entry still stays "waiting" forever. Narrower than
+   * before, not eliminated.
+   */
+  private async reconcileTaskForResumedRun(entry: PendingEntry, result: RunResult): Promise<void> {
+    const task = (await this.tasks.list()).find((t) => t.status === "waiting" && t.runId === entry.runId);
+    if (!task) return;
+
+    if (result.status === "success") {
+      await this.tasks.update(task.id, {
+        status: "done",
+        finishedAt: new Date().toISOString(),
+        result: { summary: result.summary, path: join(this.dataDir, "runs", result.runId) },
+      });
+      await this.transport.send(this.channelFor(entry.agentName), `✅ Task \`${task.id}\` done: ${result.summary}`);
+    } else if (result.status === "parked" || result.status === "question") {
+      // Parked again (a second approval needed further into the same
+      // resumed session) — still waiting on the same runId, nothing to update.
+    } else {
+      const reason = result.error ?? `run ended with status "${result.status}"`;
+      await this.tasks.update(task.id, { status: "failed", finishedAt: new Date().toISOString(), failureReason: reason });
+      await this.transport.send(this.channelFor(entry.agentName), `❌ Task \`${task.id}\` failed: ${reason}`);
+    }
   }
 
   /** Shared by `!result`/`!retry`/`!cancel`: resolves the short id `!tasks` shows (or a full id) to exactly one task. */

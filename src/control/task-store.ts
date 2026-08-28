@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { KeyedMutex } from "../keyed-mutex.js";
 
 /**
  * "waiting" is a live run that stopped mid-execution to await a human
@@ -27,9 +28,13 @@ export interface Task {
   wantsDetail?: boolean;
   /** How many times the dispatcher has silently auto-retried this task after a failed run — capped at 1 before it's actually marked "failed". */
   retryCount?: number;
+  /** Set alongside status: "waiting" — lets a later approve/deny/answer find its way back to this task once the run it belongs to actually finishes. */
+  runId?: string;
 }
 
 export class TaskStore {
+  private readonly mutex = new KeyedMutex();
+
   constructor(private readonly dataDir: string) {}
 
   private dir(): string {
@@ -92,12 +97,20 @@ export class TaskStore {
     await rm(this.path(id), { force: true });
   }
 
+  /**
+   * Serialized per id: without this, the dispatcher's tick and a Discord
+   * `!cancel`/`!retry`/`!disable`-adjacent command racing on the SAME task
+   * could both read the same "before" state and have one's write silently
+   * clobber the other's — a plain read-then-write with nothing else guarding it.
+   */
   async update(id: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task> {
-    const existing = await this.get(id);
-    if (!existing) throw new Error(`TaskStore: no task "${id}" to update`);
-    const updated: Task = { ...existing, ...patch };
-    await writeFile(this.path(id), JSON.stringify(updated, null, 2) + "\n");
-    return updated;
+    return this.mutex.run(id, async () => {
+      const existing = await this.get(id);
+      if (!existing) throw new Error(`TaskStore: no task "${id}" to update`);
+      const updated: Task = { ...existing, ...patch };
+      await writeFile(this.path(id), JSON.stringify(updated, null, 2) + "\n");
+      return updated;
+    });
   }
 
   /** Highest priority first, ties broken by creation order (FIFO). Null when nothing is pending. */

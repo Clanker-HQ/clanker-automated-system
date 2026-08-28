@@ -1,6 +1,10 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Config, GovernorConfig, QuietHours } from "./config.js";
+import { KeyedMutex } from "./keyed-mutex.js";
+
+/** All calls share this one key: there's exactly one config-overrides.json per data dir, unlike TaskStore's per-id file. */
+const OVERRIDES_KEY = "config-overrides";
 
 export interface ConfigOverrides {
   quietHours?: QuietHours | null;
@@ -12,6 +16,8 @@ export interface ConfigOverrides {
 }
 
 export class ConfigOverridesStore {
+  private readonly mutex = new KeyedMutex();
+
   constructor(private readonly dataDir: string) {}
 
   private path(): string {
@@ -26,14 +32,17 @@ export class ConfigOverridesStore {
     }
   }
 
+  /** Serialized: two `!budget`/`!quiet`/`!breaker`/... commands landing at once would otherwise read the same "before" state and one's write would silently clobber the other's. */
   async set<K extends keyof ConfigOverrides>(key: K, value: ConfigOverrides[K], setBy: string): Promise<void> {
-    await mkdir(join(this.dataDir, "state"), { recursive: true });
-    const current = await this.read();
-    const previous = current[key];
-    const next = { ...current, [key]: value };
-    await writeFile(this.path(), JSON.stringify(next, null, 2) + "\n");
-    const line = `${new Date().toISOString()} ${setBy} set ${String(key)} = ${JSON.stringify(value)} (was ${JSON.stringify(previous)})\n`;
-    await appendFile(join(this.dataDir, "state", "audit.log"), line);
+    return this.mutex.run(OVERRIDES_KEY, async () => {
+      await mkdir(join(this.dataDir, "state"), { recursive: true });
+      const current = await this.read();
+      const previous = current[key];
+      const next = { ...current, [key]: value };
+      await writeFile(this.path(), JSON.stringify(next, null, 2) + "\n");
+      const line = `${new Date().toISOString()} ${setBy} set ${String(key)} = ${JSON.stringify(value)} (was ${JSON.stringify(previous)})\n`;
+      await appendFile(join(this.dataDir, "state", "audit.log"), line);
+    });
   }
 }
 

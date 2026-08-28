@@ -130,11 +130,13 @@ alongside the agent's own run report, and the full artifact is on disk under
 `!task -d <text>` asks the specialist for a longer, more substantive one in
 that same message instead — still whatever shape fits (a list, a short
 comparison), not forced into paragraphs, and still capped for readability.
-A task whose run parks for an approve/deny/answer shows
-as `waiting` in `!tasks` — the run is alive, not failed. Known limitation: the
-resume path knows about runs, not tasks, so a resumed task stays `waiting` on
-record even after the run itself completes; the run's own report is the source
-of truth for how it ended.
+A task whose run parks for an approve/deny/answer shows as `waiting` in
+`!tasks` — the run is alive, not failed. Once you `approve`/`deny`/`answer`
+it to real completion, the task record catches up too — done with its result,
+or failed with the reason — the same way a task that never parked would.
+Narrower residual gap: an entry that expires and gets auto-denied on a
+restart, rather than resolved interactively, never goes through this path,
+so a task behind that specific entry stays `waiting` on record.
 
 `!tasks` only lists what's still active, so once a task finishes its
 completion message in the channel is the only other record of it —
@@ -176,6 +178,15 @@ auto-allows for `tier: "autonomous"` — every other tier parks regardless,
 making `approval: "auto"` silently inert. This is exactly the bug `research`
 briefly shipped with; it's now a boot-time validation error instead of
 something only a reviewer might catch.
+
+**Task and override writes are serialized per key.** `TaskStore.update()` and
+`ConfigOverridesStore.set()` both read-whole-file, mutate, write-whole-file —
+with nothing else guarding them, the dispatcher's tick and a Discord command
+landing on the same task/override at the same instant could otherwise read
+the same "before" state and have one write silently clobber the other's. A
+small in-process `KeyedMutex` (`src/keyed-mutex.ts`) queues same-key callers
+instead. In-process only — this runs as one supervisor process per data
+directory, so there's no cross-process case to guard against.
 
 ## Development
 

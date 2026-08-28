@@ -91,6 +91,62 @@ describe("DiscordBot", () => {
     expect(orchestrator.resumeRun).toHaveBeenCalledWith(entry, { answer: "use main" }, AGENTS[0]);
   });
 
+  it("resuming a run linked to a waiting task marks it done and notifies the task's channel", async () => {
+    const { pending, transport, orchestrator, bot, tasks } = setup();
+    const task = await tasks.create({ text: "research something", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "waiting", runId: "r1" });
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    orchestrator.resumeRun.mockResolvedValueOnce({ status: "success", runId: "r1", summary: "Found the answer." });
+    await bot.start();
+
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry.id}` });
+
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("done");
+    expect(updated?.result?.summary).toBe("Found the answer.");
+    expect(transport.sent.some((m) => m.text.includes(task.id) && m.text.includes("Found the answer."))).toBe(true);
+  });
+
+  it("resuming a run that fails marks its linked task failed and notifies", async () => {
+    const { pending, transport, orchestrator, bot, tasks } = setup();
+    const task = await tasks.create({ text: "research something", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "waiting", runId: "r1" });
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    orchestrator.resumeRun.mockResolvedValueOnce({ status: "failed", runId: "r1", error: "boom" });
+    await bot.start();
+
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry.id}` });
+
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("failed");
+    expect(updated?.failureReason).toBe("boom");
+    expect(transport.sent.some((m) => m.text.includes(task.id) && m.text.includes("boom"))).toBe(true);
+  });
+
+  it("resuming a run that parks again leaves its linked task waiting, untouched", async () => {
+    const { pending, transport, orchestrator, bot, tasks } = setup();
+    const task = await tasks.create({ text: "research something", createdBy: "discord:owner" });
+    await tasks.update(task.id, { status: "waiting", runId: "r1" });
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    orchestrator.resumeRun.mockResolvedValueOnce({ status: "parked", runId: "r1" });
+    await bot.start();
+
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry.id}` });
+
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("waiting");
+    expect(transport.sent.some((m) => m.text.includes(task.id))).toBe(false);
+  });
+
+  it("resuming a run with no linked task is a no-op for the task store", async () => {
+    const { pending, transport, orchestrator, bot, tasks } = setup();
+    const entry = await pending.create({ runId: "r1", agentName: "smoke", sessionId: "s1", kind: "approval", effect: "x", grantRef: "g" });
+    orchestrator.resumeRun.mockResolvedValueOnce({ status: "success", runId: "r1", summary: "done" });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: `approve ${entry.id}` });
+    expect(await tasks.list()).toEqual([]);
+  });
+
   it("ignores a message that doesn't reference a known pending id", async () => {
     const { transport, orchestrator, bot } = setup();
     await bot.start();

@@ -171,11 +171,10 @@ export async function runDispatchTick(deps: DispatcherDeps): Promise<DispatchOut
       // finishedAt, invent a failure reason, and hide the task from !tasks at
       // exactly the moment the owner needs to see that it is waiting on them.
       //
-      // Known v1 limitation: nothing updates this task again once the human
-      // resumes the run to its real completion — the resume path knows about
-      // runs and pending entries, not tasks. Cross-linking a resumed run back
-      // to its task is future work, deliberately not attempted here.
-      await deps.tasks.update(task.id, { status: "waiting" });
+      // runId is recorded so that when the human eventually resumes this run
+      // to its real completion, DiscordBot can find its way back to this
+      // task and update it — see reconcileTaskForResumedRun in bot.ts.
+      await deps.tasks.update(task.id, { status: "waiting", runId: result.runId });
     } else {
       const reason = result.error ?? `run ended with status "${result.status}"`;
       const previousRetries = task.retryCount ?? 0;

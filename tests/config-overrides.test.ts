@@ -45,6 +45,19 @@ describe("ConfigOverridesStore", () => {
     expect(log).toContain("discord:owner");
   });
 
+  it("two concurrent sets on different keys both survive", async () => {
+    // Regression guard: set() reads the whole file, merges one key, and
+    // writes the whole file back — without serializing, two concurrent
+    // calls could both read the same "before" state and one write would
+    // silently drop the other's key.
+    const store = new ConfigOverridesStore(mkdtempSync(join(tmpdir(), "cai-overrides-")));
+    await Promise.all([
+      store.set("dailyBudgetUsd", 25, "discord:owner"),
+      store.set("maxConcurrent", 3, "discord:owner"),
+    ]);
+    expect(await store.read()).toEqual({ dailyBudgetUsd: 25, maxConcurrent: 3 });
+  });
+
   it("survives a simulated restart", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-overrides-"));
     await new ConfigOverridesStore(dir).set("maxConcurrent", 5, "discord:owner");

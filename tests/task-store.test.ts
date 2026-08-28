@@ -81,6 +81,21 @@ describe("TaskStore", () => {
     expect(await s.get(task.id)).toEqual(updated);
   });
 
+  it("two concurrent updates to different fields on the same task both survive", async () => {
+    // Regression guard for the read-then-write race update() used to have:
+    // without serializing per id, both calls could read the same "before"
+    // state and the later write would silently drop the earlier patch.
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    await Promise.all([
+      s.update(task.id, { status: "running" }),
+      s.update(task.id, { priority: 90 }),
+    ]);
+    const final = await s.get(task.id);
+    expect(final?.status).toBe("running");
+    expect(final?.priority).toBe(90);
+  });
+
   it("update throws a clear error for an unknown id", async () => {
     await expect(store().update("nope", { status: "done" })).rejects.toThrow(/nope/);
   });

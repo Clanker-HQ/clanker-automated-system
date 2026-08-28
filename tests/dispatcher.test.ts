@@ -187,6 +187,8 @@ describe("runDispatchTick", () => {
       // The run is alive and paused, not finished and not failed.
       expect(updated?.failureReason).toBeUndefined();
       expect(updated?.finishedAt).toBeUndefined();
+      // Recorded so a later approve/deny/answer can find its way back to this task.
+      expect(updated?.runId).toBe("research-1");
       expect(notify).not.toHaveBeenCalled();
     });
   }
