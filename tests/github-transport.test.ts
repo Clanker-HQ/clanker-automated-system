@@ -49,4 +49,18 @@ describe("FakeGithubTransport", () => {
     expect(result).toEqual({ merged: false, reason: expect.stringContaining("head") });
     expect(t.merged).toEqual([]);
   });
+
+  it("records a created pull request and returns an incrementing fake number/url", async () => {
+    const t = new FakeGithubTransport();
+
+    const first = await t.createPullRequest("owner/repo", { head: "agent/builder/add-x", base: "main", title: "Add X", body: "Because Y." });
+    const second = await t.createPullRequest("owner/repo", { head: "agent/builder/add-z", base: "main", title: "Add Z", body: "Because W." });
+
+    expect(t.createdPullRequests).toEqual([
+      { repo: "owner/repo", head: "agent/builder/add-x", base: "main", title: "Add X", body: "Because Y." },
+      { repo: "owner/repo", head: "agent/builder/add-z", base: "main", title: "Add Z", body: "Because W." },
+    ]);
+    expect(first).toEqual({ number: 1, url: "https://github.com/owner/repo/pull/1" });
+    expect(second).toEqual({ number: 2, url: "https://github.com/owner/repo/pull/2" });
+  });
 });

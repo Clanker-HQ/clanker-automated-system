@@ -147,3 +147,32 @@ describe("GithubApiTransport.mergePullRequest", () => {
     await expect(t.mergePullRequest("owner/repo", 1, "sha-1")).resolves.toEqual({ merged: true });
   });
 });
+
+describe("GithubApiTransport.createPullRequest", () => {
+  it("posts to the pulls endpoint and returns the created PR's number and url", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeResponse({ json: { number: 42, html_url: "https://github.com/owner/repo/pull/42" } }),
+    ) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    const pr = await t.createPullRequest("owner/repo", { head: "agent/builder/add-x", base: "main", title: "Add X", body: "Because Y." });
+
+    expect(pr).toEqual({ number: 42, url: "https://github.com/owner/repo/pull/42" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/repo/pulls",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ head: "agent/builder/add-x", base: "main", title: "Add X", body: "Because Y." }),
+      }),
+    );
+  });
+
+  it("throws when GitHub rejects the pull request creation", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: false, status: 422 })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    await expect(
+      t.createPullRequest("owner/repo", { head: "agent/builder/add-x", base: "main", title: "Add X", body: "" }),
+    ).rejects.toThrow(/422/);
+  });
+});

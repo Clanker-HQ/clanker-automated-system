@@ -102,4 +102,19 @@ export class GithubApiTransport implements GithubTransport {
     }
     return { merged: true };
   }
+
+  async createPullRequest(
+    repo: string,
+    opts: { head: string; base: string; title: string; body: string },
+  ): Promise<{ number: number; url: string }> {
+    const res = await this.fetchImpl(`https://api.github.com/repos/${repo}/pulls`, {
+      method: "POST",
+      headers: { ...this.headers(), "content-type": "application/json" },
+      body: JSON.stringify({ head: opts.head, base: opts.base, title: opts.title, body: opts.body }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`GitHub API: failed to open a pull request for ${repo}:${opts.head} (${res.status})`);
+    const pr = (await res.json()) as { number: number; html_url: string };
+    return { number: pr.number, url: pr.html_url };
+  }
 }

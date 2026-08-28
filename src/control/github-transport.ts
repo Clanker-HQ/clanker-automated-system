@@ -15,13 +15,16 @@ export interface GithubTransport {
   postReviewComment(repo: string, number: number, body: string): Promise<void>;
   /** Refuses (merged: false) rather than merging if the PR's current head has moved past expectedHeadSha. */
   mergePullRequest(repo: string, number: number, expectedHeadSha: string): Promise<MergeResult>;
+  createPullRequest(repo: string, opts: { head: string; base: string; title: string; body: string }): Promise<{ number: number; url: string }>;
 }
 
 /** Test double: lets a test seed PR state and inspect what was posted/merged, with no real GitHub calls. */
 export class FakeGithubTransport implements GithubTransport {
   postedComments: { repo: string; number: number; body: string }[] = [];
   merged: { repo: string; number: number }[] = [];
+  createdPullRequests: { repo: string; head: string; base: string; title: string; body: string }[] = [];
   private pulls = new Map<string, PullRequestInfo>();
+  private nextPrNumber = 1;
 
   private key(repo: string, number: number): string {
     return `${repo}#${number}`;
@@ -48,5 +51,14 @@ export class FakeGithubTransport implements GithubTransport {
     }
     this.merged.push({ repo, number });
     return { merged: true };
+  }
+
+  async createPullRequest(
+    repo: string,
+    opts: { head: string; base: string; title: string; body: string },
+  ): Promise<{ number: number; url: string }> {
+    this.createdPullRequests.push({ repo, ...opts });
+    const number = this.nextPrNumber++;
+    return { number, url: `https://github.com/${repo}/pull/${number}` };
   }
 }
