@@ -192,6 +192,88 @@ describe("Governor.admit", () => {
     expect(await secondPromise).toEqual({ kind: "admit" });
     expect(secondResolved).toBe(true);
   });
+
+  it("adjustConcurrency immediately admits runs already queued behind the old, lower limit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 1\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+      now: () => new Date("2026-08-26T12:00:00.000Z"),
+    });
+
+    expect(await governor.admit(agent("a"), "trigger")).toEqual({ kind: "admit" });
+
+    let secondResolved = false;
+    let thirdResolved = false;
+    const secondPromise = governor.admit(agent("b"), "trigger").then((r) => {
+      secondResolved = true;
+      return r;
+    });
+    const thirdPromise = governor.admit(agent("c"), "trigger").then((r) => {
+      thirdResolved = true;
+      return r;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(secondResolved).toBe(false);
+    expect(thirdResolved).toBe(false);
+
+    // Raising the limit to 3 (without ever calling releaseSlot) should admit
+    // both already-queued waiters right away, not just one of them.
+    governor.adjustConcurrency(3);
+
+    expect(await secondPromise).toEqual({ kind: "admit" });
+    expect(await thirdPromise).toEqual({ kind: "admit" });
+    expect((governor as unknown as { activeSlots: number }).activeSlots).toBe(3);
+  });
+
+  it("adjustConcurrency grants only as many waiters as the new limit allows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 1\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+      now: () => new Date("2026-08-26T12:00:00.000Z"),
+    });
+
+    expect(await governor.admit(agent("a"), "trigger")).toEqual({ kind: "admit" });
+    let secondResolved = false;
+    let thirdResolved = false;
+    const secondPromise = governor.admit(agent("b"), "trigger").then((r) => {
+      secondResolved = true;
+      return r;
+    });
+    void governor.admit(agent("c"), "trigger").then(() => {
+      thirdResolved = true;
+    });
+
+    // Let both admit() calls actually reach the queued-waiter stage before
+    // adjusting — admit() awaits overrides/rate-limit reads first, so calling
+    // adjustConcurrency() synchronously right after starting them would find
+    // an empty waiters queue.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Raised to 2, not 3: only room for one more of the two queued waiters.
+    governor.adjustConcurrency(2);
+    expect(await secondPromise).toEqual({ kind: "admit" });
+    expect(secondResolved).toBe(true);
+    expect(thirdResolved).toBe(false);
+  });
+
+  it("adjustConcurrency with a lower limit does nothing (no negative slots, no spurious grants)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir);
+    governor.adjustConcurrency(0);
+    expect((governor as unknown as { activeSlots: number }).activeSlots).toBe(0);
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
 });
 
 describe("Governor.status", () => {

@@ -16,7 +16,7 @@ Send these in the bot's channel.
 | `!quiet off` | Disable quiet hours |
 | `!breaker off` | Disable the circuit breaker (a tripped agent stops refusing triggers) |
 | `!breaker on` | Re-enable it |
-| `!concurrency <n>` | How many runs may be in flight at once |
+| `!concurrency <n>` | How many runs may be in flight at once. Raising it takes effect immediately — any runs already queued behind the old, lower limit are admitted right away, not just new ones |
 | `!disable <agent>` | Stop triggering one agent |
 | `!enable <agent>` | Re-enable it, and reset its circuit breaker |
 | `!stop` | Hard stop — no new runs or resumes at all, until `!resume` |

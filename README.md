@@ -115,7 +115,11 @@ try again later, the id stays valid. Entries older than
 | `!cancel <id-or-prefix>` | Remove a still-pending task before it runs |
 
 These write to `data/config-overrides.json` and take effect on the next
-admission check; they override `config.yaml` until changed back.
+admission check; they override `config.yaml` until changed back. `!concurrency`
+is the one exception worth calling out: raising it takes effect immediately,
+admitting any runs already queued behind the old, lower limit right away
+rather than making them wait for enough of the currently-running ones to
+finish first.
 
 **The task queue.** `!task <text>` durably queues a free-form request under
 `data/tasks/<id>.json` — it survives a restart. Capped at 4000 characters,

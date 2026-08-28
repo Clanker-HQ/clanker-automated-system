@@ -34,14 +34,14 @@ function setup() {
     dailyBudgetUsd: 10, spentTodayUsd: 0, maxConcurrent: 2,
     breakerEnabled: true, disabledAgents: [],
   };
-  const governor = { status: async () => governorStatus };
+  const governor = { status: async () => governorStatus, adjustConcurrency: vi.fn() };
   const bot = new DiscordBot({
     transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
     channelFor: () => "smoke-channel",
     store, overrides, breaker, dataDir, ownerId: OWNER,
     tasks, dispatcher, governor,
   });
-  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus };
+  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus, governor };
 }
 
 describe("DiscordBot", () => {
@@ -201,6 +201,24 @@ describe("DiscordBot", () => {
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!budget 25" });
     expect(transport.sent.some((m) => m.text.includes("25"))).toBe(true);
+  });
+
+  it("!concurrency <n> updates the override, echoes the new value, and tells the governor to admit any already-queued runs", async () => {
+    const { transport, bot, overrides, governor } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!concurrency 5" });
+    expect((await overrides.read()).maxConcurrent).toBe(5);
+    expect(transport.sent.some((m) => m.text.includes("5"))).toBe(true);
+    expect(governor.adjustConcurrency).toHaveBeenCalledWith(5);
+  });
+
+  it("!concurrency with an invalid argument replies with an error and never calls the governor", async () => {
+    const { transport, bot, overrides, governor } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!concurrency 0" });
+    expect((await overrides.read()).maxConcurrent).toBeUndefined();
+    expect(governor.adjustConcurrency).not.toHaveBeenCalled();
+    expect(transport.sent.map((m) => m.text).join("\n")).toContain("Not a valid concurrency");
   });
 
   it("!breaker off disables the circuit breaker", async () => {

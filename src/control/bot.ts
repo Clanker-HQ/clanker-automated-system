@@ -60,6 +60,8 @@ interface WakeableDispatcher {
 
 interface StatusCapableGovernor {
   status(): Promise<GovernorStatus>;
+  /** Immediately admits any runs already queued behind the old, lower limit — see Governor.adjustConcurrency. */
+  adjustConcurrency(maxConcurrent: number): void;
 }
 
 const RESUME_REFUSED =
@@ -329,6 +331,7 @@ export class DiscordBot {
         const value = Number(arg);
         if (!Number.isInteger(value) || value <= 0) return void reply(`Not a valid concurrency: "${arg}"`);
         await this.overrides.set("maxConcurrent", value, "discord");
+        this.governor.adjustConcurrency(value);
         return void reply(`🔀 Concurrency set to ${value}.`);
       }
       case "!quiet": {

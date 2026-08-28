@@ -138,13 +138,34 @@ export class Governor {
       return;
     }
     await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.activeSlots += 1;
   }
 
+  /** Exactly one slot just freed up, so at most one queued waiter (if any) is granted — same as before this was split out. */
   releaseSlot(): void {
     this.activeSlots -= 1;
     const next = this.waiters.shift();
-    if (next) next();
+    if (next) {
+      this.activeSlots += 1;
+      next();
+    }
+  }
+
+  /**
+   * `!concurrency <n>` raising the limit must take effect immediately, not
+   * just for the next admit() call: without this, an admit() already queued
+   * in `waiters` (blocked under the OLD, lower maxConcurrent) stays queued
+   * until enough already-running runs finish on their own and call
+   * releaseSlot — one waiter drained per release, same as before the raise —
+   * rather than being let through right away up to the new, higher limit.
+   * A lowered limit does nothing here: it's enforced passively, the next time
+   * activeSlots drops enough for a future acquireSlot/releaseSlot to compare
+   * against it — there is no way to revoke a slot already granted.
+   */
+  adjustConcurrency(maxConcurrent: number): void {
+    while (this.activeSlots < maxConcurrent && this.waiters.length > 0) {
+      this.activeSlots += 1;
+      this.waiters.shift()!();
+    }
   }
 
   /** Called live as a run streams a rate_limit_event — updates the snapshot admit() consults, without waiting for the run to finish. */
