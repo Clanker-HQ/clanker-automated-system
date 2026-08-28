@@ -34,6 +34,7 @@ describe("touchesExcludedPath", () => {
       // to its own gates is a pipeline with no gates.
       "src/control/excluded-paths.ts",
       "src/runner/sdk-runner.ts",
+      "src/control/git-pusher.ts",
       "src/control/webhook-signature.ts",
       "src/control/webhook-wiring.ts",
       "src/control/webhook-receiver.ts",
@@ -62,6 +63,11 @@ describe("touchesExcludedPath", () => {
   it("flags the pipeline's own implementation files", () => {
     expect(touchesExcludedPath(["src/control/excluded-paths.ts"])).toBe(true);
     expect(touchesExcludedPath(["src/runner/sdk-runner.ts"])).toBe(true);
+    // Regression test for the final review's Important #2: git-pusher.ts is
+    // the code that turns a validated `branch` argument into the actual
+    // pushed git ref, so it needs the same protection as the regex in
+    // sdk-runner.ts that validates that argument.
+    expect(touchesExcludedPath(["src/control/git-pusher.ts"])).toBe(true);
     expect(touchesExcludedPath(["src/control/webhook-signature.ts"])).toBe(true);
     expect(touchesExcludedPath(["src/control/webhook-wiring.ts"])).toBe(true);
     expect(touchesExcludedPath(["src/control/webhook-receiver.ts"])).toBe(true);

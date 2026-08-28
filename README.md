@@ -305,8 +305,12 @@ time:
 
 - `method` on an `http` grant. A grant scoped to `method: POST` currently also
   authorizes a `DELETE` to the same URL.
-- `branches` on a `git-push` grant. A grant scoped to `branches: [main]`
-  currently authorizes a push to *any* branch on that remote.
+- `branches` on a `git-push` grant, for a raw Bash `git push` (no explicit
+  branch argument detected). A grant scoped to `branches: [main]` still
+  authorizes a Bash `git push` to any branch on that remote — this field
+  is only enforced for the `pushBranch` MCP tool's own effect, which
+  carries an explicit branch and checks it against this list (see
+  `src/grants.ts`'s `matchGrant`).
 - `limit.perDay` on a `provision` grant. Nothing counts uses, so the cap is not
   applied.
 
@@ -317,7 +321,8 @@ this target, by this family of effect" and nothing narrower. `grants.yaml`
 ships only the synthetic `test-echo` grant today, so nothing live depends on
 this yet — but a grant you add for a real credential should be scoped by its
 `urlPattern`/`remote`, and by what the credential behind it is allowed to do,
-rather than by `method` or `branches`.
+rather than by `method`, which is unenforced everywhere, or `branches`, which
+is enforced only for `pushBranch` and still unenforced for a raw Bash `git push`.
 
 **Tool calls need absolute paths.** An agent prompt that says "read `notes.md` in
 your working directory" will fail its first tool call. Say so explicitly in the
@@ -329,10 +334,12 @@ The governor, capability tiers and grants, park/resume, and the Discord control
 bot (approvals, questions, admin commands) are all built and live as of Plan B.
 Still genuinely deferred:
 
-- **The builder agent, git-based deploy, and the "proposal approval" Discord
-  flow** — an agent writing a new `agent.yaml`, the supervisor pulling and
-  validating it, and asking to merge it. Nothing produces a proposal branch
-  yet, so there's nothing for the deploy/approval machinery to act on.
+- **Git-based deploy and the "proposal approval" Discord flow** — an agent
+  writing a new `agent.yaml`, the supervisor pulling and validating it, and
+  asking to merge it. The `builder` agent (`agents/builder/`) can now write
+  and open a PR for an ordinary code change, but nothing yet produces a
+  proposal branch that changes this system's own agent configuration, so
+  there's still nothing for the deploy/approval machinery to act on.
 - **Outcome verification.** `status: "success"` still only means the SDK
   didn't error, not that the agent's objective was achieved (see above).
 - **Browser capability** (`capabilities.browser`) — Plan C territory.

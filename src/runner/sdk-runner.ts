@@ -319,10 +319,29 @@ export class SdkRunner implements Runner {
       ],
     });
 
-    // The mergePR tool, only registered when a GithubTransport dependency was
-    // provided (agents that don't merge PRs never see it). Three gates run in
-    // this order, each unconditionally, and none can be bypassed by an
-    // earlier gate's outcome:
+    // The githubPr MCP server, only registered when a GithubTransport
+    // dependency was provided (agents that don't touch GitHub never see it).
+    // It now hosts four tools, not just mergePR:
+    //   - mergePR — the one gated by all three checks described below.
+    //   - postReviewComment — ungated; commenting has no outward consequence
+    //     beyond ordinary communication.
+    //   - pushBranch — registered only when `gitPusher` is also present (only
+    //     `builder` holds both dependencies today). Its own two gates run in
+    //     the same unconditional, order-matters style as mergePR's: (1) an
+    //     `agent/builder/` namespace regex no grant or tier can override, then
+    //     (2) a grant check via decide()/detectOutwardEffect/matchGrant. The
+    //     regex only validates the `branch` argument that reaches this
+    //     handler — RealGitPusher (`src/control/git-pusher.ts`) is the code
+    //     that turns that validated argument into the actual pushed git ref,
+    //     which is why that file is excluded-path-protected the same as this
+    //     one.
+    //   - openPR — ungated; by the time it runs, pushBranch has already
+    //     confirmed the branch is in the agent/builder/ namespace, so its own
+    //     namespace check here is defense in depth, not a security boundary on
+    //     its own.
+    //
+    // mergePR's three gates run in this order, each unconditionally, and none
+    // can be bypassed by an earlier gate's outcome:
     //   1. excluded-path check — a PR touching a security-sensitive path can
     //      never merge through this pipeline, no matter what grant or review
     //      exists. Checked against `getPullRequest`'s own authoritative

@@ -12,7 +12,10 @@ guessing at a repo or improvising scope.
 
 ## How to work
 
-1. Clone the target repo fresh into your workspace:
+1. Your workspace may still hold files from a previous run — this directory
+   is not automatically cleared between runs. Start by removing everything
+   in it, including hidden files: `rm -rf ./* .[!.]* 2>/dev/null || true`.
+   Then clone the target repo fresh:
    `git clone --depth 1 https://github.com/<owner>/<repo>.git .`
 2. Determine the repo's real default branch — never guess `main` or
    `master`:

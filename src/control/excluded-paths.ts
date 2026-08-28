@@ -16,10 +16,13 @@
  *    would remove the whole mechanism), the webhook trust boundary
  *    (`src/control/webhook-signature.ts`, `src/control/webhook-wiring.ts`,
  *    `src/control/webhook-receiver.ts`), the child-env credential allowlist
- *    (`src/runner/credentials.ts`), the boot wiring (`src/index.ts`), and CI
- *    itself (`.github/workflows/ci.yml`). A pipeline able to merge changes to
- *    its own gates is a pipeline with no gates: one PR weakens the check, the
- *    next does anything.
+ *    (`src/runner/credentials.ts`), the boot wiring (`src/index.ts`), CI
+ *    itself (`.github/workflows/ci.yml`), and `src/control/git-pusher.ts` —
+ *    the code that turns a validated `branch` argument into the actual
+ *    pushed git ref, and so needs the same protection as the regex in
+ *    `sdk-runner.ts` that validates that argument in the first place. A
+ *    pipeline able to merge changes to its own gates is a pipeline with no
+ *    gates: one PR weakens the check, the next does anything.
  *
  * `config.yaml` is excluded whole rather than just its `governor:` key: a
  * line-range check inside one file is fragile against reformatting, and
@@ -44,6 +47,7 @@ export const EXCLUDED_PATHS: readonly string[] = [
   // This pipeline's own safety rails.
   "src/control/excluded-paths.ts",
   "src/runner/sdk-runner.ts",
+  "src/control/git-pusher.ts",
   "src/control/webhook-signature.ts",
   "src/control/webhook-wiring.ts",
   "src/control/webhook-receiver.ts",
