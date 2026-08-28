@@ -88,9 +88,10 @@ export interface DispatchOutcome {
    * a failed run. The drain loop in Dispatcher.wake() must stop on this
    * either way — nextPending() would return the SAME task right back, and for
    * a refusal that spins for as long as the refusal lasts (quiet hours:
-   * hours), while for an auto-retry it at least gives whatever was transient
-   * (a flaky fetch, a momentary rate limit) the ~30s until the next periodic
-   * tick to clear, instead of hammering it back-to-back.
+   * hours), while for a backoff retry it waits out the scheduled
+   * `nextRetryAt` delay (1, 5, or 15 minutes) before it's eligible to be
+   * reclaimed, giving whatever was transient (a flaky fetch, a momentary
+   * rate limit) real time to clear, instead of hammering it back-to-back.
    */
   deferred?: boolean;
 }
