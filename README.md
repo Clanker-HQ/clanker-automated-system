@@ -317,12 +317,14 @@ time:
 Reading a method or a branch name back out of a free-form `Bash` string is the
 same unsolved problem as `detectOutwardEffect` above, which is why it isn't
 faked. The practical consequence: read a real grant as "this agent may reach
-this target, by this family of effect" and nothing narrower. `grants.yaml`
-ships only the synthetic `test-echo` grant today, so nothing live depends on
-this yet — but a grant you add for a real credential should be scoped by its
-`urlPattern`/`remote`, and by what the credential behind it is allowed to do,
-rather than by `method`, which is unenforced everywhere, or `branches`, which
-is enforced only for `pushBranch` and still unenforced for a raw Bash `git push`.
+this target, by this family of effect" and nothing narrower. `grants.yaml` now
+backs two live credentials (`infra-repo`'s `GITHUB_PR_TOKEN` and
+`builder-push`'s `BUILDER_PUSH_TOKEN`) alongside the synthetic `test-echo` and
+broad `web-read` grants — a grant you add for a real credential should be
+scoped by its `urlPattern`/`remote`, and by what the credential behind it is
+allowed to do, rather than by `method`, which is unenforced everywhere, or
+`branches`, which is enforced only for `pushBranch` and still unenforced for a
+raw Bash `git push`.
 
 **Tool calls need absolute paths.** An agent prompt that says "read `notes.md` in
 your working directory" will fail its first tool call. Say so explicitly in the
@@ -343,14 +345,15 @@ Still genuinely deferred:
 - **Outcome verification.** `status: "success"` still only means the SDK
   didn't error, not that the agent's objective was achieved (see above).
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
-- **A real GitHub repo, PAT, and webhook.** `grants.yaml` ships one synthetic
-  grant (`test-echo`, a POST to `httpbin.org`) to exercise tier/grant
-  enforcement end to end, plus `infra-repo` (a `github-pr` grant, `repos:
-  "*"`) backing `agents/pr-reviewer` — but with no real `GITHUB_PR_TOKEN`,
-  no real repo, and no webhook configured yet, it authorises nothing against
-  anything real. Wiring up an actual credentialed effect (the real target
-  repo for PR review, or any other agent's first real API call) happens
-  later, agent by agent, as a real need shows up — see the plan's Task 13
-  for the PR-review pipeline's own GitHub-side setup.
+- **The repo is real; the webhook and the builder's own token still aren't.**
+  This system now lives at `Clanker-HQ/clanker-automated-system` on GitHub,
+  and `GITHUB_PR_TOKEN`/`GITHUB_WEBHOOK_SECRET` are set, so `infra-repo`
+  authorises real PR review/merge calls once a repo's webhook is actually
+  configured (Settings → Webhooks — still per-repo, no account-wide
+  equivalent; see the plan's Task 13). `builder-push` already points at this
+  same real repo, but `BUILDER_PUSH_TOKEN` itself is still unset, so
+  `pushBranch` has nothing to authenticate with yet — generate that PAT on
+  the bot account (Contents:Write + Pull requests:Write, this repo only)
+  before relying on `builder`.
 
 See the design doc's roadmap for how these fit together.
