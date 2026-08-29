@@ -82,9 +82,9 @@ describe("parseConfig", () => {
     expect(() => parseConfig("config.yaml", yaml)).toThrow(/unexpected/);
   });
 
-  it("defaults digest to enabled, 08:00 UTC, the 'smoke' channel, when absent", () => {
+  it("defaults digest to enabled, 08:00 UTC, the 'ops' channel, when absent", () => {
     const config = parseConfig("config.yaml", VALID);
-    expect(config.digest).toEqual({ enabled: true, schedule: "0 8 * * *", timezone: "UTC", channel: "smoke" });
+    expect(config.digest).toEqual({ enabled: true, schedule: "0 8 * * *", timezone: "UTC", channel: "ops" });
   });
 
   it("honours an explicit digest block", () => {
@@ -115,9 +115,9 @@ describe("parseConfig", () => {
     expect(parseConfig("config.yaml", yaml).digest.schedule).toBe("*/15 * * * *");
   });
 
-  it("defaults retention to enabled, 30 days, Sunday 04:00 UTC, the 'smoke' channel, when absent", () => {
+  it("defaults retention to enabled, 30 days, Sunday 04:00 UTC, the 'ops' channel, when absent", () => {
     const config = parseConfig("config.yaml", VALID);
-    expect(config.retention).toEqual({ enabled: true, days: 30, schedule: "0 4 * * 0", timezone: "UTC", channel: "smoke" });
+    expect(config.retention).toEqual({ enabled: true, days: 30, schedule: "0 4 * * 0", timezone: "UTC", channel: "ops" });
   });
 
   it("rejects an invalid retention.schedule cron expression, naming the field and the value", () => {

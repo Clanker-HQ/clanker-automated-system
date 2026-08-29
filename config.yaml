@@ -10,22 +10,22 @@ governor:
 
 discord:
   channels:
-    smoke: DISCORD_WEBHOOK_SMOKE   # webhook URL — routine reports (outbox)
+    ops: DISCORD_WEBHOOK_OPS   # webhook URL — routine reports (outbox)
   botChannels:
-    smoke: DISCORD_CHANNEL_ID_SMOKE   # numeric Discord channel id, for the bot
+    ops: DISCORD_CHANNEL_ID_OPS   # numeric Discord channel id, for the bot
 
 digest:
   enabled: true
   schedule: "0 8 * * *"   # once a day, croner's 5-field cron syntax
   timezone: Europe/Berlin
-  channel: smoke          # a key into discord.channels above
+  channel: ops            # a key into discord.channels above
 
 retention:
   enabled: true
   days: 30                # delete run transcripts/results and workspace files older than this
   schedule: "0 4 * * 0"   # weekly (Sunday 04:00) — bulk deletion, not routine reporting
   timezone: Europe/Berlin
-  channel: smoke
+  channel: ops
 
 # github:
 #   prToken: GITHUB_PR_TOKEN   # (documented here for discoverability; the

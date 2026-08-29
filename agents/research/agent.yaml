@@ -38,5 +38,5 @@ approval: auto
 grantRefs: [web-read]
 
 outbox:
-  discord: smoke
+  discord: ops
   notifyOn: [success, failure]

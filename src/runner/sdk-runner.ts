@@ -212,6 +212,8 @@ export class SdkRunner implements Runner {
       tasks?: TaskStore;
       /** Wakes the dispatcher after queueTask adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
       wake?: () => Promise<void>;
+      /** docs/system-context.md's contents, read once at boot (src/index.ts). Optional so tests/scripts that don't care can skip it — the systemContext tool is simply not registered without it. */
+      systemContext?: string;
     } = {
       grants: [],
       pending: new PendingStore(process.cwd()),
@@ -318,6 +320,29 @@ export class SdkRunner implements Runner {
         ),
       ],
     });
+
+    // Only registered when systemContext was actually loaded (src/index.ts
+    // reads docs/system-context.md at boot) — tests/scripts that don't wire
+    // it in simply don't see this tool, same pattern as taskQueue below.
+    // Exists specifically for agents like `research` that hold no `Read`
+    // tool at all (a deliberate restriction: research also holds a broad
+    // web-read grant, and Read + broad outbound access would be a plain
+    // exfiltration path) — this hands back a fixed, curated string with no
+    // path argument, so it can't be turned into an arbitrary file read.
+    const systemContext = this.deps.systemContext;
+    const systemContextServer = systemContext
+      ? createSdkMcpServer({
+          name: "systemContext",
+          tools: [
+            tool(
+              "systemContext",
+              "Returns a short primer on how claude-agent-infrastructure (the project you're one of the agents in) works, plus possible future additions to keep in mind. Call this before researching, comparing, or recommending anything related to this project's own architecture, hosting, or configuration, so your answer accounts for what might be coming, not just what exists today.",
+              {},
+              async () => ({ content: [{ type: "text" as const, text: systemContext }] }),
+            ),
+          ],
+        })
+      : undefined;
 
     // The githubPr MCP server, only registered when a GithubTransport
     // dependency was provided (agents that don't touch GitHub never see it).
@@ -660,6 +685,7 @@ export class SdkRunner implements Runner {
           askHuman: askHumanServer,
           ...(githubPrServer ? { githubPr: githubPrServer } : {}),
           ...(taskQueueServer ? { taskQueue: taskQueueServer } : {}),
+          ...(systemContextServer ? { systemContext: systemContextServer } : {}),
         },
         ...(ctx.resume ? { resume: ctx.resume } : {}),
       },

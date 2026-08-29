@@ -33,7 +33,7 @@ export interface DispatcherDeps {
  * unset. Left unguarded inside runDispatchTick's outer catch, that exception
  * overwrote the task's already-correct status/failureReason with the Discord
  * error — replacing a real diagnosis ("boom", "no specialist matched this
- * task") with "DISCORD_WEBHOOK_SMOKE is unset", i.e. destroying the only record
+ * task") with "DISCORD_WEBHOOK_OPS is unset", i.e. destroying the only record
  * of what actually went wrong, precisely when the operator needs it. The task
  * file is the durable record; the Discord post is a courtesy on top of it.
  *

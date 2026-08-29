@@ -14,7 +14,7 @@ describe("builder agent registration against the real repo config", () => {
       agentsDir: join(process.cwd(), "agents"),
       dataDir,
       config,
-      env: { ...process.env, DISCORD_WEBHOOK_SMOKE: "https://discord.com/api/webhooks/stub/stub" },
+      env: { ...process.env, DISCORD_WEBHOOK_OPS: "https://discord.com/api/webhooks/stub/stub" },
     });
     const grants = loadGrants(join(process.cwd(), "grants.yaml"));
 

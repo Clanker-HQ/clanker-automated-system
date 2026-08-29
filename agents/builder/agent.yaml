@@ -25,5 +25,5 @@ approval: auto
 grantRefs: [builder-push]
 
 outbox:
-  discord: smoke
+  discord: ops
   notifyOn: [success, failure]

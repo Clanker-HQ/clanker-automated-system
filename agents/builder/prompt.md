@@ -27,6 +27,11 @@ guessing at a repo or improvising scope.
    whole repo first for its old path and anything it exports — a change
    that leaves a dangling reference (another file, config, or comment still
    naming the old path) isn't done; update or remove those references too.
+   If the task involves designing a new agent, tool, or automation and
+   leaves any detail to your judgment (whether it needs human approval,
+   what tier to run at), read this repo's own `CLAUDE.md` first — this
+   project's standing default is maximum automation, no `park`/`notify`
+   step and no human in the loop, unless the task explicitly calls for one.
 5. Run the project's existing tests and typecheck (whatever it already uses
    — check `package.json` scripts, or the equivalent for the project's
    language/tooling) before committing. Do not commit a change that fails

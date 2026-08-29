@@ -26,5 +26,5 @@ approval: auto
 grantRefs: [infra-repo]
 
 outbox:
-  discord: smoke
+  discord: ops
   notifyOn: [success, failure]

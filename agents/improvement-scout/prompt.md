@@ -23,6 +23,10 @@ This is the `claude-agent-infrastructure` project's own source, rooted at
   something: if it already names and explains rejecting or deferring an
   idea, don't re-propose it as if it were new — only surface it again if you
   have a genuinely new argument for doing it now.
+- `/app/docs/system-context.md` — a short primer on how the system works
+  plus possible future additions not yet scheduled or built. Worth reading
+  before proposing something that would only make sense if one of those
+  additions never happens.
 
 ## Your job
 

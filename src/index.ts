@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Config, loadConfig } from "./config.js";
 import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
@@ -85,10 +86,17 @@ function main(): void {
     webhookSecret = mustEnv("GITHUB_WEBHOOK_SECRET");
     webhookPort = parsePort("WEBHOOK_PORT", process.env.WEBHOOK_PORT, 8787);
     github = new GithubApiTransport({ token: githubToken });
+    // Optional, not mustEnv'd: an agent that can't Read files (research) just
+    // loses the systemContext tool if this is missing, rather than boot
+    // failing over a doc file. See docs/system-context.md itself, and the
+    // tool's own doc comment in sdk-runner.ts, for why this exists.
+    const systemContextPath = join(ROOT, "docs/system-context.md");
+    const systemContext = existsSync(systemContextPath) ? readFileSync(systemContextPath, "utf8") : undefined;
     runner = buildRunner({
       grants, pending: new PendingStore(DATA_DIR), github,
       gitPusher: new RealGitPusher(),
       tasks,
+      systemContext,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound
       // too) — but this closure is only ever CALLED much later, once a real
@@ -187,7 +195,7 @@ function main(): void {
     dataDir: DATA_DIR,
     // No agent has been chosen yet at this point (a routing failure, or no
     // registered specialist at all), so there is no agent.outbox.discord to
-    // report through — "smoke" is this project's one configured channel,
+    // report through — "ops" is this project's one configured channel,
     // matching how agents/pr-reviewer already uses it.
     // Wrapped in an async function with a bare await (rather than returning
     // outbox.postAlert(...) directly): postAlert resolves to
@@ -195,7 +203,7 @@ function main(): void {
     // type is `(text: string) => Promise<void>` — the wrapper's inferred
     // Promise<void> return type is what actually satisfies it.
     notify: async (text) => {
-      await outbox.postAlert("smoke", text);
+      await outbox.postAlert("ops", text);
     },
   });
 

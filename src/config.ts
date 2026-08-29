@@ -112,7 +112,7 @@ export const DigestSchema = z
     schedule: z.string().default("0 8 * * *"),
     timezone: IanaTimezone.default("UTC"),
     // A key into discord.channels/discord.botChannels, same as an agent's outbox.discord.
-    channel: z.string().default("smoke"),
+    channel: z.string().default("ops"),
   })
   .strict()
   .superRefine(validateCronSchedule);
@@ -124,7 +124,7 @@ export const RetentionSchema = z
     // Weekly, Sunday 04:00 by default — this is bulk deletion, not routine reporting; no need for daily.
     schedule: z.string().default("0 4 * * 0"),
     timezone: IanaTimezone.default("UTC"),
-    channel: z.string().default("smoke"),
+    channel: z.string().default("ops"),
   })
   .strict()
   .superRefine(validateCronSchedule);

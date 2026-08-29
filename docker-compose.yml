@@ -19,7 +19,10 @@ services:
       - ./grants.yaml:/app/grants.yaml:ro
       # Read-only reference material improvement-scout's and cleanup-scout's
       # prompts name but the image doesn't bake in: docs/ (decisions.md, for
-      # the "already rejected/deferred" guard), README.md, CONFIGURING.md.
+      # the "already rejected/deferred" guard; system-context.md, read here
+      # by the supervisor itself at boot — src/index.ts — and handed to
+      # `research` through the systemContext tool, since that agent holds no
+      # Read tool at all), README.md, CONFIGURING.md.
       - ./docs:/app/docs:ro
       - ./README.md:/app/README.md:ro
       - ./CONFIGURING.md:/app/CONFIGURING.md:ro

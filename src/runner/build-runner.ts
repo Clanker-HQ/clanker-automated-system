@@ -19,7 +19,15 @@ import type { Runner } from "./types.js";
  * supervisor.
  */
 export function buildRunner(
-  opts: { grants: Grant[]; pending: PendingStore; github?: GithubTransport; gitPusher?: GitPusher; tasks?: TaskStore; wake?: () => Promise<void> },
+  opts: {
+    grants: Grant[];
+    pending: PendingStore;
+    github?: GithubTransport;
+    gitPusher?: GitPusher;
+    tasks?: TaskStore;
+    wake?: () => Promise<void>;
+    systemContext?: string;
+  },
   env: NodeJS.ProcessEnv = process.env,
 ): Runner {
   if (env.RUNNER === "fake") {

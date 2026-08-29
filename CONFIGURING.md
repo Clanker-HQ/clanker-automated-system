@@ -51,21 +51,21 @@ governor:
   quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
 
 discord:
-  channels:      { smoke: DISCORD_WEBHOOK_SMOKE }      # webhook URL, routine reports
-  botChannels:   { smoke: DISCORD_CHANNEL_ID_SMOKE }   # channel id, for the bot commands above
+  channels:      { ops: DISCORD_WEBHOOK_OPS }      # webhook URL, routine reports
+  botChannels:   { ops: DISCORD_CHANNEL_ID_OPS }   # channel id, for the bot commands above
 
 digest:
   enabled: true
   schedule: "0 8 * * *"   # once a day, croner's 5-field cron syntax
   timezone: Europe/Berlin
-  channel: smoke          # a key into discord.channels
+  channel: ops          # a key into discord.channels
 
 retention:
   enabled: true
   days: 30                # delete run data / workspace files older than this
   schedule: "0 4 * * 0"   # weekly (Sunday 04:00)
   timezone: Europe/Berlin
-  channel: smoke
+  channel: ops
 ```
 
 Edit this file only for the *baseline* you want across restarts. For a

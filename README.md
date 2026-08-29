@@ -12,7 +12,7 @@ Past architectural decisions and accepted risks: [`docs/decisions.md`](docs/deci
    It is long-lived access to your whole Claude account — it never leaves `.env`,
    which is gitignored.
 3. Create a Discord incoming webhook (Server Settings → Integrations → Webhooks →
-   New Webhook → Copy Webhook URL) and paste it into `DISCORD_WEBHOOK_SMOKE`.
+   New Webhook → Copy Webhook URL) and paste it into `DISCORD_WEBHOOK_OPS`.
 4. Create a Discord Application + Bot at https://discord.com/developers/applications,
    enable the **Message Content** privileged intent under Bot settings (the bot
    can't read approve/deny/answer replies without it), and invite it to your
@@ -22,8 +22,8 @@ Past architectural decisions and accepted risks: [`docs/decisions.md`](docs/deci
    `config.yaml`, add the same key under `discord.botChannels` pointing at an
    env var holding that channel's numeric Discord channel ID (right-click the
    channel with Developer Mode on → Copy Channel ID) — e.g.
-   `botChannels: { smoke: DISCORD_CHANNEL_ID_SMOKE }`, with
-   `DISCORD_CHANNEL_ID_SMOKE=<numeric id>` in `.env`. The webhook stays for
+   `botChannels: { ops: DISCORD_CHANNEL_ID_OPS }`, with
+   `DISCORD_CHANNEL_ID_OPS=<numeric id>` in `.env`. The webhook stays for
    routine one-way reports; the bot uses the channel ID to post approvals,
    questions, and admin command replies into the same channel.
    Finally, set `DISCORD_OWNER_ID` to **your own** numeric Discord user ID
@@ -51,6 +51,26 @@ To exercise the whole pipeline **without consuming any subscription quota**, set
 ```
 
 Check that line before the first real run.
+
+## Deploying, and staying deployed
+
+`docker compose up --build -d` is the manual deploy step. On a VPS,
+`scripts/auto-deploy.sh` automates it end to end: run on a schedule (cron
+or a systemd timer) from the host, **not** from inside a container, it
+fetches, and if the default branch moved, pulls, rebuilds, waits for
+Docker's own `HEALTHCHECK` to report healthy, and rolls back to the
+previous commit automatically if it doesn't — no approval step, matching
+this project's own standing preference for automation over a human
+gating each deploy (see `docs/decisions.md`). Set it up once with a crontab
+entry in the repo's own directory on the VPS:
+
+```
+*/5 * * * * ./scripts/auto-deploy.sh >> /var/log/auto-deploy.log 2>&1
+```
+
+It posts a one-line Discord notification (to the `ops` channel) only when
+it actually deploys or rolls something back — silent on every tick where
+nothing changed, the same way `retention` already behaves.
 
 ## Adding an agent
 
@@ -353,6 +373,9 @@ Still genuinely deferred:
 - **Outcome verification.** `status: "success"` still only means the SDK
   didn't error, not that the agent's objective was achieved (see above).
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
+- **A dashboard.** Wanted eventually, but out of scope so far — the Discord
+  `!command` interface (`!status`, `!tasks`, `!runs`, etc.) covers everything
+  today, matching how the rest of this system works.
 - **The repo is real; the webhook and the builder's own token still aren't.**
   This system now lives at `Clanker-HQ/clanker-automated-system` on GitHub,
   and `GITHUB_PR_TOKEN`/`GITHUB_WEBHOOK_SECRET` are set, so `infra-repo`

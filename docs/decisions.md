@@ -84,3 +84,30 @@ becomes a real problem in practice — it would slot in between `queueTask`
 being called and the task actually persisting, without touching anything
 else built here. Not built because it wasn't needed to prove the core loop,
 not because it was overlooked.
+
+## Auto-deploy runs host-side, not agent-side
+
+`scripts/auto-deploy.sh` (cron/systemd on the VPS host) is what closes the
+loop from "PR merged" to "actually live" — pull, rebuild, verify Docker's
+own `HEALTHCHECK` reports healthy, roll back to the previous commit if it
+doesn't. It is deliberately a plain host script, not a tool any agent can
+call.
+
+**Why not give an agent this ability directly:** triggering a redeploy from
+inside a container means either mounting the Docker socket into that
+container (close to host-root — a far bigger blast radius than anything
+else this system grants) or giving the agent SSH/exec access to the host
+itself. The deploy step needs no judgment — "did the default branch move"
+is a fact, not a decision — so there is nothing to gain from putting it
+inside the agent trust boundary at all.
+
+**Why this is safe to run unattended, with no human approving each
+deploy:** `EXCLUDED_PATHS` already keeps every merge through the automated
+pipeline from touching the governance/safety code itself, regardless of
+deploy automation — the worst a bad auto-deployed change can do is break a
+*feature*, never the safety mechanisms. CI already gates every PR on
+typecheck + tests before merge is even possible. The one genuinely new
+failure mode — a change that passes CI but breaks at runtime — is what the
+health-check-and-rollback exists to catch algorithmically, the same
+philosophy as everything else in this project: the safety net is a
+code-level check, not a person watching each deploy happen.

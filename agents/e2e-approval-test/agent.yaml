@@ -26,5 +26,5 @@ approval: notify
 grantRefs: [test-echo]
 
 outbox:
-  discord: smoke
+  discord: ops
   notifyOn: [success, failure]
