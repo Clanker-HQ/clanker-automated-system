@@ -1,7 +1,7 @@
 # Standing/Proactive Tasks — Design
 
 **Date:** 2026-08-28
-**Status:** Draft, pending review
+**Status:** Implemented — see [`docs/superpowers/plans/2026-08-28-standing-tasks.md`](../plans/2026-08-28-standing-tasks.md)
 **Scope:** The first slice of "the system acts on its own initiative," explicitly
 deferred by the original task-queue-dispatcher design (§8 there: "Follows once
 this slice is proven and a critic/filter step exists to gate what standing

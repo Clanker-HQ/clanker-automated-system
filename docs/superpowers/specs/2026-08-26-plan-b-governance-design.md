@@ -1,7 +1,7 @@
 # Claude Agent Infrastructure — Plan B: Governance & Control
 
 **Date:** 2026-08-26
-**Status:** Draft, pending review
+**Status:** Implemented — see [`docs/superpowers/plans/2026-08-26-plan-b-governance.md`](../plans/2026-08-26-plan-b-governance.md)
 **Scope:** Sub-project 2 of the roadmap in principle, but delivers only the
 *prerequisites* to the builder agent — governor, capability tiers and grant
 enforcement, park/resume, and the Discord control bot. The builder agent

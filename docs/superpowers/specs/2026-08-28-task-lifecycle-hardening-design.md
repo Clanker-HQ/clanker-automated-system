@@ -1,6 +1,6 @@
 # Task Lifecycle Hardening — Design
 
-**Status:** Approved for planning
+**Status:** Implemented — see [`docs/superpowers/plans/2026-08-28-task-lifecycle-hardening.md`](../plans/2026-08-28-task-lifecycle-hardening.md)
 **Related:** [[2026-08-28-standing-tasks-design]] (introduced `queueTask`, `opportunity-scout`, `improvement-scout`)
 **Sibling spec:** [[2026-08-28-builder-pipeline-design]] — the builder agent this
 spec's failure-feedback loop and the standing-tasks scouts eventually feed.

@@ -1,7 +1,7 @@
 # Claude Agent Infrastructure — Design
 
 **Date:** 2026-08-26
-**Status:** Approved in outline; revised after the autonomy requirement
+**Status:** Implemented — see [`docs/superpowers/plans/2026-08-26-plan-a-the-loop.md`](../plans/2026-08-26-plan-a-the-loop.md)
 **Scope:** Sub-project 1 of 3 — core runtime, control channel, and deployment
 
 ---
@@ -650,8 +650,13 @@ This is what makes the system self-extending, and it is deliberately built
 **Sub-project 3 — control plane.** Once more than a few agents run: run history
 browsing, cost trends, enabling and disabling without a deploy.
 
-**Deferred deliberately.** Continuous autonomous workers and `auto` approval
-mode, both of which are safe only for agents with an observed track record.
+**Deferred deliberately, at the time this spec was written.** Continuous
+autonomous workers and `auto` approval mode, both of which were considered
+safe only for agents with an observed track record. That posture was later
+superseded: `tier: autonomous` + `approval: auto` is now this project's
+standing default for every agent (see `CLAUDE.md`), on the view that safety
+comes from grant scoping and algorithmic checks rather than a human approval
+click.
 
 ## 12. Honest expectations
 

@@ -1,7 +1,7 @@
 # PR Review-and-Merge Gate — Design
 
 **Date:** 2026-08-27
-**Status:** Draft, pending review
+**Status:** Implemented — see [`docs/superpowers/plans/2026-08-27-pr-review-gate.md`](../plans/2026-08-27-pr-review-gate.md)
 **Scope:** Sub-project 2a of the roadmap — the safe merge gate for agent-authored
 (or human-authored) code changes. Deliberately does NOT cover how a change gets
 proposed in the first place (that's a separate, later sub-project — "2b", the
@@ -322,9 +322,11 @@ over a safer, more complex sandboxed alternative.
 **A second, related accepted risk: `Bash` can reach `gh` directly.** The
 `pr-reviewer` agent has `Bash` in its `allowedTools` — it needs it to check
 out and actually run the PR's code. `detectOutwardEffect` in `src/grants.ts`
-does not recognize `gh pr merge`, `gh pr review`, or `git push` as outward
-effects, so `decide()` falls through to its "no effect detected → allow"
-default for them. An agent that chose to shell out to `gh pr merge` — whether
+does not recognize `gh pr merge` or `gh pr review` as outward effects, so
+`decide()` falls through to its "no effect detected → allow" default for
+them. (Bare `git push` *is* now detected — added later by the builder-pipeline
+work to back the `git-push` grant kind — so this gap is narrower than when
+this spec was written.) An agent that chose to shell out to `gh pr merge` — whether
 by its own error or because its behavior was hijacked by content injected in
 the PR it is reviewing — would therefore bypass all three of `mergePR`'s
 gates entirely, **including Lock 4's excluded-path check**. Wall 2

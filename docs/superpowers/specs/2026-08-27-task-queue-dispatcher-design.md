@@ -1,7 +1,7 @@
 # Task Queue & Dispatcher — Design
 
 **Date:** 2026-08-27
-**Status:** Draft, pending review
+**Status:** Implemented — see [`docs/superpowers/plans/2026-08-27-task-queue-dispatcher.md`](../plans/2026-08-27-task-queue-dispatcher.md)
 **Scope:** Sub-project 3 of the roadmap — the first slice of turning this system
 from "one agent per fixed cron schedule" into something that can be handed a
 free-form request and figure out, on its own, what should handle it. This

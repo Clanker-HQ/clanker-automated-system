@@ -1,6 +1,6 @@
 # Builder Agent + Multi-hop Pipeline — Design
 
-**Status:** Approved for planning
+**Status:** Implemented — see [`docs/superpowers/plans/2026-08-28-builder-pipeline-implementation.md`](../plans/2026-08-28-builder-pipeline-implementation.md)
 **Related:** [[2026-08-28-standing-tasks-design]], [[2026-08-28-task-lifecycle-hardening-design]]
 **CLAUDE.md note:** this spec was revised mid-design after a standing-preference
 correction — pushing code defaults to `tier: autonomous` + `approval: auto`
@@ -272,16 +272,12 @@ anything outside `agent/builder/*` (enforced in code regardless).
 ```
 
 **Known environmental prerequisite, checked while writing this spec:**
-`git remote -v` on this repo returns nothing — it has no GitHub remote
-configured at all today. That's not a gap in this design; it's a
-deploy-time prerequisite outside the code, the same category as
-`pr-reviewer`'s webhook needing to be added on each repo in GitHub's own
-settings before that pipeline sees any event from it. The plan implements
-`builder` fully against `FakeGithubTransport`/`FakeGitPusher` regardless;
-actually *running* it against a real repo requires whoever deploys this
-to push the repo to GitHub (or point `builder` at a different repo that's
-already hosted), fill in the real `owner/repo` above, and provision
-`BUILDER_PUSH_TOKEN` in `.env` the same way `GITHUB_PR_TOKEN` already is.
+`git remote -v` on this repo returned nothing at the time — it had no GitHub
+remote configured. That deploy-time prerequisite has since been resolved:
+this repo now lives at `Clanker-HQ/clanker-automated-system`, and
+`grants.yaml`'s `builder-push` grant has the real `owner/repo` filled in.
+`BUILDER_PUSH_TOKEN` itself is not yet provisioned in `.env` (see README's
+"Not built yet" section for current status).
 
 ### 4.6 Infra: `git` CLI in the container
 

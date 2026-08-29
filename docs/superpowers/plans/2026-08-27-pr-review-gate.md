@@ -71,10 +71,11 @@ internal-only endpoint).
   the excluded-path check passes, the PR's current head SHA still matches
   what was reviewed, and `decide()` resolves to `allow`. All three are
   re-checked inside the tool call itself, not trusted from an earlier step.
-- No real GitHub repo exists yet for this project. Tasks that need one
-  (Milestone B's live dry run) are explicit about that prerequisite; nothing
-  in Milestone A requires it — `FakeGithubTransport` carries the whole test
-  suite.
+- No real GitHub repo existed yet for this project at the time this plan was
+  written (since resolved — this repo now lives at
+  `Clanker-HQ/clanker-automated-system`). Tasks that needed one (Milestone B's
+  live dry run) were explicit about that prerequisite; nothing in Milestone A
+  required it — `FakeGithubTransport` carries the whole test suite.
 
 ---
 
