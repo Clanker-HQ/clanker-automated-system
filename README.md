@@ -175,7 +175,7 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
   agent's timeout caps at 3 hours), it's one the process crashed mid-way
   through.
 
-**The system can queue its own tasks, not just yours.** Three cron-triggered
+**The system can queue its own tasks, not just yours.** Four cron-triggered
 agents each propose up to 3 tasks via a `queueTask` tool — no human approval
 needed to queue, matching every other read-only or proposal-only action in
 this system. A self-queued task is indistinguishable from a `!task` one once
@@ -186,11 +186,17 @@ priority (30 vs. 50) so it never queues ahead of something a human actually
 asked for. `opportunity-scout` looks for plausible ways to earn money and
 queues research questions for `research` to investigate; `improvement-scout`
 reads this project's own source and docs and queues concrete gaps or
-capability ideas — both run daily. `cleanup-scout` runs weekly and hands
-stale-doc/dead-reference fixes to `builder` instead of `research`, since
-fixing them means actually editing files, not investigating further. None of
-the three can write, push, fetch, or spend beyond proposing — all three run
-at `tier: readonly`.
+capability ideas — both run daily. `cleanup-scout` and `dependency-scout` run
+weekly and hand their findings to `builder` instead of `research` — stale
+docs/dead references, and npm vulnerabilities/outdated packages
+respectively — since fixing either means actually editing files, not
+investigating further. None of the four can push, fetch, or spend beyond
+proposing. Three run at `tier: readonly` (no writes possible at all);
+`dependency-scout` runs at `tier: sandboxed` instead, since `npm
+audit`/`npm outdated` need `Bash`, which `readonly` categorically forbids —
+`sandboxed` still denies every recognized outward effect before any grant is
+consulted and holds no `grantRefs`, but (unlike the other three) it could in
+principle write within its own workspace; its prompt just never asks it to.
 
 **A process crash is no longer invisible.** An uncaught exception or
 unhandled rejection anywhere is caught, written to `data/state/crash.log`,

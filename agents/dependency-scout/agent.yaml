@@ -1,0 +1,31 @@
+name: dependency-scout
+enabled: true
+authoredBy: claude-local
+description: >-
+  Runs npm audit/outdated against this repo's dependencies and queues
+  version-bump tasks for builder, prioritizing known vulnerabilities over
+  plain staleness. Proposes only — never installs or edits anything itself.
+
+trigger:
+  type: cron
+  schedule: "0 5 * * 3"
+  timezone: Europe/Berlin
+
+run:
+  model: claude-haiku-4-5
+  effort: low
+  maxTurns: 25
+  timeoutMinutes: 15
+  maxBudgetUsd: 1.00
+
+permissions:
+  allowedTools: [Bash, Read, Grep]
+  disallowedTools: []
+
+tier: sandboxed
+approval: notify
+grantRefs: []
+
+outbox:
+  discord: smoke
+  notifyOn: [success, failure]
