@@ -23,7 +23,10 @@ guessing at a repo or improvising scope.
    prefix to get the branch name).
 3. Create a local branch under the `agent/builder/` namespace, named for
    what you're building, e.g. `agent/builder/add-rate-limit-header`.
-4. Make the described change.
+4. Make the described change. If it deletes or renames a file, Grep the
+   whole repo first for its old path and anything it exports — a change
+   that leaves a dangling reference (another file, config, or comment still
+   naming the old path) isn't done; update or remove those references too.
 5. Run the project's existing tests and typecheck (whatever it already uses
    — check `package.json` scripts, or the equivalent for the project's
    language/tooling) before committing. Do not commit a change that fails

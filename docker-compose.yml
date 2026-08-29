@@ -17,12 +17,21 @@ services:
       - ./agents:/app/agents:ro
       - ./config.yaml:/app/config.yaml:ro
       - ./grants.yaml:/app/grants.yaml:ro
-      # Read-only reference material improvement-scout's prompt names but the
-      # image doesn't bake in: docs/ (specs/plans, for the "already deferred"
-      # guard), README.md, and CONFIGURING.md.
+      # Read-only reference material improvement-scout's and cleanup-scout's
+      # prompts name but the image doesn't bake in: docs/ (decisions.md, for
+      # the "already rejected/deferred" guard), README.md, CONFIGURING.md.
       - ./docs:/app/docs:ro
       - ./README.md:/app/README.md:ro
       - ./CONFIGURING.md:/app/CONFIGURING.md:ro
+      # cleanup-scout's repo-hygiene audit needs to see infra/test files the
+      # Dockerfile never COPYs into the image at all (src/scripts/package.json
+      # are baked in and don't need a mount).
+      - ./tests:/app/tests:ro
+      - ./Dockerfile:/app/Dockerfile:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./.github:/app/.github:ro
+      - ./.gitignore:/app/.gitignore:ro
+      - ./.dockerignore:/app/.dockerignore:ro
     restart: unless-stopped
 
 volumes:

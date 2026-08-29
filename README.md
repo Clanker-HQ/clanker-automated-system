@@ -175,19 +175,22 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
   agent's timeout caps at 3 hours), it's one the process crashed mid-way
   through.
 
-**The system can queue its own tasks, not just yours.** Two cron-triggered
-agents run daily and each propose up to 3 tasks via a `queueTask` tool —
-no human approval needed to queue, matching every other read-only or
-proposal-only action in this system. A self-queued task is
-indistinguishable from a `!task` one once it exists — same routing, same
-Governor admission, same `!tasks`/`!result`/digest visibility — except its
-`createdBy` reads `agent:<name>` instead of `discord:<id>`, and it starts
-at a lower default priority (30 vs. 50) so it never queues ahead of
-something a human actually asked for. `opportunity-scout` looks for
-plausible ways to earn money and queues research questions for `research`
-to investigate. `improvement-scout` reads this project's own source and
-docs and queues concrete gaps or capability ideas. Neither can write,
-push, fetch, or spend beyond proposing — both run at `tier: readonly`.
+**The system can queue its own tasks, not just yours.** Three cron-triggered
+agents each propose up to 3 tasks via a `queueTask` tool — no human approval
+needed to queue, matching every other read-only or proposal-only action in
+this system. A self-queued task is indistinguishable from a `!task` one once
+it exists — same routing, same Governor admission, same
+`!tasks`/`!result`/digest visibility — except its `createdBy` reads
+`agent:<name>` instead of `discord:<id>`, and it starts at a lower default
+priority (30 vs. 50) so it never queues ahead of something a human actually
+asked for. `opportunity-scout` looks for plausible ways to earn money and
+queues research questions for `research` to investigate; `improvement-scout`
+reads this project's own source and docs and queues concrete gaps or
+capability ideas — both run daily. `cleanup-scout` runs weekly and hands
+stale-doc/dead-reference fixes to `builder` instead of `research`, since
+fixing them means actually editing files, not investigating further. None of
+the three can write, push, fetch, or spend beyond proposing — all three run
+at `tier: readonly`.
 
 **A process crash is no longer invisible.** An uncaught exception or
 unhandled rejection anywhere is caught, written to `data/state/crash.log`,
