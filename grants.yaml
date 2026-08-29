@@ -46,6 +46,6 @@ grants:
   # either.
   - id: builder-push
     kind: git-push
-    remote: "owner/repo"   # placeholder: the actual infra repo's "owner/repo"
+    remote: "Clanker-HQ/clanker-automated-system"
     branches: ["agent/builder/*"]
     secret: BUILDER_PUSH_TOKEN
