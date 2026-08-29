@@ -29,10 +29,16 @@ notify() {
   local webhook
   webhook=$(grep -E '^DISCORD_WEBHOOK_OPS=' .env 2>/dev/null | cut -d= -f2- || true)
   [ -n "$webhook" ] || return 0
-  # $text is always one of this script's own fixed templates (only commit
-  # SHAs and a small fixed set of status words get interpolated into it),
-  # so plain double-quoting is safe here without a real JSON encoder.
-  curl -fsS -X POST -H "Content-Type: application/json" -d "{\"content\": \"${text}\"}" "$webhook" >/dev/null || true
+  # Written to a file and sent via --data-binary rather than inlined into a
+  # -d "..." argument: passing a UTF-8 string (this text always contains an
+  # em dash) through the shell argv to curl is not reliable on every
+  # platform — confirmed by testing, not assumed — and reading raw bytes
+  # from a file sidesteps that entirely.
+  local payload
+  payload="$(mktemp)"
+  printf '{"content": "%s"}' "$text" > "$payload"
+  curl -fsS -X POST -H "Content-Type: application/json" --data-binary "@${payload}" "$webhook" >/dev/null || true
+  rm -f "$payload"
 }
 
 wait_for_health() {
@@ -54,7 +60,13 @@ wait_for_health() {
 
 git fetch origin --quiet
 
-DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')"
+# Queried directly from the remote rather than the local
+# refs/remotes/origin/HEAD symbolic ref: that ref is only set up
+# automatically by `git clone`, and is absent (fatal error) on a repo that
+# was instead set up via `remote add` + `push -u` — this way works
+# regardless of local repo history, and can't go stale. Confirmed by
+# testing: this repo's own local clone hit exactly that fatal error.
+DEFAULT_BRANCH="$(git ls-remote --symref origin HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')"
 LOCAL_SHA="$(git rev-parse HEAD)"
 REMOTE_SHA="$(git rev-parse "origin/$DEFAULT_BRANCH")"
 
