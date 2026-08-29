@@ -47,6 +47,14 @@ export interface Task {
   nextRetryAt?: string;
   /** Set alongside status: "waiting" — lets a later approve/deny/answer find its way back to this task once the run it belongs to actually finishes. */
   runId?: string;
+  /**
+   * The OutcomeVerifier's reason from the most recent attempt graded
+   * "not-achieved" — threaded into the retry's own prompt (see dispatcher.ts)
+   * so the next attempt has something concrete to correct instead of blindly
+   * repeating itself. Left in place (not cleared) once the task finishes
+   * either way; nothing reads it after that.
+   */
+  lastVerificationReason?: string;
 }
 
 export class TaskStore {

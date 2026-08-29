@@ -78,6 +78,30 @@ describe("buildDigestText", () => {
     expect(text).toContain(waiting.id.slice(0, 8));
   });
 
+  it("flags runs that succeeded but were graded not-achieved, within the window only", async () => {
+    const { store, tasks } = stores();
+    vi.useFakeTimers();
+    vi.setSystemTime(WITHIN_WINDOW);
+    const flagged = await store.open(newRunId("smoke", WITHIN_WINDOW), "smoke");
+    await flagged.close({ status: "success", summary: "" });
+    vi.useRealTimers();
+    await store.recordVerification(flagged.runId, { verdict: "not-achieved", reason: "missed it" });
+    // Distinct timestamp: same reasoning as the "counts runs and spend" test
+    // above — two runs at the identical instant for the same agent collide
+    // into one run directory.
+    await recordRun(store, new Date(WITHIN_WINDOW.getTime() + 1000), "success", 1); // an ordinary success, not flagged
+
+    const text = await buildDigestText({ store, tasks, since: SINCE });
+    expect(text).toContain("1 run(s) succeeded but did not achieve their objective");
+  });
+
+  it("says nothing about verification when no run was graded not-achieved", async () => {
+    const { store, tasks } = stores();
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+    const text = await buildDigestText({ store, tasks, since: SINCE });
+    expect(text).not.toContain("did not achieve their objective");
+  });
+
   it("caps the listed failed tasks at 5 and notes the rest", async () => {
     const { store, tasks } = stores();
     for (let i = 0; i < 7; i++) {

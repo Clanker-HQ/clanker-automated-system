@@ -24,10 +24,24 @@ export function formatRunMessage(result: RunResult, tail?: string[]): string {
 
   const body = result.summary ? `\n${result.summary}\n` : "";
   const failureDetail = result.error ? `\n**Error:** ${result.error}\n` : "";
+  // Only surfaced when the verdict is NOT "achieved" — an "achieved" grading
+  // on every single successful run would just be noise on top of the ✅ this
+  // message already carries. "not-achieved"/"unclear" are the actionable
+  // cases this feature exists to catch: a run that finished clean but didn't
+  // do what it was asked.
+  const verificationDetail =
+    result.verifiedOutcome && result.verifiedOutcome.verdict !== "achieved"
+      ? `\n⚠️ **Verification: ${result.verifiedOutcome.verdict}** — ${result.verifiedOutcome.reason}\n`
+      : "";
 
-  let message = header + body + failureDetail;
+  let message = header + body + failureDetail + verificationDetail;
 
-  if (tail && tail.length > 0 && result.status !== "success") {
+  // A "not-achieved" verdict gets the same debugging aid a real failure
+  // does — the tail is exactly what a human needs to see WHY the objective
+  // wasn't met. "unclear" doesn't: it's a weaker signal (the grader couldn't
+  // tell), not a confirmed miss worth the extra message length.
+  const showTail = result.status !== "success" || result.verifiedOutcome?.verdict === "not-achieved";
+  if (tail && tail.length > 0 && showTail) {
     const budget = DISCORD_LIMIT - message.length - 20;
     let block = "";
     for (const line of tail.slice(-20)) {

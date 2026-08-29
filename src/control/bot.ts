@@ -406,7 +406,10 @@ export class DiscordBot {
       }
       case "!runs": {
         const recent = await this.store.listRecent(20);
-        const lines = recent.map((r) => `${r.runId} — ${r.status} — $${r.costUsd.toFixed(4)}`);
+        const lines = recent.map((r) => {
+          const verdict = r.verifiedOutcome && r.verifiedOutcome.verdict !== "achieved" ? ` — ⚠️ ${r.verifiedOutcome.verdict}` : "";
+          return `${r.runId} — ${r.status} — $${r.costUsd.toFixed(4)}${verdict}`;
+        });
         return void reply(lines.length > 0 ? lines.join("\n") : "No runs yet.");
       }
       case "!task": {

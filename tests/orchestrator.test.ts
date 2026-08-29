@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../src/config.js";
 import { ConfigOverridesStore } from "../src/config-overrides.js";
+import { FakeOutcomeVerifier, type OutcomeVerifier } from "../src/control/outcome-verifier.js";
 import { Governor } from "../src/governor.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { DiscordOutbox } from "../src/outbox/discord.js";
@@ -62,6 +63,7 @@ function harness(
   script: FakeScript,
   agentOverrides: Partial<AgentDef> = {},
   runner: Runner = new FakeRunner(script),
+  verifier?: OutcomeVerifier,
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-orch-"));
   const promptPath = join(dataDir, "prompt.md");
@@ -83,9 +85,10 @@ function harness(
       new Response(null, { status: 204 }),
   );
   const approvedGrants = new ApprovedGrantsStore(dataDir);
+  const store = new RunStore(dataDir);
   const orchestrator = new Orchestrator({
     runner,
-    store: new RunStore(dataDir),
+    store,
     outbox: new DiscordOutbox({
       config: CONFIG,
       dataDir,
@@ -97,8 +100,9 @@ function harness(
     governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
     breaker: new BreakerStore(dataDir),
     approvedGrants,
+    ...(verifier ? { verifier } : {}),
   });
-  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants, runner };
+  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants, runner, store };
 }
 
 /** The URL and parsed JSON body of one recorded webhook POST. */
@@ -692,5 +696,111 @@ describe("Orchestrator + a real circuit breaker", () => {
 
     await orchestrator.executeRun(agent);
     expect(await breaker.isTripped(agent.name)).toBe(true);
+  });
+});
+
+describe("Orchestrator outcome verification", () => {
+  it("grades a successful run and persists the verdict on the returned/stored result", async () => {
+    const verifier = new FakeOutcomeVerifier({ verdict: "not-achieved", reason: "only checked one option" });
+    const { agent, orchestrator, store } = harness(
+      { events: [{ type: "assistant", text: "Done: picked the first option." }] },
+      {},
+      undefined,
+      verifier,
+    );
+    const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
+
+    expect(result.verifiedOutcome).toEqual({ verdict: "not-achieved", reason: "only checked one option" });
+    const stored = await store.readResult(result.runId);
+    expect(stored.verifiedOutcome).toEqual({ verdict: "not-achieved", reason: "only checked one option" });
+  });
+
+  it("passes the run's own prompt, summary, and transcript tail to the verifier", async () => {
+    const verifier = new FakeOutcomeVerifier({ verdict: "achieved", reason: "fine" });
+    const { agent, orchestrator } = harness(
+      { events: [{ type: "assistant", text: "starting" }, { type: "assistant", text: "Done: wrote notes." }] },
+      {},
+      undefined,
+      verifier,
+    );
+    await orchestrator.executeRun(agent);
+
+    expect(verifier.calls).toHaveLength(1);
+    expect(verifier.calls[0]!.prompt).toBe("Do the thing.");
+    expect(verifier.calls[0]!.summary).toBe("Done: wrote notes.");
+    expect(verifier.calls[0]!.tail.join("\n")).toContain("starting");
+  });
+
+  it("never grades a run that isn't a clean success", async () => {
+    const verifier = new FakeOutcomeVerifier({ verdict: "achieved", reason: "fine" });
+    const { agent, orchestrator } = harness(
+      { events: [{ type: "assistant", text: "starting" }, { type: "assistant", text: "unreachable" }], throwAfter: 1 },
+      {},
+      undefined,
+      verifier,
+    );
+    const result = await orchestrator.executeRun(agent);
+    expect(result?.status).toBe("failed");
+    expect(verifier.calls).toHaveLength(0);
+    expect(result?.verifiedOutcome).toBeUndefined();
+  });
+
+  it("still returns and reports a successful run when the verifier itself throws", async () => {
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failingVerifier: OutcomeVerifier = { verify: vi.fn().mockRejectedValue(new Error("grading call exploded")) };
+    const { agent, orchestrator, fetchImpl } = harness(
+      { events: [{ type: "assistant", text: "Done: wrote notes." }] },
+      {},
+      undefined,
+      failingVerifier,
+    );
+    const result = await orchestrator.executeRun(agent);
+    if (!result) throw new Error("expected a RunResult");
+
+    expect(result.status).toBe("success");
+    expect(result.verifiedOutcome).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(stderrSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("grading call exploded");
+    stderrSpy.mockRestore();
+  });
+
+  it("runs fine with no verifier supplied at all (existing behaviour)", async () => {
+    const { agent, orchestrator } = harness({ events: [{ type: "assistant", text: "ok" }] });
+    const result = await orchestrator.executeRun(agent);
+    expect(result?.status).toBe("success");
+    expect(result?.verifiedOutcome).toBeUndefined();
+  });
+
+  it("posts a warning with the transcript tail to Discord when the verdict is not-achieved", async () => {
+    const verifier = new FakeOutcomeVerifier({ verdict: "not-achieved", reason: "missed the actual ask" });
+    const { agent, orchestrator, fetchImpl } = harness(
+      { events: [{ type: "assistant", text: "clue in the tail" }, { type: "assistant", text: "Done: wrote notes." }] },
+      {},
+      undefined,
+      verifier,
+    );
+    await orchestrator.executeRun(agent);
+
+    const { body } = postedCall(fetchImpl);
+    expect(body.content).toContain("⚠️");
+    expect(body.content).toContain("not-achieved");
+    expect(body.content).toContain("missed the actual ask");
+    expect(body.content).toContain("clue in the tail");
+  });
+
+  it("does not mention verification in the Discord post when the verdict is achieved", async () => {
+    const verifier = new FakeOutcomeVerifier({ verdict: "achieved", reason: "did exactly what was asked" });
+    const { agent, orchestrator, fetchImpl } = harness(
+      { events: [{ type: "assistant", text: "Done: wrote notes." }] },
+      {},
+      undefined,
+      verifier,
+    );
+    await orchestrator.executeRun(agent);
+
+    const { body } = postedCall(fetchImpl);
+    expect(body.content).not.toContain("Verification");
+    expect(body.content).not.toContain("did exactly what was asked");
   });
 });

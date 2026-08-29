@@ -1,5 +1,6 @@
 import { mkdir, appendFile, readFile, writeFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import type { VerifiedOutcome } from "./control/outcome-verifier.js";
 import type { RunEvent } from "./runner/types.js";
 
 export type RunStatus =
@@ -19,6 +20,13 @@ export interface RunResult {
   turns: number;
   summary: string;
   error?: string;
+  /**
+   * Set only for a status "success" run, and only when an OutcomeVerifier was
+   * wired in (Orchestrator's `verifier` dep) — grades whether the agent's
+   * actual objective was achieved, not just that the SDK finished without
+   * erroring. Absent means "not graded", never "graded and unclear".
+   */
+  verifiedOutcome?: VerifiedOutcome;
 }
 
 /** Filesystem-safe on Windows: no colons. */
@@ -134,6 +142,20 @@ export class RunStore {
   async readResult(runId: string): Promise<RunResult> {
     const raw = await readFile(join(this.runDir(runId), "result.json"), "utf8");
     return JSON.parse(raw) as RunResult;
+  }
+
+  /**
+   * Stamps a verification verdict onto an already-closed run — verification
+   * happens after writer.close() (it grades the run's own final summary), so
+   * it can't be folded into that write. Rewrites the same result.json a
+   * second time rather than a separate file: every other reader (listRecent,
+   * listSince, !runs, the digest) already reads exactly one file per run.
+   */
+  async recordVerification(runId: string, verifiedOutcome: VerifiedOutcome): Promise<RunResult> {
+    const existing = await this.readResult(runId);
+    const updated: RunResult = { ...existing, verifiedOutcome };
+    await writeFile(join(this.runDir(runId), "result.json"), JSON.stringify(updated, null, 2) + "\n");
+    return updated;
   }
 
   async listRecent(limit: number): Promise<RunResult[]> {

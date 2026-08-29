@@ -271,10 +271,21 @@ as the model genuinely replying "none."
 
 ## Things worth knowing before you trust it
 
-**`status: "success"` means the SDK finished without erroring — not that the agent
-achieved its objective.** A run can return a well-formed answer and still have
-failed to do the thing. Nothing here verifies outcomes yet. Read the transcripts
-early on.
+**`status: "success"` means the SDK finished without erroring — not, on its own,
+that the agent achieved its objective.** A run can return a well-formed answer
+and still have failed to do the thing. An `OutcomeVerifier`
+(`src/control/outcome-verifier.ts`) now grades every successful run against its
+own prompt with a second, cheap LLM call, and stamps the verdict (`achieved` /
+`not-achieved` / `unclear`) onto the result — surfaced in the Discord report,
+`!runs`, and the daily digest. For a dispatched task (see below), a
+`not-achieved` verdict is treated the same as a real failure: the dispatcher
+backs off and retries automatically, feeding the verifier's own reason into
+the retry's prompt, up to the same 3-attempt cap a genuine error gets — no
+approval step, matching this project's automation-over-approval stance. A
+cron/webhook agent has no task to retry, so its own next scheduled fire is
+still the only recovery. Either way, it's a second opinion, not a guarantee:
+the grader reads the same transcript a determined or confused agent could
+also have fooled. Read the transcripts yourself when something matters.
 
 **Agents share one rate limit with your own interactive Claude use.** The
 governor is live: it enforces `maxConcurrent`, `dailyBudgetUsd`, `quietHours`,
@@ -370,8 +381,6 @@ Still genuinely deferred:
   and open a PR for an ordinary code change, but nothing yet produces a
   proposal branch that changes this system's own agent configuration, so
   there's still nothing for the deploy/approval machinery to act on.
-- **Outcome verification.** `status: "success"` still only means the SDK
-  didn't error, not that the agent's objective was achieved (see above).
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
 - **A dashboard.** Wanted eventually, but out of scope so far — the Discord
   `!command` interface (`!status`, `!tasks`, `!runs`, etc.) covers everything

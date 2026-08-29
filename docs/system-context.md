@@ -27,6 +27,18 @@ Several agents propose work to each other and to themselves: cron-fired
 "scout" agents queue tasks for others via a durable task queue, with no
 human approval needed to queue.
 
+A run's `status: "success"` only ever means the SDK finished without
+erroring — it says nothing about whether the agent's actual objective was
+met. An `OutcomeVerifier` grades every successful run against its own
+prompt with a second, cheap LLM call, and the verdict (`achieved` /
+`not-achieved` / `unclear`) surfaces in the Discord report, `!runs`, and the
+daily digest. For a dispatched task, `not-achieved` is treated as a real
+failure: the dispatcher backs off and retries automatically (feeding the
+verifier's reason into the retry's prompt), up to the same 3-attempt cap a
+genuine error gets — no human step, same as everything else here. A
+cron/webhook agent has no task to retry, so it just gets its next scheduled
+fire, the same as any other run.
+
 ## Standing design philosophy
 
 Bias toward maximum automation. The human should almost never be in the
@@ -56,10 +68,6 @@ exists right now.
   one agent would run a real headless browser process during its own
   turn, which needs meaningfully more RAM/CPU than anything this system
   runs today.
-- **Outcome verification.** A run currently counts as "success" once the
-  SDK finishes without erroring — nothing checks whether the agent's
-  actual objective was achieved. A future verification step would add
-  another LLM call (and its own cost) per verified run.
 - **A self-build flow.** An agent proposing a change to this system's own
   configuration (a new `agent.yaml`, a `grants.yaml` edit), with the
   supervisor validating it and asking to merge it. Would need its own

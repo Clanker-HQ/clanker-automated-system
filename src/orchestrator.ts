@@ -1,4 +1,5 @@
 import { mkdir, readFile } from "node:fs/promises";
+import type { OutcomeVerifier } from "./control/outcome-verifier.js";
 import type { PendingEntry } from "./control/pending.js";
 import type { Governor } from "./governor.js";
 import type { DiscordOutbox } from "./outbox/discord.js";
@@ -17,6 +18,7 @@ export class Orchestrator {
   private readonly breaker: BreakerStore;
   private readonly approvedGrants: ApprovedGrantsStore;
   private readonly onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
+  private readonly verifier?: OutcomeVerifier;
 
   constructor(opts: {
     runner: Runner;
@@ -33,6 +35,13 @@ export class Orchestrator {
      * failure inside it is caught and logged, never allowed to fail the run.
      */
     onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
+    /**
+     * Grades a status "success" run's own objective, not just that the SDK
+     * finished without erroring. Optional so tests that don't care about
+     * verification need not supply one — no verifier means no grading, not a
+     * default "unclear" for every run.
+     */
+    verifier?: OutcomeVerifier;
   }) {
     this.runner = opts.runner;
     this.store = opts.store;
@@ -42,6 +51,7 @@ export class Orchestrator {
     this.breaker = opts.breaker;
     this.approvedGrants = opts.approvedGrants;
     this.onParked = opts.onParked;
+    this.verifier = opts.verifier;
   }
 
   /**
@@ -215,7 +225,22 @@ export class Orchestrator {
       error = `Run exceeded its ${agent.run.timeoutMinutes} minute limit and was aborted`;
     }
 
-    const result = await writer.close({ status, summary: "", ...(error ? { error } : {}) });
+    let result = await writer.close({ status, summary: "", ...(error ? { error } : {}) });
+
+    // Only a clean "success" is worth grading — every other status already
+    // carries a more specific signal of its own (an error, a timeout reason,
+    // a denial). Never allowed to fail the run itself: a grading call that
+    // errors or hangs is a lost verdict, not a lost result.
+    if (result.status === "success" && this.verifier) {
+      try {
+        const tail = await writer.tail(20);
+        const verifiedOutcome = await this.verifier.verify({ prompt: ctx.prompt, summary: result.summary, tail });
+        result = await this.store.recordVerification(runId, verifiedOutcome);
+      } catch (err) {
+        console.error(`[orchestrator] outcome verification failed for run ${runId}`, err);
+      }
+    }
+
     await this.report(agent, result, writer);
     return result;
   }
@@ -228,7 +253,11 @@ export class Orchestrator {
     const category = result.status === "success" ? "success" : "failure";
     if (!agent.outbox.notifyOn.includes(category as "success" | "failure")) return;
     try {
-      const tail = result.status === "success" ? undefined : await writer.tail(20);
+      // A "not-achieved" verdict earns the same tail-fetch a real failure
+      // gets — see formatRunMessage's showTail, which is what actually
+      // decides whether to render it.
+      const needsTail = result.status !== "success" || result.verifiedOutcome?.verdict === "not-achieved";
+      const tail = needsTail ? await writer.tail(20) : undefined;
       await this.outbox.post(agent.outbox.discord, result, tail);
     } catch (thrown) {
       // The run is already durably recorded (result.json was written before

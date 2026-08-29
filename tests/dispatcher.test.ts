@@ -186,6 +186,108 @@ describe("runDispatchTick", () => {
     expect((await tasks.get(task.id))?.nextRetryAt).toBe("2026-08-28T00:15:00.000Z");
   });
 
+  describe("retrying a run graded not-achieved", () => {
+    it("retries once, silently, before accepting a task whose run was graded not-achieved", async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ verifiedOutcome: { verdict: "not-achieved", reason: "only checked one option" } }),
+      );
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir,
+      });
+      // Same posture as a real failure's retry: deferred, not yet notified.
+      expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("pending");
+      expect(updated?.retryCount).toBe(1);
+      expect(updated?.finishedAt).toBeUndefined();
+      expect(updated?.lastVerificationReason).toBe("only checked one option");
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("marks the task done, with a warning (not a plain ✅), once all 3 retries are still graded not-achieved", async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await tasks.update(task.id, { retryCount: 3 });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ summary: "Picked an option.", verifiedOutcome: { verdict: "not-achieved", reason: "still wrong" } }),
+      );
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("done");
+      expect(updated?.result?.summary).toBe("Picked an option.");
+      expect(notify).toHaveBeenCalledTimes(1);
+      const text = notify.mock.calls[0]![0] as string;
+      expect(text).toContain("⚠️");
+      expect(text).toContain(task.id);
+      expect(text).toContain("still wrong");
+    });
+
+    it("threads the verifier's reason from the previous attempt into the retry's prompt", async () => {
+      const { tasks, dataDir } = taskStore();
+      await tasks.create({ text: "find providers", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValueOnce(
+        successResult({ verifiedOutcome: { verdict: "not-achieved", reason: "only looked at named examples" } }),
+      );
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+      });
+
+      // Simulate the backoff window having passed so this task is claimable again.
+      const [task] = await tasks.list();
+      await tasks.update(task!.id, { nextRetryAt: undefined });
+      const secondExecuteRun = vi.fn().mockResolvedValue(successResult({ verifiedOutcome: { verdict: "achieved", reason: "fine" } }));
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun: secondExecuteRun }, notify: vi.fn(), dataDir,
+      });
+
+      const [, , promptContext] = secondExecuteRun.mock.calls[0]!;
+      expect(promptContext).toContain("find providers");
+      expect(promptContext).toContain("only looked at named examples");
+    });
+
+    it("marks the task done normally, with no retry, when the run is graded achieved", async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ verifiedOutcome: { verdict: "achieved", reason: "did it" } }),
+      );
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("done");
+      expect(updated?.retryCount ?? 0).toBe(0);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify.mock.calls[0]![0] as string).toContain("✅");
+    });
+
+    it("marks the task done normally when no verification was ever attached to the result", async () => {
+      const { tasks, dataDir } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(successResult());
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id });
+      expect((await tasks.get(task.id))?.status).toBe("done");
+    });
+  });
+
   it("puts the task back to pending, reports deferred, and keeps its routing, when the governor refuses admission", async () => {
     const { tasks, dataDir } = taskStore();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });

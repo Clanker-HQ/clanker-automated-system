@@ -18,6 +18,10 @@ export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore;
   const spentUsd = recentRuns.reduce((sum, r) => sum + r.costUsd, 0);
   const byStatus = new Map<string, number>();
   for (const r of recentRuns) byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
+  // Runs the SDK reported as "success" but whose objective an OutcomeVerifier
+  // graded as NOT met — a silent-failure mode `byStatus` alone can never
+  // surface, since it only ever sees "success".
+  const notAchieved = recentRuns.filter((r) => r.verifiedOutcome?.verdict === "not-achieved").length;
 
   const allTasks = await opts.tasks.list();
   const finishedTasks = allTasks.filter(
@@ -42,6 +46,9 @@ export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore;
   ];
   if (waitingTasks.length > 0) {
     lines.push(`⏳ Waiting on you: ${waitingTasks.map((t) => t.id.slice(0, 8)).join(", ")}`);
+  }
+  if (notAchieved > 0) {
+    lines.push(`⚠️ ${notAchieved} run(s) succeeded but did not achieve their objective — see \`!runs\`.`);
   }
   const shown = failedTasks.slice(0, 5);
   for (const t of shown) {

@@ -424,6 +424,24 @@ describe("DiscordBot", () => {
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!runs" });
     expect(transport.sent.some((m) => m.text.includes("smoke-run-1"))).toBe(true);
   });
+
+  it("!runs flags a run whose objective was graded not-achieved, but not one graded achieved", async () => {
+    const { transport, bot, store } = setup();
+    const flagged = await store.open("smoke-run-flagged", "smoke");
+    await flagged.close({ status: "success", summary: "did something" });
+    await store.recordVerification("smoke-run-flagged", { verdict: "not-achieved", reason: "missed it" });
+    const clean = await store.open("smoke-run-clean", "smoke");
+    await clean.close({ status: "success", summary: "did the thing" });
+    await store.recordVerification("smoke-run-clean", { verdict: "achieved", reason: "nailed it" });
+
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!runs" });
+    const lines = transport.sent.find((m) => m.text.includes("smoke-run-flagged"))!.text.split("\n");
+    const flaggedLine = lines.find((l) => l.includes("smoke-run-flagged"))!;
+    const cleanLine = lines.find((l) => l.includes("smoke-run-clean"))!;
+    expect(flaggedLine).toContain("not-achieved");
+    expect(cleanLine).not.toContain("achieved");
+  });
 });
 
 describe("DiscordBot task commands", () => {

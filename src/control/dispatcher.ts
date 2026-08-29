@@ -171,8 +171,14 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
   try {
     // Applied here, not in each specialist's own prompt.md, so every current
     // and future dispatched agent gets the same "-d" behavior for free rather
-    // than each needing its own copy of this instruction.
-    const promptContext = task.wantsDetail ? `${task.text}\n\n${DETAIL_INSTRUCTION}` : task.text;
+    // than each needing its own copy of this instruction. The verification
+    // note is appended the same way, only present on a retry that follows a
+    // "not-achieved" grading — see the branch below.
+    const verificationNote = task.lastVerificationReason
+      ? `\n\n(A previous attempt at this task finished without error, but grading found it did not fully achieve ` +
+        `the objective: "${task.lastVerificationReason}". Address that gap this time.)`
+      : "";
+    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}`;
     const result = await deps.orchestrator.executeRun(agent, now(), promptContext);
 
     if (!result) {
@@ -186,7 +192,42 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       return { ran: true, taskId: task.id, deferred: true };
     }
 
-    if (result.status === "success") {
+    if (result.status === "success" && result.verifiedOutcome?.verdict === "not-achieved") {
+      // The SDK finished clean, but grading found the objective wasn't met —
+      // treated the same as a real failure: back off and retry, up to
+      // MAX_RETRIES, sharing the same counter/schedule a genuine failure
+      // uses, rather than marking it "done" and counting on a human to
+      // notice the ⚠️ in !runs/the digest.
+      const previousRetries = task.retryCount ?? 0;
+      if (previousRetries < MAX_RETRIES) {
+        const delayMs = RETRY_BACKOFF_MS[previousRetries]!;
+        console.log(
+          `[dispatcher] task ${task.id} succeeded but was graded not-achieved (${result.verifiedOutcome.reason}); ` +
+            `retrying in ${delayMs / 1000}s (attempt ${previousRetries + 1}/${MAX_RETRIES})`,
+        );
+        await deps.tasks.update(task.id, {
+          status: "pending",
+          retryCount: previousRetries + 1,
+          startedAt: undefined,
+          nextRetryAt: new Date(now().getTime() + delayMs).toISOString(),
+          lastVerificationReason: result.verifiedOutcome.reason,
+        });
+        return { ran: true, taskId: task.id, deferred: true };
+      }
+      // Retries exhausted — accept it rather than looping forever, but say so
+      // plainly: a human reading the channel must not read "done" as "confirmed
+      // correct" after every automatic attempt still missed the objective.
+      await deps.tasks.update(task.id, {
+        status: "done",
+        finishedAt: now().toISOString(),
+        result: { summary: result.summary, path: join(deps.dataDir, "runs", result.runId) },
+      });
+      await notifyBestEffort(
+        deps,
+        `⚠️ Task \`${task.id}\` done after ${MAX_RETRIES} retries, still graded not-achieved ` +
+          `(${result.verifiedOutcome.reason}): ${result.summary}`,
+      );
+    } else if (result.status === "success") {
       await deps.tasks.update(task.id, {
         status: "done",
         finishedAt: now().toISOString(),

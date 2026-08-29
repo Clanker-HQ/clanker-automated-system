@@ -4,6 +4,7 @@ import { type Config, loadConfig } from "./config.js";
 import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
 import { DiscordBot } from "./control/bot.js";
 import { reconcileAndConnectBot } from "./control/boot-wiring.js";
+import { buildOutcomeVerifier } from "./control/build-outcome-verifier.js";
 import { buildRouter } from "./control/build-router.js";
 import { Dispatcher } from "./control/dispatcher.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
@@ -177,6 +178,7 @@ function main(): void {
     governor,
     breaker,
     approvedGrants,
+    verifier: buildOutcomeVerifier(),
     onParked: async (pendingId, kind) => {
       if (!bot) return;
       const entry = await pending.get(pendingId);

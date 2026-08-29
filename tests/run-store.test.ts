@@ -155,6 +155,22 @@ describe("RunStore", () => {
     expect(stored.turns).toBe(2);
   });
 
+  it("stamps a verification verdict onto an already-closed run, preserving the rest of the result", async () => {
+    const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+    const runId = newRunId("a");
+    const writer = await store.open(runId, "a");
+    const closed = await writer.close({ status: "success", summary: "did the thing" });
+
+    const updated = await store.recordVerification(runId, { verdict: "not-achieved", reason: "missed the point" });
+
+    expect(updated.verifiedOutcome).toEqual({ verdict: "not-achieved", reason: "missed the point" });
+    expect(updated.summary).toBe(closed.summary);
+    expect(updated.status).toBe("success");
+
+    const stored = await store.readResult(runId);
+    expect(stored.verifiedOutcome).toEqual({ verdict: "not-achieved", reason: "missed the point" });
+  });
+
   describe("listSince", () => {
     it("includes only runs whose startedAt falls within [from, to]", async () => {
       const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
