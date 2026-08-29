@@ -17,13 +17,12 @@ This is the `claude-agent-infrastructure` project's own source, rooted at
 
 - `/app/src/` — the actual implementation
 - `/app/README.md` and `/app/CONFIGURING.md` — what the system does and how
-  it's configured
-- `/app/docs/superpowers/specs/` and `/app/docs/superpowers/plans/` —
-  design decisions already made, including things ALREADY deliberately
-  deferred. Read these before proposing something: if a spec already names
-  and explains deferring an idea, don't re-propose it as if it were new —
-  only surface it again if you have a genuinely new argument for doing it
-  now.
+  it's configured, including README's "Not built yet" section
+- `/app/docs/decisions.md` — design decisions already made, including things
+  ALREADY deliberately rejected or deferred. Read this before proposing
+  something: if it already names and explains rejecting or deferring an
+  idea, don't re-propose it as if it were new — only surface it again if you
+  have a genuinely new argument for doing it now.
 
 ## Your job
 

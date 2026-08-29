@@ -4,7 +4,8 @@
  * of these can never merge through the automated review-gate pipeline, no
  * matter what a review concludes — this is a static, mechanical exclusion,
  * not a judgment call any agent or review makes. See
- * docs/superpowers/specs/2026-08-27-pr-review-gate-design.md §3 (Lock 4).
+ * docs/decisions.md ("the PR reviewer runs a PR's code directly") for why
+ * this backstop exists alongside CODEOWNERS/branch protection.
  *
  * The set deliberately covers two groups:
  *

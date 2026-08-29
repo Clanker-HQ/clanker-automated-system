@@ -13,7 +13,7 @@ grants:
   # bounded by what the token can reach, not by an allowlist duplicated in
   # this file. A repo not yet under this account cannot be merged into
   # regardless of this setting; a repo added to the account still needs its
-  # own webhook configured on GitHub's side (see Task 13 in the plan) before
+  # own webhook configured on GitHub's side (Settings → Webhooks) before
   # this pipeline ever sees an event from it.
   - id: infra-repo
     kind: github-pr

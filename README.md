@@ -3,8 +3,7 @@
 Runs Claude agents unattended on a schedule, authenticated by a **Claude
 subscription** rather than the API. Results are reported to Discord.
 
-- Design: [`docs/superpowers/specs/2026-08-26-claude-agent-infrastructure-design.md`](docs/superpowers/specs/2026-08-26-claude-agent-infrastructure-design.md)
-- Plan A (this code): [`docs/superpowers/plans/2026-08-26-plan-a-the-loop.md`](docs/superpowers/plans/2026-08-26-plan-a-the-loop.md)
+Past architectural decisions and accepted risks: [`docs/decisions.md`](docs/decisions.md).
 
 ## Setup
 
@@ -333,7 +332,7 @@ prompt, and give the agent `Glob` so it can locate itself.
 ## Not built yet
 
 The governor, capability tiers and grants, park/resume, and the Discord control
-bot (approvals, questions, admin commands) are all built and live as of Plan B.
+bot (approvals, questions, admin commands) are all built and live.
 Still genuinely deferred:
 
 - **Git-based deploy and the "proposal approval" Discord flow** — an agent
@@ -350,10 +349,8 @@ Still genuinely deferred:
   and `GITHUB_PR_TOKEN`/`GITHUB_WEBHOOK_SECRET` are set, so `infra-repo`
   authorises real PR review/merge calls once a repo's webhook is actually
   configured (Settings → Webhooks — still per-repo, no account-wide
-  equivalent; see the plan's Task 13). `builder-push` already points at this
-  same real repo, but `BUILDER_PUSH_TOKEN` itself is still unset, so
-  `pushBranch` has nothing to authenticate with yet — generate that PAT on
-  the bot account (Contents:Write + Pull requests:Write, this repo only)
-  before relying on `builder`.
-
-See the design doc's roadmap for how these fit together.
+  equivalent). `builder-push` already points at this same real repo, but
+  `BUILDER_PUSH_TOKEN` itself is still unset, so `pushBranch` has nothing to
+  authenticate with yet — generate that PAT on the bot account
+  (Contents:Write + Pull requests:Write, this repo only) before relying on
+  `builder`.
