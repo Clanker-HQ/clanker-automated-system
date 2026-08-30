@@ -129,6 +129,34 @@ export const RetentionSchema = z
   .strict()
   .superRefine(validateCronSchedule);
 
+export const MemorySchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    /** Raw records older than this are pruned by the retention job. */
+    retentionDays: z.number().int().positive().default(90),
+    /** Reflections are already compressed, so they outlive raw records. */
+    reflectionRetentionDays: z.number().int().positive().default(365),
+    /** Above this similarity, a candidate counts as covering the same ground. */
+    similarityThreshold: z.number().min(0).max(1).default(0.75),
+    /** A prior record older than this no longer suppresses a repeat — the world moved on. */
+    stalenessDays: z.number().int().positive().default(30),
+    recencyHalfLifeDays: z.number().int().positive().default(14),
+    /** Successor chain depth cap — bounds runaway self-propagation. */
+    maxChainDepth: z.number().int().nonnegative().default(3),
+    /** Ceiling on agent-originated tasks per rolling day, independent of depth. */
+    maxAgentTasksPerDay: z.number().int().positive().default(20),
+    weights: z
+      .object({
+        goal: z.number().min(0).default(0.5),
+        novelty: z.number().min(0).default(0.25),
+        importance: z.number().min(0).default(0.15),
+        recency: z.number().min(0).default(0.1),
+      })
+      .strict()
+      .prefault({}),
+  })
+  .strict();
+
 export const GovernorSchema = z
   .object({
     maxConcurrent: z.number().int().positive().default(2),
@@ -150,6 +178,7 @@ export const ConfigSchema = z
       .prefault({}),
     digest: DigestSchema.prefault({}),
     retention: RetentionSchema.prefault({}),
+    memory: MemorySchema.prefault({}),
   })
   .strict();
 
@@ -158,6 +187,7 @@ export type GovernorConfig = z.infer<typeof GovernorSchema>;
 export type QuietHours = z.infer<typeof QuietHoursSchema>;
 export type DigestConfig = z.infer<typeof DigestSchema>;
 export type RetentionConfig = z.infer<typeof RetentionSchema>;
+export type MemoryConfig = z.infer<typeof MemorySchema>;
 
 export function parseConfig(source: string, yamlText: string): Config {
   const result = ConfigSchema.safeParse(parseYaml(yamlText) ?? {});
