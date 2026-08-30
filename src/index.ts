@@ -18,6 +18,7 @@ import { installCrashHandlers } from "./crash-handlers.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
+import { MemoryStore } from "./memory/memory-store.js";
 import { Orchestrator } from "./orchestrator.js";
 import { DiscordOutbox } from "./outbox/discord.js";
 import { type AgentDef, loadRegistry } from "./registry.js";
@@ -68,6 +69,7 @@ function main(): void {
   let dispatcher: Dispatcher | undefined;
 
   const tasks = new TaskStore(DATA_DIR);
+  const memory = new MemoryStore(DATA_DIR);
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
@@ -97,6 +99,8 @@ function main(): void {
       grants, pending: new PendingStore(DATA_DIR), github,
       gitPusher: new RealGitPusher(),
       tasks,
+      memory,
+      memoryConfig: config.memory,
       systemContext,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound
