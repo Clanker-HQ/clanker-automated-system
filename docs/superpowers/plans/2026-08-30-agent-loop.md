@@ -341,7 +341,17 @@ describe("similarity", () => {
   });
 
   it("does not match on key when only one side has one", () => {
-    expect(similarity({ subject: "x y z", key: "npm:a" }, { subject: "x y z" })).toBeLessThan(1);
+    // A lone key must never change the result at all — the code's guard
+    // requires BOTH sides to carry a key before the exact-match fast path
+    // fires, so this checks equality against the keyless baseline rather
+    // than asserting some specific score. (An earlier version of this test
+    // used two IDENTICAL subjects and asserted <1, which is wrong: identical
+    // lexical content legitimately scores 1.0 on its own, independent of any
+    // key, and demanding otherwise forced an arbitrary special case with no
+    // real invariant behind it.)
+    const withoutKey = similarity({ subject: "quarterly revenue report draft" }, { subject: "quarterly revenue report final" });
+    const withOneKey = similarity({ subject: "quarterly revenue report draft", key: "npm:a" }, { subject: "quarterly revenue report final" });
+    expect(withOneKey).toBe(withoutKey);
   });
 });
 ```
@@ -369,26 +379,38 @@ export interface Comparable {
  * things. Accuracy ceiling accepted in exchange; see the spec's Risks.
  *
  * Two signals, averaged: token-set Jaccard (catches reordering and filler)
- * and character-trigram overlap (catches morphology — "developer" vs
- * "developers"). Neither alone is enough.
+ * and character-trigram overlap (catches morphology). Both drop stop words
+ * before comparing — including inside the trigram text, not just the token
+ * list, since a shared filler word ("the") otherwise shifts every trigram
+ * after it and drags the score down for no semantic reason. Tokens
+ * additionally strip one trailing "s": a cheap, dependency-free stand-in for
+ * stemming (this system takes no new dependencies) that's enough to treat
+ * "platform"/"platforms" or "developer"/"developers" as the same word.
  */
 const STOP_WORDS = new Set([
   "a", "an", "and", "the", "to", "of", "for", "in", "on", "at", "by", "with",
   "is", "are", "be", "it", "this", "that", "or", "as", "from", "into",
 ]);
 
+function words(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !STOP_WORDS.has(t));
+}
+
+/** Strips one trailing "s" — length > 1 so a lone "s" token is never reduced to "". */
+function singularize(word: string): string {
+  return word.length > 1 && word.endsWith("s") ? word.slice(0, -1) : word;
+}
+
 function tokens(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((t) => t.length > 0 && !STOP_WORDS.has(t)),
-  );
+  return new Set(words(text).map(singularize));
 }
 
 function trigrams(text: string): Set<string> {
-  const normalized = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normalized = words(text).join("");
   const grams = new Set<string>();
   for (let i = 0; i + 3 <= normalized.length; i += 1) grams.add(normalized.slice(i, i + 3));
   return grams;
@@ -406,6 +428,8 @@ export function similarity(a: Comparable, b: Comparable): number {
   return (jaccard(tokens(a.subject), tokens(b.subject)) + jaccard(trigrams(a.subject), trigrams(b.subject))) / 2;
 }
 ```
+
+**Note on how this was derived** (kept for whoever next touches this file): the version of this code first drafted in this plan computed trigrams over the FULL normalized text, stop words included, and had no plural normalization in `tokens()`. Hand-verifying the test numbers against that version (done during this plan's execution, not before) showed two of the seven test cases could never pass against it: the "near-identical subjects" case tops out around 0.68 without singularization (short of its own >0.75 bar), and the "unaffected by... stop words" case tops out around 0.85 without stop-word-filtered trigrams (short of its own >0.9 bar). The version above is the corrected one — verified by hand against all seven cases before being written here.
 
 - [ ] **Step 4: Run tests and typecheck**
 
