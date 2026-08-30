@@ -285,6 +285,8 @@ function main(): void {
           days: config.retention.days,
           channel: config.retention.channel,
           outbox,
+          memory,
+          memoryConfig: config.memory,
         });
       })
       .catch((error: unknown) => {

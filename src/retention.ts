@@ -1,9 +1,11 @@
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { MemoryStore } from "./memory/memory-store.js";
 
 export interface RetentionResult {
   removedRuns: string[];
   removedWorkspaceFiles: string[];
+  removedMemoryRecords: number;
 }
 
 /**
@@ -18,7 +20,11 @@ export interface RetentionResult {
  * loss, and it eventually gets a result.json (and thus becomes eligible) once
  * it actually finishes.
  */
-export async function pruneOldData(opts: { dataDir: string; olderThan: Date }): Promise<RetentionResult> {
+export async function pruneOldData(opts: {
+  dataDir: string;
+  olderThan: Date;
+  memory?: { store: MemoryStore; olderThan: Date; reflectionsOlderThan: Date };
+}): Promise<RetentionResult> {
   const removedRuns: string[] = [];
   const runsRoot = join(opts.dataDir, "runs");
   for (const runId of await readdir(runsRoot).catch(() => [] as string[])) {
@@ -49,7 +55,17 @@ export async function pruneOldData(opts: { dataDir: string; olderThan: Date }): 
     }
   }
 
-  return { removedRuns, removedWorkspaceFiles };
+  // Two cutoffs, not one: a reflection is already a compressed synthesis of
+  // many raw records, so throwing it away on the raw schedule would discard
+  // the most condensed thing in the log first.
+  let removedMemoryRecords = 0;
+  if (opts.memory) {
+    removedMemoryRecords =
+      (await opts.memory.store.prune({ olderThan: opts.memory.olderThan, keepKinds: ["reflection"] })) +
+      (await opts.memory.store.prune({ olderThan: opts.memory.reflectionsOlderThan, keepKinds: [] }));
+  }
+
+  return { removedRuns, removedWorkspaceFiles, removedMemoryRecords };
 }
 
 /**
