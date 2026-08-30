@@ -56,6 +56,14 @@ for this system — a new agent, a new tool, a new automation — default to
 `tier: autonomous` + `approval: auto` and no approval gate at all, unless
 the task explicitly calls for one.
 
+## Before proposing or designing something new
+
+Check `agents/*/agent.yaml` and `grants.yaml` first — the actual, current
+registry, not just this doc. "Possible future additions" below is exhaustive
+for what's deliberately not built yet; it says nothing about what already
+exists. Assuming a capability is missing without checking the live registry
+is how a redundant agent or grant gets proposed, or worse, built.
+
 ## Possible future additions
 
 None of these are scheduled or committed — they're listed here so a
