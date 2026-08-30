@@ -42,6 +42,16 @@ describe("similarity", () => {
   });
 
   it("does not match on key when only one side has one", () => {
-    expect(similarity({ subject: "x y z", key: "npm:a" }, { subject: "x y z" })).toBeLessThan(1);
+    // A lone key must never change the result at all — the code's guard
+    // requires BOTH sides to carry a key before the exact-match fast path
+    // fires, so this checks equality against the keyless baseline rather
+    // than asserting some specific score. (The original version of this
+    // test used two IDENTICAL subjects and asserted <1, which was wrong:
+    // identical lexical content legitimately scores 1.0 on its own,
+    // independent of any key, and demanding otherwise forced an arbitrary
+    // special case with no real invariant behind it.)
+    const withoutKey = similarity({ subject: "quarterly revenue report draft" }, { subject: "quarterly revenue report final" });
+    const withOneKey = similarity({ subject: "quarterly revenue report draft", key: "npm:a" }, { subject: "quarterly revenue report final" });
+    expect(withOneKey).toBe(withoutKey);
   });
 });
