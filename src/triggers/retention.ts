@@ -28,7 +28,7 @@ export function startRetention(opts: {
       const { removedRuns, removedWorkspaceFiles, removedMemoryRecords } = await pruneOldData({
         dataDir: opts.dataDir,
         olderThan,
-        ...(opts.memory && opts.memoryConfig
+        ...(opts.memory && opts.memoryConfig?.enabled
           ? {
               memory: {
                 store: opts.memory,
