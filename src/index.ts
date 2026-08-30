@@ -6,6 +6,7 @@ import { DiscordBot } from "./control/bot.js";
 import { reconcileAndConnectBot } from "./control/boot-wiring.js";
 import { buildOutcomeVerifier } from "./control/build-outcome-verifier.js";
 import { buildRouter } from "./control/build-router.js";
+import { buildSuccessorSuggester } from "./control/build-successor-suggester.js";
 import { Dispatcher } from "./control/dispatcher.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
 import { RealGitPusher } from "./control/git-pusher.js";
@@ -200,6 +201,8 @@ function main(): void {
     orchestrator,
     dataDir: DATA_DIR,
     memory,
+    memoryConfig: config.memory,
+    suggestSuccessors: buildSuccessorSuggester(),
     // No agent has been chosen yet at this point (a routing failure, or no
     // registered specialist at all), so there is no agent.outbox.discord to
     // report through — "ops" is this project's one configured channel,
