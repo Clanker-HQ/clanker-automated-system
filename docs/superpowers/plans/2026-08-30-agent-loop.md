@@ -993,7 +993,9 @@ git commit -m "feat: gate queueTask on novelty and score its priority"
 **Files:**
 - Modify: `src/index.ts` (around lines 79-107, where `buildRunner` is called)
 - Modify: `src/runner/build-runner.ts` (pass the new deps through)
-- Test: `tests/build-runner.test.ts`, `tests/boot-wiring.test.ts`
+- Test: `tests/build-runner.test.ts`
+
+(`tests/boot-wiring.test.ts` was listed here in an earlier draft of this plan — it's unrelated: that file tests `reconcileAndConnectBot`, the Discord bot's reconnection/pending-entry reconciliation logic, nothing to do with `buildRunner` or memory. `src/index.ts`'s `main()` is never imported by any test — per `build-runner.ts`'s own doc comment, doing so would run the whole supervisor — so there is no unit-testable surface for "index.ts constructs and passes a MemoryStore" beyond `buildRunner` itself accepting the new optional params, which `build-runner.test.ts` covers.)
 
 **Interfaces:**
 - Consumes: `MemoryStore` (Task 1), `SdkRunner` deps (Task 5).
@@ -1005,12 +1007,24 @@ Read `src/runner/build-runner.ts` in full and `src/index.ts:70-130`. Follow exac
 
 - [ ] **Step 2: Write the failing test**
 
-In `tests/build-runner.test.ts`, add a case asserting `buildRunner` forwards a supplied `memory` and `memoryConfig` onto the constructed `SdkRunner` (match how the file already asserts `tasks` is forwarded).
+`SdkRunner` exposes no getter for its deps, so `build-runner.test.ts`'s existing tests (e.g. "accepts tasks/wake and still returns the real runner when provided", "accepts a gitPusher...") only assert `instanceof SdkRunner` — they can't and don't inspect what was actually stored. Match that exact shallow style; do not try to reach into `SdkRunner`'s internals. Add:
+
+```ts
+  it("accepts memory/memoryConfig and still returns the real runner when provided", () => {
+    const { grants, pending } = opts();
+    const memory = new MemoryStore(mkdtempSync(join(tmpdir(), "cai-buildrunner-")));
+    const memoryConfig = { enabled: true } as MemoryConfig; // only `enabled` matters to buildRunner itself
+    const runner = buildRunner({ grants, pending, memory, memoryConfig }, {}) as SdkRunner;
+    expect(runner).toBeInstanceOf(SdkRunner);
+  });
+```
+
+This will fail to compile before Step 4 (the options type doesn't yet accept `memory`/`memoryConfig`), which is this task's version of RED.
 
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `npm test -- build-runner`
-Expected: FAIL — `memory` is not forwarded.
+Expected: FAIL — a TypeScript error, since `memory`/`memoryConfig` aren't yet valid keys on `buildRunner`'s options type.
 
 - [ ] **Step 4: Thread the dependency**
 
@@ -1040,7 +1054,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/index.ts src/runner/build-runner.ts tests/build-runner.test.ts tests/boot-wiring.test.ts
+git add src/index.ts src/runner/build-runner.ts tests/build-runner.test.ts
 git commit -m "feat: construct and wire the MemoryStore at boot"
 ```
 
