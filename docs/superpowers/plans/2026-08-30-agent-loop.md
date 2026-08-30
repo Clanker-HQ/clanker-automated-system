@@ -1200,6 +1200,24 @@ git commit -m "feat: record a memory outcome for every completed dispatched task
 - Consumes: `MemoryStore.prune` (Task 1), `MemoryConfig` (Task 1).
 - Produces: `RetentionResult` gains `removedMemoryRecords: number`. `pruneOldData` gains an optional `memory?: { store: MemoryStore; olderThan: Date; reflectionsOlderThan: Date }` option. `startRetention`'s opts gain optional `memory?: MemoryStore` and `memoryConfig?: MemoryConfig`, built into the `{ store, olderThan, reflectionsOlderThan }` shape internally before calling `pruneOldData`.
 
+- [ ] **Step 0: Update one pre-existing test — required, not optional**
+
+`tests/retention.test.ts`'s "does nothing, without throwing, when runs/ and workspaces/ don't exist yet" test asserts exact equality on the WHOLE return object:
+
+```ts
+await expect(pruneOldData({ dataDir: dir, olderThan: CUTOFF })).resolves.toEqual({
+  removedRuns: [], removedWorkspaceFiles: [],
+});
+```
+
+`toEqual` is exact — the moment `RetentionResult` gains `removedMemoryRecords`, this test fails on the extra key regardless of its value, with no code bug involved. This is the ONE pre-existing test in this file allowed to change for this task; every other existing test in the file accesses a single property (`.removedRuns` or `.removedWorkspaceFiles`) and is unaffected. Update it to:
+
+```ts
+await expect(pruneOldData({ dataDir: dir, olderThan: CUTOFF })).resolves.toEqual({
+  removedRuns: [], removedWorkspaceFiles: [], removedMemoryRecords: 0,
+});
+```
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
