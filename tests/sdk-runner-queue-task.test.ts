@@ -494,3 +494,76 @@ describe("SdkRunner recentFailures tool", () => {
     expect(result.content[0]!.text).not.toContain("sensitive task description");
   });
 });
+
+describe("SdkRunner recallMemory tool", () => {
+  it("is registered when memory is wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const memory = new MemoryStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, memory, memoryConfig });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.recallMemory).toBeDefined();
+  });
+
+  it("is not registered when memory is not wired in, independent of listMyTasks", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.recallMemory).toBeUndefined();
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.listMyTasks).toBeDefined();
+  });
+
+  it("returns retrieved context when a matching record exists", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const memory = new MemoryStore(dir);
+    await memory.append({
+      domain: "research",
+      kind: "outcome",
+      subject: "research paid newsletter platforms for developers",
+      body: "found several viable platforms",
+      importance: 5,
+      createdBy: "agent:research",
+      verdict: "achieved",
+    });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, memory, memoryConfig });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.recallMemory!.handler;
+
+    const result = (await handler({
+      subject: "research paid newsletter platforms for developers",
+      domain: "research",
+    })) as { content: { type: string; text: string }[] };
+
+    expect(result.content[0]!.text).toContain("found several viable platforms");
+  });
+
+  it("returns the fallback message when nothing matches", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const memory = new MemoryStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, memory, memoryConfig });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.recallMemory!.handler;
+
+    const result = (await handler({
+      subject: "completely unrelated topic about gardening tools",
+      domain: "research",
+    })) as { content: { type: string; text: string }[] };
+
+    expect(result.content[0]!.text).toBe("Nothing recorded on this subject yet.");
+  });
+});
