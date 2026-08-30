@@ -270,21 +270,29 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         verdict: result.verifiedOutcome?.verdict ?? "unclear",
         sourceTaskId: task.id, sourceRunId: result.runId,
       });
-      if (deps.memory && deps.memoryConfig && deps.suggestSuccessors) {
-        // `task` is the task that JUST completed — it is the "parentTask" for
-        // whatever proposeSuccessors creates next, so what's needed here is
-        // task's OWN chain depth, not its parent's. That depth was recorded
-        // on task's own proposal record at creation time (Task 5's queueTask,
-        // or this same successor mechanism one level up), keyed by
-        // sourceTaskId === task.id — NOT task.parentId, which would fetch
-        // the depth of the task ONE LEVEL ABOVE this one and silently
-        // undercount by one at every generation past the first.
-        const parentDepth = (await deps.memory.list()).find((r) => r.sourceTaskId === task.id)?.chainDepth ?? 0;
-        await proposeSuccessors({
-          parentTask: task, summary: result.summary, parentDepth,
-          agentName: agent.name, tasks: deps.tasks, memory: deps.memory,
-          config: deps.memoryConfig, suggest: deps.suggestSuccessors, now: now(),
-        });
+      if (deps.memory && deps.memoryConfig?.enabled && deps.suggestSuccessors) {
+        try {
+          // `task` is the task that JUST completed — it is the "parentTask" for
+          // whatever proposeSuccessors creates next, so what's needed here is
+          // task's OWN chain depth, not its parent's. That depth was recorded
+          // on task's own proposal record at creation time (Task 5's queueTask,
+          // or this same successor mechanism one level up), keyed by
+          // sourceTaskId === task.id — NOT task.parentId, which would fetch
+          // the depth of the task ONE LEVEL ABOVE this one and silently
+          // undercount by one at every generation past the first.
+          const parentDepth =
+            (await deps.memory.list()).find((r) => r.kind === "proposal" && r.sourceTaskId === task.id)?.chainDepth ?? 0;
+          await proposeSuccessors({
+            parentTask: task, summary: result.summary, parentDepth,
+            agentName: agent.name, tasks: deps.tasks, memory: deps.memory,
+            config: deps.memoryConfig, suggest: deps.suggestSuccessors, now: now(),
+          });
+        } catch (error) {
+          // Same posture as rememberBestEffort/notifyBestEffort: this must
+          // never be able to turn an already-completed, already-recorded
+          // success into a failed task.
+          console.error("[dispatcher] successor pass skipped", error);
+        }
       }
     } else if (result.status === "parked" || result.status === "question") {
       // NOT a failure: the run is alive and paused mid-execution awaiting a

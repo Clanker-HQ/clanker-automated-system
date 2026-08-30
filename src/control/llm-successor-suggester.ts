@@ -27,8 +27,8 @@ function isValidSuggestion(value: unknown): value is SuccessorSuggestion {
  * A cheap model asked for "JSON only, no fences" still occasionally wraps its
  * answer in a ```json ... ``` block anyway — stripping one off before
  * JSON.parse is a cheap way to avoid throwing away an otherwise-good answer
- * over a formatting tic. Anything else unparseable still throws here, which
- * the caller turns into [].
+ * over a formatting tic. Anything still unparseable after this is handled by
+ * parseSuggestions's own catch, below.
  */
 function stripCodeFence(text: string): string {
   const match = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -40,9 +40,23 @@ function stripCodeFence(text: string): string {
  * a malformed entry is dropped rather than passed through for
  * proposeSuccessors to choke on, matching how the rest of the pass tolerates
  * bad input over crashing on it.
+ *
+ * Never throws — same never-fail posture as parseVerdict in
+ * llm-outcome-verifier.ts, and exported standalone for the same reason: unit
+ * testable with plain strings, no SDK mocking required. Unparseable JSON is
+ * logged (never silent — same posture MemoryStore.list() takes toward a
+ * corrupt line) and degrades to [], the "no successors this time" answer.
  */
-function parseSuggestions(answer: string): SuccessorSuggestion[] {
-  const parsed: unknown = JSON.parse(stripCodeFence(answer.trim()));
+export function parseSuggestions(answer: string): SuccessorSuggestion[] {
+  const trimmed = answer.trim();
+  if (!trimmed) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripCodeFence(trimmed));
+  } catch (error) {
+    console.error("[successor-suggester] could not parse suggestions as JSON", error);
+    return [];
+  }
   if (!Array.isArray(parsed)) return [];
   return parsed.filter(isValidSuggestion);
 }
@@ -123,7 +137,6 @@ export class LlmSuccessorSuggester {
         clearTimeout(timer);
       }
 
-      if (!answer) return [];
       return parseSuggestions(answer);
     } catch (error) {
       console.error("[successor-suggester] suggestion call failed; proposing nothing", error);
