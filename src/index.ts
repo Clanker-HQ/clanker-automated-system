@@ -272,6 +272,7 @@ function main(): void {
           store: runStore,
           tasks,
           outbox,
+          memory,
         });
       })
       .catch((error: unknown) => {

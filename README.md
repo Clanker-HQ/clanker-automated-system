@@ -183,9 +183,12 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
 **Daily digest and data retention.** Two scheduled jobs, both configured under
 `digest:`/`retention:` in `config.yaml`, neither needing a command:
 - `digest` posts once a day (08:00 by default): runs and spend in the last
-  24h, tasks done/failed, and anything still `waiting` on you regardless of
-  how old — so a day away doesn't mean piecing state back together from
-  `!status`/`!tasks`/memory of what you last checked.
+  24h, tasks done/failed, anything still `waiting` on you regardless of
+  how old, and — when there was any memory activity in the window — a count
+  of findings/proposals/outcomes/reflections recorded and duplicate
+  proposals the novelty gate suppressed. So a day away doesn't mean piecing
+  state back together from `!status`/`!tasks`/memory of what you last
+  checked.
 - `retention` runs weekly and deletes run transcripts/results and specialist
   workspace files (e.g. research findings) older than `retention.days`
   (30 by default). A run still in progress (no `result.json` yet) is never
@@ -217,6 +220,33 @@ audit`/`npm outdated` need `Bash`, which `readonly` categorically forbids —
 `sandboxed` still denies every recognized outward effect before any grant is
 consulted and holds no `grantRefs`, but (unlike the other three) it could in
 principle write within its own workspace; its prompt just never asks it to.
+
+**A memory log lets self-queued work avoid repeating itself, and lets an
+agent start a run already knowing what came before.** An append-only log
+(`data/memory/log.jsonl`, gated by `memory.enabled` in `config.yaml`) records
+four kinds of entries — `finding`, `proposal`, `outcome`, `reflection` — each
+tagged with a `domain` so an npm advisory is never compared to a revenue
+prospect. `queueTask` runs every candidate through a **novelty gate**
+(deterministic, lexical — token-set overlap plus trigram matching, no
+embeddings, no new dependency or billing) before accepting it: work close
+enough to something already recorded `achieved` is refused outright, and a
+close-but-not-identical retry gets the prior attempt's own recorded outcome
+folded into its text instead. Whatever gets through is given a **computed
+priority** — goal alignment, novelty (a penalty for similarity to completed
+work), importance, and recency combined into one score, then capped below
+any human `!task`'s priority (30 vs. 50) so a self-queued task can never
+queue ahead of one a human actually asked for. A task that finishes
+successfully can also propose its own **successors** — up to a few follow-up
+tasks drawn from the run's own summary, capped by chain depth and a
+per-parent rate limit so one completed task can't cascade into an unbounded
+chain of self-generated work. The log feeds forward as well as back: a
+dispatched task's prompt is prepended with whatever the log already knows
+about its subject (same domain, ranked by similarity and recency, reflections
+included), and a cron scout — which never goes through the dispatcher — gets
+the same lookup through a `recallMemory` tool, meant to be called before
+every `queueTask`. The daily digest reports on all of it: how many findings,
+proposals, outcomes, and reflections were recorded in the last 24h, and how
+many duplicate proposals the novelty gate suppressed.
 
 **A process crash is no longer invisible.** An uncaught exception or
 unhandled rejection anywhere is caught, written to `data/state/crash.log`,

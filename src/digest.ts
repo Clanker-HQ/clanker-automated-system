@@ -1,4 +1,5 @@
 import type { TaskStore } from "./control/task-store.js";
+import type { MemoryStore } from "./memory/memory-store.js";
 import type { RunStore } from "./run-store.js";
 
 /**
@@ -6,7 +7,7 @@ import type { RunStore } from "./run-store.js";
  * scheduling: no LLM call, no cron dependency, so it's cheap to unit test
  * against a plain RunStore/TaskStore fixture.
  */
-export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore; since: Date }): Promise<string> {
+export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore; since: Date; memory?: MemoryStore }): Promise<string> {
   // listSince, not listRecent(10_000): the digest only ever looks at the last
   // 24h, so there's no reason to read/parse every result.json retention has
   // kept around (up to 30 days by default, or more/forever if raised/disabled).
@@ -56,6 +57,16 @@ export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore;
   }
   if (failedTasks.length > shown.length) {
     lines.push(`…and ${failedTasks.length - shown.length} more failed task(s) — see \`!tasks\`/\`!result\`.`);
+  }
+  if (opts.memory) {
+    const recentMemory = (await opts.memory.list()).filter((r) => new Date(r.ts) >= opts.since);
+    const byKind = new Map<string, number>();
+    for (const r of recentMemory) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);
+    const suppressed = recentMemory.filter((r) => r.kind === "proposal" && r.body.startsWith("suppressed as a duplicate")).length;
+    if (recentMemory.length > 0) {
+      const kindSummary = [...byKind.entries()].map(([kind, count]) => `${count} ${kind}`).join(", ");
+      lines.push(`🧠 Memory: ${kindSummary}${suppressed > 0 ? ` (${suppressed} duplicate proposal(s) suppressed)` : ""}`);
+    }
   }
   return lines.join("\n");
 }

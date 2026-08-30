@@ -9,6 +9,7 @@ import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../control/task-store.js";
 import { decide, detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { MemoryStore } from "../memory/memory-store.js";
 import { assessNovelty } from "../memory/novelty-gate.js";
+import { retrieveContext } from "../memory/retrieval.js";
 import { priorityScore, toPriority } from "../memory/scoring.js";
 import type { AgentDef } from "../registry.js";
 import { resolveCredentials } from "./credentials.js";
@@ -713,6 +714,23 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: JSON.stringify(top, null, 2) }] };
               },
             ),
+            ...(memoryDep
+              ? [
+                  tool(
+                    "recallMemory",
+                    "Search what this system already knows about a subject — prior findings, outcomes, and reflections. Call this BEFORE proposing work, so you don't propose something that has already been done and will be refused.",
+                    { subject: z.string().min(1).max(200), domain: z.string().min(1) },
+                    async ({ subject, domain }) => {
+                      const text = retrieveContext(subject, domain, await memoryDep.list(), {
+                        limit: 8,
+                        halfLifeDays: memoryConfigDep?.recencyHalfLifeDays ?? 14,
+                        now: new Date(),
+                      });
+                      return { content: [{ type: "text" as const, text: text || "Nothing recorded on this subject yet." }] };
+                    },
+                  ),
+                ]
+              : []),
           ],
         })
       : undefined;

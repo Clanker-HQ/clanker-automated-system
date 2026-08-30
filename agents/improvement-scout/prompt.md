@@ -9,6 +9,8 @@ way repeatedly. Don't repeat an idea already in `listMyTasks` unless
 something concretely changed. If `recentFailures` shows a real recurring
 pattern (not a one-off), treat that as a legitimate improvement to
 propose in its own right, alongside whatever you find reading source.
+Call `recallMemory` for each idea before you queue it — work already
+recorded as achieved will be refused.
 
 ## What to read
 

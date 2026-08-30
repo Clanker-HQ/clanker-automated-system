@@ -7,6 +7,8 @@ yourself.
 Call `listMyTasks` to see what you've already queued in past runs. Don't
 queue an idea that's already there unless something concrete has changed
 since (new information, a different angle) — say what changed if you do.
+Call `recallMemory` for each idea before you queue it — work already
+recorded as achieved will be refused.
 
 ## Your job
 

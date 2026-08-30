@@ -27,6 +27,18 @@ Several agents propose work to each other and to themselves: cron-fired
 "scout" agents queue tasks for others via a durable task queue, with no
 human approval needed to queue.
 
+An append-only **memory log** (`data/memory/log.jsonl`, gated by
+`memory.enabled`) backs that self-queuing: a novelty gate refuses a proposal
+close enough to work already recorded as achieved, a computed priority
+(goal alignment, novelty, importance, recency) ranks what gets through below
+any human-issued task, and a completed task can propose its own bounded
+chain of successors. The log also feeds forward — a dispatched task's prompt
+is prepended with whatever it already knows about the same subject, and a
+cron scout can look the same thing up via a `recallMemory` tool — and a
+periodic reflection pass synthesises recent entries into higher-level
+conclusions. None of this changes what an agent is allowed to reach; it only
+changes what gets proposed and what a run starts already knowing.
+
 A run's `status: "success"` only ever means the SDK finished without
 erroring — it says nothing about whether the agent's actual objective was
 met. An `OutcomeVerifier` grades every successful run against its own

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { MemoryConfig } from "../config.js";
 import type { MemoryStore } from "../memory/memory-store.js";
+import { retrieveContext } from "../memory/retrieval.js";
 import { proposeSuccessors, type SuccessorSuggester } from "../memory/successor.js";
 import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
@@ -202,7 +203,15 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       ? `\n\n(A previous attempt at this task finished without error, but grading found it did not fully achieve ` +
         `the objective: "${task.lastVerificationReason}". Address that gap this time.)`
       : "";
-    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}`;
+    const memoryContext =
+      deps.memory && deps.memoryConfig?.enabled
+        ? retrieveContext(task.text.slice(0, 200), agent.name, await deps.memory.list(), {
+            limit: 5,
+            halfLifeDays: deps.memoryConfig.recencyHalfLifeDays,
+            now: now(),
+          })
+        : "";
+    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${memoryContext}`;
     const result = await deps.orchestrator.executeRun(agent, now(), promptContext);
 
     if (!result) {
