@@ -609,6 +609,48 @@ describe("runDispatchTick", () => {
       expect(await memory.list()).toEqual([]);
     });
 
+    it("reads the completed task's OWN chain depth (not its parent's) before attempting successors", async () => {
+      // Regression test for the bug fixed before this task's brief was
+      // dispatched: looking up depth via task.parentId instead of task.id
+      // fetches the PARENT's depth (one level too shallow), silently
+      // widening the intended depth cap every generation past the first. A
+      // proposal record at chainDepth: 2, keyed to THIS task's own id, is
+      // well under the default maxChainDepth of 3 (2 < 3), so the suggester
+      // must be called — if the depth were misread back as 0 (or any other
+      // wrong value that still happens to be < 3), this test would not
+      // distinguish that from a correct read of 2. What actually proves the
+      // depth was read correctly is the chainDepth written to the NEXT
+      // proposal record below: it must be 3 (parentDepth 2 + 1), a value
+      // only reachable if 2 was really the number that came back.
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      const task = await tasks.create({ text: "second-generation work", createdBy: "agent:research" });
+      await memory.append({
+        domain: "research", kind: "proposal", subject: "second-generation work",
+        body: "second-generation work", importance: 5, createdBy: "agent:research",
+        sourceTaskId: task.id, chainDepth: 2,
+      });
+      const suggest = vi.fn(async () => [
+        { text: "next step", domain: "research", subject: "next step", importance: 5, goalAlignment: 0.5 },
+      ]);
+      const executeRun = vi.fn().mockResolvedValue(successResult());
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, memory,
+        memoryConfig: {
+          enabled: true, retentionDays: 90, reflectionRetentionDays: 365,
+          similarityThreshold: 0.75, stalenessDays: 30, recencyHalfLifeDays: 14,
+          maxChainDepth: 3, maxAgentTasksPerDay: 20,
+          weights: { goal: 0.5, novelty: 0.25, importance: 0.15, recency: 0.1 },
+        },
+        suggestSuccessors: suggest,
+      });
+      expect(suggest).toHaveBeenCalledTimes(1);
+      const records = await memory.list();
+      const successorProposal = records.find((r) => r.kind === "proposal" && r.subject === "next step");
+      expect(successorProposal?.chainDepth).toBe(3);
+    });
+
     it("does not fail the task when the memory append throws", async () => {
       const { tasks, dataDir } = taskStore();
       const memory = new MemoryStore(dataDir);

@@ -1,5 +1,7 @@
 import { join } from "node:path";
+import type { MemoryConfig } from "../config.js";
 import type { MemoryStore } from "../memory/memory-store.js";
+import { proposeSuccessors, type SuccessorSuggester } from "../memory/successor.js";
 import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
@@ -27,6 +29,10 @@ export interface DispatcherDeps {
   now?: () => Date;
   /** Optional: without it the dispatcher behaves exactly as before, writing no memory records. */
   memory?: MemoryStore;
+  /** Optional, alongside memory/suggestSuccessors: without all three, no successor pass runs. */
+  memoryConfig?: MemoryConfig;
+  /** Optional, alongside memory/memoryConfig: without all three, no successor pass runs. */
+  suggestSuccessors?: SuccessorSuggester;
 }
 
 /**
@@ -264,6 +270,22 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         verdict: result.verifiedOutcome?.verdict ?? "unclear",
         sourceTaskId: task.id, sourceRunId: result.runId,
       });
+      if (deps.memory && deps.memoryConfig && deps.suggestSuccessors) {
+        // `task` is the task that JUST completed — it is the "parentTask" for
+        // whatever proposeSuccessors creates next, so what's needed here is
+        // task's OWN chain depth, not its parent's. That depth was recorded
+        // on task's own proposal record at creation time (Task 5's queueTask,
+        // or this same successor mechanism one level up), keyed by
+        // sourceTaskId === task.id — NOT task.parentId, which would fetch
+        // the depth of the task ONE LEVEL ABOVE this one and silently
+        // undercount by one at every generation past the first.
+        const parentDepth = (await deps.memory.list()).find((r) => r.sourceTaskId === task.id)?.chainDepth ?? 0;
+        await proposeSuccessors({
+          parentTask: task, summary: result.summary, parentDepth,
+          agentName: agent.name, tasks: deps.tasks, memory: deps.memory,
+          config: deps.memoryConfig, suggest: deps.suggestSuccessors, now: now(),
+        });
+      }
     } else if (result.status === "parked" || result.status === "question") {
       // NOT a failure: the run is alive and paused mid-execution awaiting a
       // human approve/deny/answer, which Orchestrator.resumeRun will continue
