@@ -20,6 +20,7 @@
 - **Fail loud, never silent.** A corrupt/unparseable record is logged via `console.error` and skipped, never silently dropped — match `TaskStore.get`'s posture (`src/control/task-store.ts:94-105`).
 - **Windows-safe filenames** — no colons in any generated id (see `newRunId` in `src/run-store.ts:33`).
 - Every task ends with `npm test` and `npm run typecheck` both green before committing.
+- **Line numbers cited anywhere in this plan (`src/index.ts`, `src/control/dispatcher.ts`, `src/runner/sdk-runner.ts`, etc.) are approximate locations in the file as it existed when this plan was written.** Earlier tasks in this same plan edit these files, so by the time a later task runs, cited line numbers have shifted. Locate every insertion point by reading the file fresh and matching the named surrounding code (a function name, a comment, an adjacent existing call) — never by trusting an absolute line number.
 
 **A note on the test code below.** Tasks 1-4, 9 and 10 create new files, so their tests are given as complete, runnable code — write them exactly as shown. Tasks 5, 7, 8 and 11 extend test files that already exist (`sdk-runner-queue-task.test.ts`, `dispatcher.test.ts`, `retention.test.ts`, `digest.test.ts`), each with its own established harness for building stub deps. For those, the plan gives the exact `it(...)` titles and the precise assertion each must make: **read the existing file first and write the assertions using that file's own harness.** Do not invent a parallel harness beside one that already exists.
 
@@ -1153,11 +1154,13 @@ git commit -m "feat: record a memory outcome for every completed dispatched task
 
 **Files:**
 - Modify: `src/retention.ts` (`pruneOldData`)
+- Modify: `src/triggers/retention.ts` (`startRetention` — the actual cron wrapper; `pruneOldData` alone is never called in production without going through this file)
+- Modify: `src/index.ts` (the `startRetention({...})` call site)
 - Test: `tests/retention.test.ts`
 
 **Interfaces:**
 - Consumes: `MemoryStore.prune` (Task 1), `MemoryConfig` (Task 1).
-- Produces: `RetentionResult` gains `removedMemoryRecords: number`. `pruneOldData` gains an optional `memory?: { store: MemoryStore; olderThan: Date; reflectionsOlderThan: Date }` option.
+- Produces: `RetentionResult` gains `removedMemoryRecords: number`. `pruneOldData` gains an optional `memory?: { store: MemoryStore; olderThan: Date; reflectionsOlderThan: Date }` option. `startRetention`'s opts gain optional `memory?: MemoryStore` and `memoryConfig?: MemoryConfig`, built into the `{ store, olderThan, reflectionsOlderThan }` shape internally before calling `pruneOldData`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1218,7 +1221,36 @@ export async function pruneOldData(opts: {
 }): Promise<RetentionResult>
 ```
 
-Then in `src/index.ts`, pass the memory option into the retention job's `pruneOldData` call using `config.memory.retentionDays` and `config.memory.reflectionRetentionDays`, and include the count in the retention Discord message only when it is non-zero (matching how retention already stays silent when it removed nothing).
+- [ ] **Step 3b: Thread it through the actual scheduled job**
+
+`pruneOldData` is only ever invoked from `startRetention` in `src/triggers/retention.ts` — Step 3 alone leaves the new option dead code in production. Read that file in full (it is short); add to its `opts` type:
+
+```ts
+  memory?: MemoryStore;
+  memoryConfig?: MemoryConfig;
+```
+
+Inside the scheduled callback, build the `memory` argument for `pruneOldData` only when both are present:
+
+```ts
+      const { removedRuns, removedWorkspaceFiles, removedMemoryRecords } = await pruneOldData({
+        dataDir: opts.dataDir,
+        olderThan,
+        ...(opts.memory && opts.memoryConfig
+          ? {
+              memory: {
+                store: opts.memory,
+                olderThan: new Date(now().getTime() - opts.memoryConfig.retentionDays * 24 * 60 * 60 * 1000),
+                reflectionsOlderThan: new Date(now().getTime() - opts.memoryConfig.reflectionRetentionDays * 24 * 60 * 60 * 1000),
+              },
+            }
+          : {}),
+      });
+```
+
+Add `removedMemoryRecords` to the existing `console.log` line and to the Discord message, following the exact same "only mention it if non-zero" pattern the file already uses for `removedRuns`/`removedWorkspaceFiles`/`orphanedRuns` — do not make the job noisier than it is today when memory is disabled or nothing was pruned. Add the two type imports (`MemoryStore` from `../memory/memory-store.js`, `MemoryConfig` from `../config.js`).
+
+Then in `src/index.ts`, find the `startRetention({...})` call (it sits beside the `startDigest` call already grepped for Task 6) and add `memory` and `memoryConfig: config.memory` to its arguments, the same way `tasks`/`config.memory` are passed elsewhere.
 
 - [ ] **Step 4: Run the full suite and typecheck**
 
@@ -1228,7 +1260,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/retention.ts src/index.ts tests/retention.test.ts
+git add src/retention.ts src/triggers/retention.ts src/index.ts tests/retention.test.ts
 git commit -m "feat: prune the memory log on the retention schedule"
 ```
 
@@ -1479,7 +1511,15 @@ In `executeAndFinalize`'s plain-success branch only (not the retries-exhausted b
 
 ```ts
       if (deps.memory && deps.memoryConfig && deps.suggestSuccessors) {
-        const parentDepth = (await deps.memory.list()).find((r) => r.sourceTaskId === task.parentId)?.chainDepth ?? 0;
+        // `task` is the task that JUST completed — it is the "parentTask" for
+        // whatever proposeSuccessors creates next, so what's needed here is
+        // task's OWN chain depth, not its parent's. That depth was recorded
+        // on task's own proposal record at creation time (Task 5's queueTask,
+        // or this same successor mechanism one level up), keyed by
+        // sourceTaskId === task.id — NOT task.parentId, which would fetch
+        // the depth of the task ONE LEVEL ABOVE this one and silently
+        // undercount by one at every generation past the first.
+        const parentDepth = (await deps.memory.list()).find((r) => r.sourceTaskId === task.id)?.chainDepth ?? 0;
         await proposeSuccessors({
           parentTask: task, summary: result.summary, parentDepth,
           agentName: agent.name, tasks: deps.tasks, memory: deps.memory,
@@ -1489,6 +1529,8 @@ In `executeAndFinalize`'s plain-success branch only (not the retries-exhausted b
 ```
 
 Add `memoryConfig?: MemoryConfig` and `suggestSuccessors?: SuccessorSuggester` to `DispatcherDeps`, and wire both in `src/index.ts`. Implement the production suggester next to `LlmRouter` in `src/control/`, using the same cheap-model call and the same 60-second abort `LlmRouter` uses; on any error or unparseable response it returns `[]`.
+
+**Verify this wiring with a test, not just by inspection**: add one more case to `tests/dispatcher.test.ts` in this task (not Task 7) — a task created with a memory proposal record at `chainDepth: 2` (simulating it being a second-generation successor) completes successfully; assert the `proposeSuccessors`/`suggest` stub it was given receives a call (i.e., successors are attempted, since 2 < the default `maxChainDepth` of 3), proving the depth read back matches what was written rather than silently defaulting to 0 every time.
 
 - [ ] **Step 5: Run the full suite and typecheck**
 
@@ -1650,7 +1692,10 @@ git commit -m "feat: weekly reflection pass synthesising outcomes into conclusio
 
 **Files:**
 - Create: `src/memory/retrieval.ts`
-- Modify: `src/control/dispatcher.ts` (prepend retrieved context to `promptContext`), `src/digest.ts`
+- Modify: `src/control/dispatcher.ts` (prepend retrieved context to `promptContext`)
+- Modify: `src/digest.ts` (`buildDigestText`), `src/triggers/digest.ts` (`startDigest` — the actual cron wrapper that calls `buildDigestText`; `src/digest.ts` alone is dead code in production without this)
+- Modify: `src/index.ts` (the `startDigest({...})` call site)
+- Modify: `agents/opportunity-scout/prompt.md`, `agents/improvement-scout/prompt.md`, `agents/cleanup-scout/prompt.md`, `agents/dependency-scout/prompt.md`
 - Test: `tests/memory-retrieval.test.ts`, `tests/digest.test.ts`
 
 **Interfaces:**
@@ -1788,7 +1833,32 @@ Then add one line to each of the four scout prompts (`agents/opportunity-scout/p
 
 - [ ] **Step 6: Add the digest section**
 
-In `src/digest.ts`, add memory counts for the 24h window: records written by kind, and how many proposals were suppressed as duplicates (count `kind: "proposal"` records whose body starts with `suppressed as a duplicate`). Omit the section when all counts are zero.
+`buildDigestText` (`src/digest.ts`) is pure text-building over stores it's handed directly — it does not read config or construct anything itself, matching its existing `{ store, tasks, since }` shape. Add an optional fourth field:
+
+```ts
+export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore; since: Date; memory?: MemoryStore }): Promise<string> {
+```
+
+Near the end, before the final `lines.join("\n")`, compute counts scoped to `opts.since` (reuse `new Date(r.ts) >= opts.since` as the window filter, matching how `finishedTasks` already filters by `since` a few lines up) and append a line only when at least one is non-zero:
+
+```ts
+  if (opts.memory) {
+    const recentMemory = (await opts.memory.list()).filter((r) => new Date(r.ts) >= opts.since);
+    const byKind = new Map<string, number>();
+    for (const r of recentMemory) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);
+    const suppressed = recentMemory.filter((r) => r.kind === "proposal" && r.body.startsWith("suppressed as a duplicate")).length;
+    if (recentMemory.length > 0) {
+      const kindSummary = [...byKind.entries()].map(([kind, count]) => `${count} ${kind}`).join(", ");
+      lines.push(`🧠 Memory: ${kindSummary}${suppressed > 0 ? ` (${suppressed} duplicate proposal(s) suppressed)` : ""}`);
+    }
+  }
+```
+
+This must not change the function's existing "nothing happened" early return (line ~37) — that check stays exactly as it reads today; a memory-only day with no runs/tasks does not currently trigger the digest firing at all, and this task does not change when the digest fires, only what it says once it does.
+
+- [ ] **Step 6b: Thread `memory` through to production**
+
+`buildDigestText` is only ever called from `startDigest` in `src/triggers/digest.ts` — add `memory?: MemoryStore` to its `opts` type and pass it straight through to the `buildDigestText({...})` call inside the scheduled callback. Then in `src/index.ts`, find the `startDigest({...})` call (grepped for Task 6) and add `memory` to its arguments, the same way `tasks` is already passed.
 
 - [ ] **Step 7: Run the full suite and typecheck**
 
@@ -1802,7 +1872,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/memory/retrieval.ts src/runner/sdk-runner.ts src/control/dispatcher.ts src/digest.ts agents/*/prompt.md README.md docs/system-context.md tests/memory-retrieval.test.ts tests/digest.test.ts
+git add src/memory/retrieval.ts src/runner/sdk-runner.ts src/control/dispatcher.ts src/digest.ts src/triggers/digest.ts src/index.ts agents/*/prompt.md README.md docs/system-context.md tests/memory-retrieval.test.ts tests/digest.test.ts
 git commit -m "feat: retrieve prior context into agent prompts and report memory in the digest"
 ```
 
