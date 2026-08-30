@@ -199,6 +199,7 @@ function main(): void {
     agents,
     orchestrator,
     dataDir: DATA_DIR,
+    memory,
     // No agent has been chosen yet at this point (a routing failure, or no
     // registered specialist at all), so there is no agent.outbox.discord to
     // report through — "ops" is this project's one configured channel,

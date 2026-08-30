@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Dispatcher, runDispatchTick } from "../src/control/dispatcher.js";
 import { FakeRouter } from "../src/control/router.js";
 import { TaskStore } from "../src/control/task-store.js";
+import { MemoryStore } from "../src/memory/memory-store.js";
 import type { AgentDef } from "../src/registry.js";
 import type { RunResult } from "../src/run-store.js";
 
@@ -539,6 +540,98 @@ describe("runDispatchTick", () => {
     const [task] = await tasks.list();
     expect(task?.status).toBe("failed");
     expect(task?.failureReason).toContain("some-other-agent");
+  });
+
+  describe("records outcomes to memory", () => {
+    it("records an outcome record when a task completes successfully", async () => {
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      const task = await tasks.create({ text: "find a profitable niche", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ verifiedOutcome: { verdict: "achieved", reason: "did it" } }),
+      );
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, memory,
+      });
+      const records = await memory.list();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.kind).toBe("outcome");
+      expect(records[0]?.verdict).toBe("achieved");
+      expect(records[0]?.sourceTaskId).toBe(task.id);
+    });
+
+    it("records a not-achieved verdict on a task that exhausts its retries", async () => {
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await tasks.update(task.id, { retryCount: 3 });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ verifiedOutcome: { verdict: "not-achieved", reason: "still wrong" } }),
+      );
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, memory,
+      });
+      const records = await memory.list();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.verdict).toBe("not-achieved");
+      expect(records[0]?.body).toBe("still wrong");
+      expect(records[0]?.sourceTaskId).toBe(task.id);
+    });
+
+    it("records a failed task's reason", async () => {
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await tasks.update(task.id, { retryCount: 3 }); // past all 3 retries, so this failure is terminal
+      const executeRun = vi.fn().mockResolvedValue(successResult({ status: "failed", error: "boom" }));
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, memory,
+      });
+      const records = await memory.list();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.verdict).toBe("not-achieved");
+      expect(records[0]?.body).toContain("boom");
+      expect(records[0]?.sourceTaskId).toBe(task.id);
+    });
+
+    it("writes no outcome record for a task that merely deferred", async () => {
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(undefined); // governor refusal
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, memory,
+      });
+      expect(await memory.list()).toEqual([]);
+    });
+
+    it("does not fail the task when the memory append throws", async () => {
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      const appendSpy = vi.spyOn(memory, "append").mockRejectedValue(new Error("disk full"));
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const outcome = await runDispatchTick({
+          tasks, router: new FakeRouter("research"), agents: [specialist()],
+          orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) }, notify: vi.fn(), dataDir, memory,
+        });
+        expect(outcome).toEqual({ ran: true, taskId: task.id });
+        const updated = await tasks.get(task.id);
+        expect(updated?.status).toBe("done");
+        expect(updated?.failureReason).toBeUndefined();
+        expect(updated?.result).toEqual({ summary: "Found three ideas.", path: join(dataDir, "runs", "research-1") });
+        // Swallowed for the task's sake, but never silently: it is logged.
+        expect(errors).toHaveBeenCalled();
+      } finally {
+        errors.mockRestore();
+        appendSpy.mockRestore();
+      }
+    });
   });
 });
 

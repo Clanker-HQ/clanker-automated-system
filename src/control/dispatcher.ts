@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import type { MemoryStore } from "../memory/memory-store.js";
+import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
 import type { Router, Specialist } from "./router.js";
@@ -23,6 +25,8 @@ export interface DispatcherDeps {
   notify: (text: string) => Promise<void>;
   dataDir: string;
   now?: () => Date;
+  /** Optional: without it the dispatcher behaves exactly as before, writing no memory records. */
+  memory?: MemoryStore;
 }
 
 /**
@@ -50,6 +54,20 @@ async function notifyBestEffort(deps: DispatcherDeps, text: string): Promise<voi
     await deps.notify(text);
   } catch (error) {
     console.error("[dispatcher] notify failed", error);
+  }
+}
+
+/**
+ * Recording to the memory log must never change what a task RECORDS about
+ * itself — identical reasoning to notifyBestEffort above. A broken or full
+ * disk under data/memory/ is not a reason to lose a task's real status.
+ */
+async function rememberBestEffort(deps: DispatcherDeps, input: MemoryInput): Promise<void> {
+  if (!deps.memory) return;
+  try {
+    await deps.memory.append(input);
+  } catch (error) {
+    console.error("[dispatcher] memory append failed", error);
   }
 }
 
@@ -227,6 +245,12 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         `⚠️ Task \`${task.id}\` done after ${MAX_RETRIES} retries, still graded not-achieved ` +
           `(${result.verifiedOutcome.reason}): ${result.summary}`,
       );
+      await rememberBestEffort(deps, {
+        domain: agent.name, kind: "outcome", subject: task.text.slice(0, 200),
+        body: result.verifiedOutcome.reason, importance: 5,
+        createdBy: `agent:${agent.name}`, verdict: "not-achieved",
+        sourceTaskId: task.id, sourceRunId: result.runId,
+      });
     } else if (result.status === "success") {
       await deps.tasks.update(task.id, {
         status: "done",
@@ -234,6 +258,12 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         result: { summary: result.summary, path: join(deps.dataDir, "runs", result.runId) },
       });
       await notifyBestEffort(deps, `✅ Task \`${task.id}\` done: ${result.summary}`);
+      await rememberBestEffort(deps, {
+        domain: agent.name, kind: "outcome", subject: task.text.slice(0, 200),
+        body: result.summary, importance: 5, createdBy: `agent:${agent.name}`,
+        verdict: result.verifiedOutcome?.verdict ?? "unclear",
+        sourceTaskId: task.id, sourceRunId: result.runId,
+      });
     } else if (result.status === "parked" || result.status === "question") {
       // NOT a failure: the run is alive and paused mid-execution awaiting a
       // human approve/deny/answer, which Orchestrator.resumeRun will continue
@@ -279,6 +309,11 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         failureReason: reason,
       });
       await notifyBestEffort(deps, `❌ Task \`${task.id}\` failed: ${reason}`);
+      await rememberBestEffort(deps, {
+        domain: agent.name, kind: "outcome", subject: task.text.slice(0, 200),
+        body: reason, importance: 5, createdBy: `agent:${agent.name}`,
+        verdict: "not-achieved", sourceTaskId: task.id, sourceRunId: result.runId,
+      });
     }
     return { ran: true, taskId: task.id };
   } catch (error) {
