@@ -5,6 +5,7 @@ import { ConfigOverridesStore, resolveGovernorSettings } from "./config-override
 import { DiscordBot } from "./control/bot.js";
 import { reconcileAndConnectBot } from "./control/boot-wiring.js";
 import { buildOutcomeVerifier } from "./control/build-outcome-verifier.js";
+import { buildReflectionSynthesiser } from "./control/build-reflection-synthesiser.js";
 import { buildRouter } from "./control/build-router.js";
 import { buildSuccessorSuggester } from "./control/build-successor-suggester.js";
 import { Dispatcher } from "./control/dispatcher.js";
@@ -294,6 +295,27 @@ function main(): void {
       })
       .catch((error: unknown) => {
         console.error("[boot] failed to start the data-retention schedule", error);
+      });
+  }
+
+  // Gated on memory.enabled, the same flag that gates successor proposals and
+  // retention's memory pruning above — a reflection pass has nothing to
+  // synthesise from, and nowhere useful to write its output, when memory
+  // itself is off.
+  if (config.memory.enabled) {
+    void import("./triggers/reflection.js")
+      .then(({ startReflection }) => {
+        startReflection({
+          schedule: config.memory.reflectionSchedule,
+          timezone: config.memory.reflectionTimezone,
+          windowDays: config.memory.reflectionWindowDays,
+          memory,
+          runStore,
+          synthesise: buildReflectionSynthesiser(),
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the reflection schedule", error);
       });
   }
 

@@ -154,8 +154,28 @@ export const MemorySchema = z
       })
       .strict()
       .prefault({}),
+    /** Weekly, Monday 03:00 by default — batch synthesis, not routine reporting. */
+    reflectionSchedule: z.string().default("0 3 * * 1"),
+    reflectionTimezone: IanaTimezone.default("UTC"),
+    /** How far back a reflection pass reads. */
+    reflectionWindowDays: z.number().int().positive().default(14),
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    // MemorySchema's field names (reflectionSchedule/reflectionTimezone)
+    // don't match validateCronSchedule's expected {schedule, timezone}
+    // shape, so the check is inlined here rather than reused directly — same
+    // validation, same boot-failure posture as DigestSchema/RetentionSchema.
+    if (!isValidCron(v.reflectionSchedule, v.reflectionTimezone)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reflectionSchedule"],
+        message:
+          `"${v.reflectionSchedule}" is not a valid cron expression for timezone "${v.reflectionTimezone}". Use five or ` +
+          `six fields (croner also accepts a leading seconds field), e.g. "0 3 * * 1" for Monday 03:00`,
+      });
+    }
+  });
 
 export const GovernorSchema = z
   .object({

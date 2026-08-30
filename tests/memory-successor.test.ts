@@ -14,6 +14,7 @@ const CONFIG = {
   similarityThreshold: 0.75, stalenessDays: 30, recencyHalfLifeDays: 14,
   maxChainDepth: 3, maxAgentTasksPerDay: 20,
   weights: { goal: 0.5, novelty: 0.25, importance: 0.15, recency: 0.1 },
+  reflectionSchedule: "0 3 * * 1", reflectionTimezone: "UTC", reflectionWindowDays: 14,
 } as const;
 
 function harness() {

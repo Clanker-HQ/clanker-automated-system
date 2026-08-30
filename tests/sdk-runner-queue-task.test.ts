@@ -18,6 +18,9 @@ const memoryConfig = {
   maxChainDepth: 3,
   maxAgentTasksPerDay: 20,
   weights: { goal: 0.5, novelty: 0.25, importance: 0.15, recency: 0.1 },
+  reflectionSchedule: "0 3 * * 1",
+  reflectionTimezone: "UTC",
+  reflectionWindowDays: 14,
 };
 
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
