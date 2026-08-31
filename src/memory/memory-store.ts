@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "../atomic-write.js";
+import { KeyedMutex } from "../keyed-mutex.js";
 import type { MemoryInput, MemoryKind, MemoryRecord } from "./types.js";
 
 /**
@@ -16,6 +17,19 @@ import type { MemoryInput, MemoryKind, MemoryRecord } from "./types.js";
  * edits one, and only runs from the retention job.
  */
 export class MemoryStore {
+  /**
+   * `prune` is read-whole-log -> filter -> write-whole-log, the same shape
+   * TaskStore/ConfigOverridesStore already serialize for the same reason: an
+   * `append` landing between prune's read and its write would be silently
+   * erased by that write. Dispatcher.wake() runs tasks concurrently, each
+   * appending an outcome as it finishes, while the weekly retention job calls
+   * prune — a narrow window, but a real one. Both methods take the one key,
+   * so they can never overlap each other or themselves.
+   */
+  private readonly mutex = new KeyedMutex();
+  /** One log file, so one key — the store has no per-record locking to do. */
+  private static readonly LOG_KEY = "__log__";
+
   constructor(private readonly dataDir: string) {}
 
   private dir(): string {
@@ -27,15 +41,17 @@ export class MemoryStore {
   }
 
   async append(input: MemoryInput): Promise<MemoryRecord> {
-    await mkdir(this.dir(), { recursive: true });
-    const record: MemoryRecord = {
-      ...input,
-      id: `mem_${randomUUID().slice(0, 12)}`,
-      ts: input.ts ?? new Date().toISOString(),
-      chainDepth: input.chainDepth ?? 0,
-    };
-    await appendFile(this.path(), JSON.stringify(record) + "\n");
-    return record;
+    return this.mutex.run(MemoryStore.LOG_KEY, async () => {
+      await mkdir(this.dir(), { recursive: true });
+      const record: MemoryRecord = {
+        ...input,
+        id: `mem_${randomUUID().slice(0, 12)}`,
+        ts: input.ts ?? new Date().toISOString(),
+        chainDepth: input.chainDepth ?? 0,
+      };
+      await appendFile(this.path(), JSON.stringify(record) + "\n");
+      return record;
+    });
   }
 
   async list(): Promise<MemoryRecord[]> {
@@ -56,10 +72,14 @@ export class MemoryStore {
 
   /** Returns how many records were removed. Rewrites the whole file — retention only. */
   async prune(opts: { olderThan: Date; keepKinds: MemoryKind[] }): Promise<number> {
-    const all = await this.list();
-    const kept = all.filter((r) => opts.keepKinds.includes(r.kind) || new Date(r.ts) >= opts.olderThan);
-    if (kept.length === all.length) return 0;
-    await writeFileAtomic(this.path(), kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
-    return all.length - kept.length;
+    return this.mutex.run(MemoryStore.LOG_KEY, async () => {
+      // `list()` takes no lock (it is a plain read, and we already hold the
+      // only one there is) — taking it again here would deadlock.
+      const all = await this.list();
+      const kept = all.filter((r) => opts.keepKinds.includes(r.kind) || new Date(r.ts) >= opts.olderThan);
+      if (kept.length === all.length) return 0;
+      await writeFileAtomic(this.path(), kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
+      return all.length - kept.length;
+    });
   }
 }

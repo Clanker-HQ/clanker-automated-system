@@ -1,3 +1,4 @@
+import type { MemoryConfig } from "./config.js";
 import type { TaskStore } from "./control/task-store.js";
 import type { MemoryStore } from "./memory/memory-store.js";
 import type { RunStore } from "./run-store.js";
@@ -7,7 +8,19 @@ import type { RunStore } from "./run-store.js";
  * scheduling: no LLM call, no cron dependency, so it's cheap to unit test
  * against a plain RunStore/TaskStore fixture.
  */
-export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore; since: Date; memory?: MemoryStore }): Promise<string> {
+export async function buildDigestText(opts: {
+  store: RunStore;
+  tasks: TaskStore;
+  since: Date;
+  memory?: MemoryStore;
+  /**
+   * Only ever consulted to SUPPRESS the memory section when memory is
+   * explicitly switched off. An absent config means "no opinion" (test
+   * fixtures that pass a store and nothing else), not "disabled" — production
+   * always passes both.
+   */
+  memoryConfig?: MemoryConfig;
+}): Promise<string> {
   // listSince, not listRecent(10_000): the digest only ever looks at the last
   // 24h, so there's no reason to read/parse every result.json retention has
   // kept around (up to 30 days by default, or more/forever if raised/disabled).
@@ -58,7 +71,7 @@ export async function buildDigestText(opts: { store: RunStore; tasks: TaskStore;
   if (failedTasks.length > shown.length) {
     lines.push(`…and ${failedTasks.length - shown.length} more failed task(s) — see \`!tasks\`/\`!result\`.`);
   }
-  if (opts.memory) {
+  if (opts.memory && opts.memoryConfig?.enabled !== false) {
     const recentMemory = (await opts.memory.list()).filter((r) => new Date(r.ts) >= opts.since);
     const byKind = new Map<string, number>();
     for (const r of recentMemory) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);

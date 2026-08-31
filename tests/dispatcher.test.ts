@@ -2,12 +2,24 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { MemoryConfig } from "../src/config.js";
 import { Dispatcher, runDispatchTick } from "../src/control/dispatcher.js";
 import { FakeRouter } from "../src/control/router.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import type { AgentDef } from "../src/registry.js";
 import type { RunResult } from "../src/run-store.js";
+
+function memoryConfig(overrides: Partial<MemoryConfig> = {}): MemoryConfig {
+  return {
+    enabled: true, retentionDays: 90, reflectionRetentionDays: 365,
+    similarityThreshold: 0.75, stalenessDays: 30, recencyHalfLifeDays: 14,
+    maxChainDepth: 3, maxAgentTasksPerDay: 20,
+    weights: { goal: 0.5, novelty: 0.25, importance: 0.15, recency: 0.1 },
+    reflectionSchedule: "0 3 * * 1", reflectionTimezone: "UTC", reflectionWindowDays: 14,
+    ...overrides,
+  };
+}
 
 function taskStore(): { tasks: TaskStore; dataDir: string } {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-dispatcher-"));
@@ -559,6 +571,57 @@ describe("runDispatchTick", () => {
       expect(records[0]?.kind).toBe("outcome");
       expect(records[0]?.verdict).toBe("achieved");
       expect(records[0]?.sourceTaskId).toBe(task.id);
+    });
+
+    it("records the outcome under the domain its own proposal was queued with, not the specialist's name", async () => {
+      // The whole point of `domain`: the novelty gate and retrieval both match
+      // it as an exact string, so an outcome filed under the executing
+      // specialist's name ("research") could never be found by a later
+      // proposal in the topic it actually came from ("dependencies") — the
+      // duplicate would sail through the gate and the context would never be
+      // retrieved.
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      const task = await tasks.create({ text: "bump the vulnerable lodash", createdBy: "agent:dependency-scout" });
+      await memory.append({
+        domain: "dependencies", kind: "proposal", subject: "bump the vulnerable lodash",
+        body: "bump the vulnerable lodash", importance: 5, createdBy: "agent:dependency-scout",
+        sourceTaskId: task.id,
+      });
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) },
+        notify: vi.fn(), dataDir, memory, memoryConfig: memoryConfig(),
+      });
+      const outcome = (await memory.list()).find((r) => r.kind === "outcome");
+      expect(outcome?.domain).toBe("dependencies");
+    });
+
+    it("falls back to the specialist's name for a human task, which has no proposal record", async () => {
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      await tasks.create({ text: "find a profitable niche", createdBy: "discord:owner" });
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) },
+        notify: vi.fn(), dataDir, memory, memoryConfig: memoryConfig(),
+      });
+      const outcome = (await memory.list()).find((r) => r.kind === "outcome");
+      expect(outcome?.domain).toBe("research");
+    });
+
+    it("writes nothing at all when memory is explicitly disabled in config", async () => {
+      // Retention only prunes memory while `enabled` is true, so an appending
+      // dispatcher with the flag off would grow an unread log forever.
+      const { tasks, dataDir } = taskStore();
+      const memory = new MemoryStore(dataDir);
+      await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun: vi.fn().mockResolvedValue(successResult()) },
+        notify: vi.fn(), dataDir, memory, memoryConfig: memoryConfig({ enabled: false }),
+      });
+      expect(await memory.list()).toEqual([]);
     });
 
     it("records a not-achieved verdict on a task that exhausts its retries", async () => {

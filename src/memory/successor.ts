@@ -1,5 +1,5 @@
 import type { MemoryConfig } from "../config.js";
-import type { Task, TaskStore } from "../control/task-store.js";
+import { MAX_TASK_TEXT_LENGTH, type Task, type TaskStore } from "../control/task-store.js";
 import type { MemoryStore } from "./memory-store.js";
 import { assessNovelty } from "./novelty-gate.js";
 import { priorityScore, toPriority } from "./scoring.js";
@@ -82,7 +82,10 @@ export async function proposeSuccessors(input: SuccessorInput): Promise<string[]
       );
 
       const task = await input.tasks.create({
-        text: suggestion.text,
+        // The same bound every other free-form task creator respects: a
+        // suggestion comes straight from a model with nothing capping its
+        // length, and it would otherwise go into a run's prompt unbounded.
+        text: suggestion.text.slice(0, MAX_TASK_TEXT_LENGTH),
         priority,
         createdBy: `agent:${input.agentName}`,
         parentId: input.parentTask.id,

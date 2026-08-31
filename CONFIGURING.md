@@ -70,13 +70,46 @@ retention:
 
 Edit this file only for the *baseline* you want across restarts. For a
 one-off or temporary change, use the Discord commands instead — no restart
-needed, and it's reversible from your phone. `digest`/`retention` have no
-Discord equivalent — they only ever run on their own schedule, so a
+needed, and it's reversible from your phone. `digest`/`retention`/`memory`
+have no Discord equivalent — they only ever run on their own schedule, so a
 `config.yaml` edit + restart is the only way to change them.
 
-`digest.schedule` and `retention.schedule` are validated at boot the same way
-an agent's own `trigger.schedule` is — a malformed cron expression fails boot
-with a named error instead of silently never getting scheduled.
+`digest.schedule`, `retention.schedule` and `memory.reflectionSchedule` are
+validated at boot the same way an agent's own `trigger.schedule` is — a
+malformed cron expression fails boot with a named error instead of silently
+never getting scheduled.
+
+### `memory:` — the log that stops self-queued work repeating itself
+
+Every field below has a default, so the block can be omitted entirely (the
+shipped `config.yaml` does). Set `enabled: false` and the whole subsystem
+stands down: nothing is recorded, no context is retrieved into a prompt, no
+successors are proposed, no reflection pass is scheduled, and the digest drops
+its memory line.
+
+```yaml
+memory:
+  enabled: true                 # the master switch for everything below
+  retentionDays: 90             # raw records older than this are pruned by the retention job
+  reflectionRetentionDays: 365  # reflections are already compressed, so they outlive raw records
+  similarityThreshold: 0.75     # above this similarity, a candidate counts as covering the same ground
+  stalenessDays: 30             # a prior record older than this no longer suppresses a repeat — the world moved on
+  recencyHalfLifeDays: 14       # how fast an old record loses weight when ranking what to recall
+  maxChainDepth: 3              # successor chain depth cap — bounds runaway self-propagation
+  maxAgentTasksPerDay: 20       # ceiling on agent-originated tasks per rolling day, across all of them
+  weights:                      # how a proposal's computed priority is weighed (need not sum to 1; they're normalised)
+    goal: 0.5                   # stated contribution to the primary goal — deliberately the largest
+    novelty: 0.25               # a PENALTY for similarity to already-completed work
+    importance: 0.15            # the proposer's own 1-10 self-assessment
+    recency: 0.1                # freshness of the proposal itself
+  reflectionSchedule: "0 3 * * 1"  # weekly (Monday 03:00) — batch synthesis, not routine reporting
+  reflectionTimezone: UTC
+  reflectionWindowDays: 14      # how far back a reflection pass reads, for both runs and outcomes
+```
+
+`memory.retentionDays`/`reflectionRetentionDays` are enforced by the same
+weekly sweep `retention:` schedules — they say how long memory records live,
+while `retention.days` says how long run data and workspaces live.
 
 ## Things that are NOT configurable via Discord (edit + redeploy required)
 
@@ -84,3 +117,4 @@ with a named error instead of silently never getting scheduled.
 - Discord channel/webhook wiring (`config.yaml`'s `discord:` block, plus the env vars it names)
 - The owner id allowed to use any of this (env var, checked once at boot)
 - The daily digest and weekly data-retention sweep (`digest:`/`retention:` in `config.yaml`)
+- The memory log — its master switch, scoring weights, chain/rate caps, and the weekly reflection pass (`memory:` in `config.yaml`)

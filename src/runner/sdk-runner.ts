@@ -631,10 +631,19 @@ export class SdkRunner implements Runner {
                           // that keeps proposing duplicates should run out of
                           // attempts rather than retry forever.
                           queueTaskCalls += 1;
-                          await memory.append({
-                            domain, kind: "proposal", subject: candidate.subject, body: `suppressed as a duplicate of ${verdict.priorId}`,
-                            importance, createdBy: `agent:${agent.name}`,
-                          });
+                          // Best-effort, exactly like the dispatcher's
+                          // rememberBestEffort: a memory write that throws must
+                          // never turn a decided tool call into a generic SDK
+                          // error, which a well-behaved agent would read as
+                          // "that didn't go through" and retry.
+                          try {
+                            await memory.append({
+                              domain, kind: "proposal", subject: candidate.subject, body: `suppressed as a duplicate of ${verdict.priorId}`,
+                              importance, createdBy: `agent:${agent.name}`,
+                            });
+                          } catch (error) {
+                            console.error(`[queueTask] failed to record suppressed duplicate for agent ${agent.name}`, error);
+                          }
                           return {
                             content: [{ type: "text" as const, text: `Refused: this already covers work recorded as achieved (${verdict.priorId}, similarity ${verdict.maxSimilarity.toFixed(2)}). Propose something else.` }],
                           };
@@ -655,16 +664,29 @@ export class SdkRunner implements Runner {
 
                       queueTaskCalls += 1;
                       const created = await tasksDep.create({
-                        text: `${text}${annotation}`,
+                        // `text` alone was already bounded by the schema's
+                        // .max(MAX_TASK_TEXT_LENGTH) above, but `annotation`
+                        // (built from a prior record's full body) is appended
+                        // afterwards, so only the combined string is what
+                        // actually has to respect the cap.
+                        text: `${text}${annotation}`.slice(0, MAX_TASK_TEXT_LENGTH),
                         priority: computedPriority,
                         createdBy: `agent:${agent.name}`,
                         wantsDetail: true,
                       });
                       if (memory && cfg?.enabled) {
-                        await memory.append({
-                          domain, kind: "proposal", subject: subject ?? text.slice(0, 200), ...(key ? { key } : {}),
-                          body: text, importance, createdBy: `agent:${agent.name}`, sourceTaskId: created.id,
-                        });
+                        // Best-effort for the same reason as the suppressed
+                        // branch above — the task is already created, and
+                        // losing its proposal record is far better than
+                        // reporting a failure that invites a duplicate.
+                        try {
+                          await memory.append({
+                            domain, kind: "proposal", subject: subject ?? text.slice(0, 200), ...(key ? { key } : {}),
+                            body: text, importance, createdBy: `agent:${agent.name}`, sourceTaskId: created.id,
+                          });
+                        } catch (error) {
+                          console.error(`[queueTask] failed to record proposal ${created.id} for agent ${agent.name}`, error);
+                        }
                       }
                       void wakeDep().catch((err: unknown) => {
                         console.error(`[queueTask] dispatcher wake failed after queuing ${created.id} (agent ${agent.name})`, err);

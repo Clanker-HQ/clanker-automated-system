@@ -18,7 +18,9 @@ export function startReflection(opts: {
       const nowDate = now();
       const since = new Date(nowDate.getTime() - opts.windowDays * 24 * 60 * 60 * 1000);
       const runs: RunResult[] = await opts.runStore.listSince(since, nowDate);
-      const written = await runReflection({ memory: opts.memory, runs, synthesise: opts.synthesise, now: nowDate });
+      const written = await runReflection({
+        memory: opts.memory, runs, windowDays: opts.windowDays, synthesise: opts.synthesise, now: nowDate,
+      });
       console.log(
         `[reflection] wrote ${written.length} reflection record(s) from ${runs.length} run(s) over the trailing ${opts.windowDays}d`,
       );

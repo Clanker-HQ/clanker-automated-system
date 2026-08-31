@@ -273,6 +273,7 @@ function main(): void {
           tasks,
           outbox,
           memory,
+          memoryConfig: config.memory,
         });
       })
       .catch((error: unknown) => {

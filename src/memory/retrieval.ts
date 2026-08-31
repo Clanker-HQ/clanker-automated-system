@@ -18,7 +18,11 @@ export function retrieveContext(
   opts: { limit: number; halfLifeDays: number; now: Date },
 ): string {
   const scored = records
-    .filter((r) => r.domain === domain)
+    // A reflection is a cross-cutting conclusion synthesised over every
+    // domain at once — the domain it happens to be filed under says where it
+    // was drawn from, not who it applies to — so it is exempt from the domain
+    // filter that (correctly) partitions raw findings/outcomes/proposals.
+    .filter((r) => r.domain === domain || r.kind === "reflection")
     .map((r) => ({ record: r, sim: similarity({ subject }, r) }))
     .filter((s) => s.sim >= RELEVANCE_FLOOR)
     .map((s) => ({

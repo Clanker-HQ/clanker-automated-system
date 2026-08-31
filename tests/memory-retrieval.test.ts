@@ -52,4 +52,14 @@ describe("retrieveContext", () => {
     const text = retrieveContext(SUBJECT, "research", [reflection], { limit: 5, halfLifeDays: 14, now: NOW });
     expect(text).toContain("a synthesised conclusion");
   });
+
+  it("includes a reflection even from another domain", () => {
+    // A reflection is synthesised across every domain at once — the one it is
+    // filed under says where it was drawn from, not who it applies to — so
+    // the domain partition that (correctly) walls off raw records must not
+    // wall off a conclusion.
+    const reflection = record({ domain: "deps", kind: "reflection", body: "a cross-cutting conclusion" });
+    const text = retrieveContext(SUBJECT, "research", [reflection], { limit: 5, halfLifeDays: 14, now: NOW });
+    expect(text).toContain("a cross-cutting conclusion");
+  });
 });

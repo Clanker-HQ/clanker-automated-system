@@ -143,6 +143,27 @@ describe("buildDigestText", () => {
     expect(text).toContain("1 duplicate proposal(s) suppressed");
   });
 
+  it("omits the memory section when memory is explicitly disabled in config", async () => {
+    const { store, tasks, memory } = stores();
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+    vi.useFakeTimers();
+    vi.setSystemTime(WITHIN_WINDOW);
+    try {
+      await memory.append({ domain: "research", kind: "finding", subject: "x", body: "found something", importance: 5, createdBy: "agent:research" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const memoryConfig = {
+      enabled: false, retentionDays: 90, reflectionRetentionDays: 365,
+      similarityThreshold: 0.75, stalenessDays: 30, recencyHalfLifeDays: 14,
+      maxChainDepth: 3, maxAgentTasksPerDay: 20,
+      weights: { goal: 0.5, novelty: 0.25, importance: 0.15, recency: 0.1 },
+      reflectionSchedule: "0 3 * * 1", reflectionTimezone: "UTC", reflectionWindowDays: 14,
+    };
+    const text = await buildDigestText({ store, tasks, since: SINCE, memory, memoryConfig });
+    expect(text).not.toContain("🧠 Memory");
+  });
+
   it("omits the memory section when there is no memory activity in the window", async () => {
     const { store, tasks, memory } = stores();
     // A run in the window (so the digest actually fires) but zero memory
