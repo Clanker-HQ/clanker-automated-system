@@ -405,15 +405,14 @@ prompt, and give the agent `Glob` so it can locate itself.
 ## Not built yet
 
 The governor, capability tiers and grants, park/resume, and the Discord control
-bot (approvals, questions, admin commands) are all built and live.
+bot (approvals, questions, admin commands) are all built and live. A PR
+touching only `grants.yaml` or `agents/*/{agent.yaml,prompt.md}` can merge
+through the normal `pr-reviewer` → `mergePR` pipeline under four mechanical
+rules (`src/control/self-build-gate.ts`) instead of being refused outright —
+see `docs/superpowers/specs/2026-08-30-self-build-design.md`. Everything
+outside that exact shape is refused exactly as before.
 Still genuinely deferred:
 
-- **Git-based deploy and the "proposal approval" Discord flow** — an agent
-  writing a new `agent.yaml`, the supervisor pulling and validating it, and
-  asking to merge it. The `builder` agent (`agents/builder/`) can now write
-  and open a PR for an ordinary code change, but nothing yet produces a
-  proposal branch that changes this system's own agent configuration, so
-  there's still nothing for the deploy/approval machinery to act on.
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
 - **A dashboard.** Wanted eventually, but out of scope so far — the Discord
   `!command` interface (`!status`, `!tasks`, `!runs`, etc.) covers everything

@@ -1,13 +1,11 @@
 # Self-build flow — design
 
-Status: partially shipped. `improvement-scout`'s redundancy-awareness fix
-(see "`improvement-scout` prompt change" below) landed 2026-08-30, ahead of
-and independent from the rest of this spec. The merge gate itself — the part
-that actually lets a config-only PR merge — is not yet implemented; that's
-the remaining work. See `docs/decisions.md` for why `grants.yaml`/`agents/**`
-were excluded from the normal PR pipeline in the first place; this spec is
-the "own deploy/approval path" `docs/system-context.md` flagged as the
-missing piece.
+Status: shipped. `improvement-scout`'s redundancy-awareness fix landed
+2026-08-30; the merge gate itself (`src/control/self-build-gate.ts`, wired
+into `mergePR`'s gate 1 in `src/runner/sdk-runner.ts`) landed
+2026-08-31. See `docs/decisions.md` for why `grants.yaml`/`agents/**` were
+excluded from the normal PR pipeline in the first place — that reasoning is
+unchanged for everything outside the exact shape this gate admits.
 
 ## Problem
 

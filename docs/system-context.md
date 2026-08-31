@@ -88,8 +88,3 @@ exists right now.
   one agent would run a real headless browser process during its own
   turn, which needs meaningfully more RAM/CPU than anything this system
   runs today.
-- **A self-build flow.** An agent proposing a change to this system's own
-  configuration (a new `agent.yaml`, a `grants.yaml` edit), with the
-  supervisor validating it and asking to merge it. Would need its own
-  deploy/approval path — `builder`'s current PR flow is deliberately
-  barred from touching those files.
