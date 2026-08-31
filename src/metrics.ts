@@ -1,8 +1,9 @@
-import type { Sale } from "./control/revenue-transport.js";
-import type { Task } from "./control/task-store.js";
+import type { RevenueTransport, Sale } from "./control/revenue-transport.js";
+import type { Task, TaskStore } from "./control/task-store.js";
+import type { MemoryStore } from "./memory/memory-store.js";
 import type { MemoryRecord } from "./memory/types.js";
-import type { RunResult } from "./run-store.js";
-import type { Metrics, NotAchievedByAgent } from "./state/metrics-store.js";
+import type { RunStore, RunResult } from "./run-store.js";
+import type { Metrics, MetricsStore, NotAchievedByAgent } from "./state/metrics-store.js";
 
 export interface ComputeMetricsInput {
   computedAt: Date;
@@ -74,4 +75,52 @@ export function computeMetrics(input: ComputeMetricsInput): Metrics {
     suppressedProposalCount,
     queueStarvationHours,
   };
+}
+
+export interface MetricsJobDeps {
+  runStore: RunStore;
+  taskStore: TaskStore;
+  memory: MemoryStore;
+  revenue: RevenueTransport;
+  metricsStore: MetricsStore;
+  windowDays: number;
+  now?: Date;
+}
+
+/**
+ * The one place that gathers real data from every store and the revenue
+ * transport, computes a snapshot, and persists it. Kept thin and
+ * deliberately not unit-tested for every metric formula — computeMetrics
+ * above already owns that; this function's own tests only prove the wiring
+ * (right store, right window) is correct.
+ */
+export async function runMetricsJob(deps: MetricsJobDeps): Promise<Metrics> {
+  const now = deps.now ?? new Date();
+  const since = new Date(now.getTime() - deps.windowDays * 24 * 60 * 60 * 1000);
+
+  const [runsInWindow, allTasks, allMemory, salesInWindow] = await Promise.all([
+    deps.runStore.listSince(since, now),
+    deps.taskStore.list(),
+    deps.memory.list(),
+    deps.revenue.listSales(since.toISOString()),
+  ]);
+
+  const memoryRecordsInWindow = allMemory.filter((r) => new Date(r.ts) >= since && new Date(r.ts) <= now);
+  const doneTasksInWindow = allTasks.filter(
+    (t) => t.status === "done" && t.finishedAt !== undefined && new Date(t.finishedAt) >= since && new Date(t.finishedAt) <= now,
+  );
+  const pendingTasksNow = allTasks.filter((t) => t.status === "pending");
+
+  const metrics = computeMetrics({
+    computedAt: now,
+    windowDays: deps.windowDays,
+    runsInWindow,
+    memoryRecordsInWindow,
+    salesInWindow,
+    doneTasksInWindow,
+    pendingTasksNow,
+  });
+
+  await deps.metricsStore.write(metrics);
+  return metrics;
 }
