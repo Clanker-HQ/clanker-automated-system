@@ -1,5 +1,6 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { writeFileAtomic } from "../atomic-write.js";
 
 export interface NotAchievedByAgent {
   agent: string;
@@ -46,7 +47,7 @@ export class MetricsStore {
   async write(metrics: Metrics): Promise<void> {
     await mkdir(this.dir(), { recursive: true });
     const dateStamp = metrics.computedAt.slice(0, 10);
-    await writeFile(this.path(dateStamp), JSON.stringify(metrics, null, 2) + "\n");
+    await writeFileAtomic(this.path(dateStamp), JSON.stringify(metrics, null, 2) + "\n");
   }
 
   /** Every persisted snapshot, oldest first. */
