@@ -411,6 +411,18 @@ through the normal `pr-reviewer` → `mergePR` pipeline under four mechanical
 rules (`src/control/self-build-gate.ts`) instead of being refused outright —
 see `docs/superpowers/specs/2026-08-30-self-build-design.md`. Everything
 outside that exact shape is refused exactly as before.
+
+Subsystem 2's foundation pieces are in place: `src/goals.ts` (a `goals.yaml`
+schema and loader — the file itself is never authored by the system, only
+by the operator, and is excluded from the merge pipeline the same as
+`grants.yaml`), `src/spend/spend-accounting.ts` + `src/state/spend-store.ts`
+(spend-pot bookkeeping for a `provision`-kind grant), and
+`src/control/revenue-transport.ts` (the interface a weekly metrics job will
+read sales from). None of these run yet: `goals.yaml` doesn't exist until
+the operator commits it, no spend-card grant exists in `grants.yaml` yet,
+and the real revenue transport (a specific merchant-of-record's API) is
+still unwritten. See `docs/superpowers/specs/2026-08-30-self-evaluation-design.md`.
+
 Still genuinely deferred:
 
 - **Browser capability** (`capabilities.browser`) — Plan C territory.

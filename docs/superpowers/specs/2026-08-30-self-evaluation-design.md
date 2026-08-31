@@ -4,6 +4,15 @@ Subsystem 2 of 2. Depends on the memory log from
 `2026-08-30-agent-loop-design.md` and on the merge gate from
 `2026-08-30-self-build-design.md` (whose rule 3 this spec amends).
 
+Status: partially shipped. The goal-file schema/loader, its `EXCLUDED_PATHS`
+entry, spend accounting, and the `RevenueTransport` interface (with its
+fake) landed in `docs/superpowers/plans/2026-08-31-goal-file-and-spend-accounting.md`.
+Still needed: the operator's one-time `goals.yaml` commit; the real
+merchant-of-record revenue transport; the weekly metrics job and its digest
+integration; instrumental subordination and the means-constraint classifier
+in the proposal/queue path; quota-aware shedding in the Governor;
+`architecture-scout`, which the spec's own build order places last.
+
 Supersedes an earlier draft of this file that proposed a human-curated
 scorecard of eight process metrics. That draft was wrong in a specific way:
 it put the operator in the loop three separate times (attaching grants for
