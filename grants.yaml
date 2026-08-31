@@ -15,9 +15,17 @@ grants:
   # regardless of this setting; a repo added to the account still needs its
   # own webhook configured on GitHub's side (Settings → Webhooks) before
   # this pipeline ever sees an event from it.
+  # NOTE (2026-08-30): `repos` was "*" while GITHUB_PR_TOKEN was a narrow PAT
+  # whose own scope was the real bound. It is now an explicit list, because
+  # matchGrant uses `grants.find` — FIRST MATCH WINS — and a "*" here would
+  # match a pull_request on an AAS-Labs repo before products-repo below ever
+  # got the chance, handing it GITHUB_PR_TOKEN, which cannot reach that org.
+  # The failure would surface as an opaque GitHub 404, not as a grant error.
+  # `repos` is matched by exact list membership (not glob), so a new
+  # Clanker-HQ repo that should be reviewable has to be added here by hand.
   - id: infra-repo
     kind: github-pr
-    repos: "*"
+    repos: ["Clanker-HQ/clanker-automated-system"]
     secret: GITHUB_PR_TOKEN
 
   # Backs agents/research's grantRefs. Read-only web access (WebFetch to
@@ -49,3 +57,41 @@ grants:
     remote: "Clanker-HQ/clanker-automated-system"
     branches: ["agent/builder/*"]
     secret: BUILDER_PUSH_TOKEN
+
+  # ---------------------------------------------------------------------
+  # AAS-Labs — where the system builds revenue products. Deliberately the
+  # unrestricted half of the split: GITHUB_PRODUCTS_TOKEN is a fine-grained
+  # PAT whose resource owner is the AAS-Labs org, holding EVERY repository
+  # and organization permission including Administration. Verified
+  # 2026-08-30 to create and delete repos there (201/204), and verified
+  # unable to administer Clanker-HQ/clanker-automated-system (403).
+  #
+  # Maximum permissions are safe here because a fine-grained token cannot
+  # reach outside its resource owner — the confinement is structural, not a
+  # matter of which boxes were ticked. The infrastructure repo, and the
+  # ruleset protecting it, are simply not addressable by this credential.
+  # ---------------------------------------------------------------------
+
+  # Must come AFTER infra-repo: this is the catch-all "*" for github-pr, and
+  # matchGrant takes the first match. Its "*" is bounded the way infra-repo's
+  # used to be — by what the token behind it can actually reach, which is
+  # AAS-Labs and nothing else. AAS-Labs repos are created by the system at
+  # runtime, so they cannot be enumerated in a list the way infra-repo's are.
+  - id: products-repo
+    kind: github-pr
+    repos: "*"
+    secret: GITHUB_PRODUCTS_TOKEN
+
+  # `branches` says agent/builder/* rather than "*" because that is what is
+  # actually enforceable: pushBranch hardcodes /^agent\/builder\// at
+  # src/runner/sdk-runner.ts:475 and mergePR re-checks the head ref at :545,
+  # unconditionally, for every repo — no grant can widen it. Writing "*" here
+  # would promise freedom the code refuses to deliver. Widening it means
+  # editing sdk-runner.ts, which is on EXCLUDED_PATHS and therefore always a
+  # human edit. In practice this costs nothing: products are still built via
+  # branch -> PR -> merge, only the branch names are namespaced.
+  - id: products-push
+    kind: git-push
+    remote: "AAS-Labs/*"
+    branches: ["agent/builder/*"]
+    secret: GITHUB_PRODUCTS_TOKEN

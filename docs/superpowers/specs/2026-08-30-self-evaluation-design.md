@@ -202,6 +202,27 @@ meaning. Without them, every other guarantee in this spec and in
 `2026-08-30-self-build-design.md` is decorative. Branch protection is the
 last real bound on this repo once the credential is broad, so it has to hold.
 
+**Implemented 2026-08-30.** Rulesets and branch protection are not enforced
+on *private* repositories under GitHub Free — the UI creates the ruleset and
+reports it active while enforcing nothing. Since this bound cannot be
+optional, `clanker-automated-system` was made **public**, which enables
+enforcement at no cost. The repo needing protection holds no secrets
+(`.env` is gitignored, `grants.yaml` names only env vars, and its history was
+checked clean); the repos that may later hold business-sensitive material are
+the product repos, which enforce nothing and can stay private. Live ruleset:
+`protect-main`, enforcement `active`, empty bypass list, targeting
+`~DEFAULT_BRANCH`, requiring a PR (0 approvals — the bot cannot approve its
+own) and the `test` status check.
+
+**Consequence of going public, still open:** `pr-reviewer` triggers on
+`pull_request` for `repo: "*"`, so any stranger can fork, open a PR, and
+spend subscription quota on a review. The signature check does not help — the
+event is genuinely from GitHub. The Governor's budget, concurrency and
+breaker caps bound the damage to wasted quota rather than any escape, but the
+proper fix is an author filter in the webhook handler: process only PRs
+opened by the bot account or a repo collaborator. This should land with
+subsystem 1 rather than stay implicit.
+
 ### Two different budgets, only one of them automatable
 
 An earlier draft of this spec had the Governor raise its own
@@ -239,10 +260,58 @@ not by code the system could misread or a counter that could drift. At zero
 balance the card simply declines. Freezing the card is an instant,
 unilateral kill switch requiring no cooperation from the system.
 
-**The same account's transaction feed is the revenue instrument.** Read
-access to it gives the system both its own spend and any income landing
-there — which is otherwise the one primary-goal metric it structurally
-cannot observe.
+**The ceiling only holds if the system can spend the balance but cannot
+administer the account.** These providers are KYC'd, so the account is in the
+operator's legal name whichever email opens it — the real boundary is who
+reads the password-reset inbox. A system that can read it can reset the
+password, re-enable auto-topup and draw on the linked funding source, at
+which point the balance caps nothing. Therefore:
+
+- The account is opened on the **operator's** email, and the system never has
+  access to that inbox.
+- The system gets **card credentials** (spend the balance) and **read-only
+  transaction access**, preferably an API token rather than inbox access. If
+  no read API exists, forward only transaction notifications to a
+  system-readable inbox and keep security mail out of it.
+- The system never has access to the **funding source** — the linked bank or
+  card. Auto-topup stays off; topping up is a manual operator act.
+- Provider note: Revolut's API is business-only, which forces email parsing on
+  a personal account; Wise offers personal read tokens. Prefer whichever
+  currently gives a clean read API.
+
+**The revenue instrument is the payment processor, not the bank.** An earlier
+draft made the card account's transaction feed the source of revenue data.
+That was wrong on the merits, independent of any provider's API: a payout
+reaches a bank account as a lump transfer with no line items, so it shows
+that money arrived but not what sold, when, or which thread earned it — and
+attribution is precisely what the funnel metrics need.
+
+Read access to the merchant-of-record's API (Lemon Squeezy / Gumroad /
+Stripe) gives per-sale records with product, timestamp and amount. That is
+strictly better data, and it is an account the system needs anyway to sell
+anything. The bank account is therefore a **spend instrument only**, and
+needs no API at all — its ceiling is enforced by the balance whether or not
+the system can read it.
+
+Practical consequence: the operator's chosen provider is Revolut personal,
+which has no API (business-only). Under this split that costs nothing. The
+system does not learn its own balance from the bank; the operator declares it
+at top-up time, since funding and declaring are the same action. An attempted
+purchase beyond the balance simply declines, which is a clean failure.
+
+**Browser capability must not be pointed at the bank**, once it exists. The
+web app is reachable, but: bank login requires 2FA with no app-password
+equivalent (a regulatory constraint, not a product gap), so every check would
+require a push approval on the operator's phone — worse than declaring the
+balance once per top-up. It would additionally require the account's real
+password, which grants account administration and dissolves the balance-as-
+ceiling guarantee this whole section rests on. And automated access breaches
+essentially every bank's terms of service, which `goals.yaml`'s means
+constraints already forbid, with account freezing as the concrete downside.
+
+This is not a limit on browser capability generally — checkouts, service
+signups, and API-less dashboards are exactly what it is for. Banking is the
+single target where the credential model is wrong.
 
 Design rules:
 
@@ -283,6 +352,14 @@ the capability exists; fund it when a concrete proposal needs a purchase, not
 in advance. At zero balance the system simply cannot act on spend-requiring
 proposals and reports that. Topping up is the same category as registering a
 new service — a physical bootstrap, not an approval of a decision.
+
+**Taking payment: prefer a merchant of record.** Any proposal to sell
+something should default to Lemon Squeezy / Paddle / Gumroad over raw Stripe.
+They become the legal seller, which means EU VAT and OSS registration are
+theirs rather than the operator's — a material difference for a solo
+operator selling digital goods into the EU, and a cost that does not appear
+in a naive revenue estimate. A revenue proposal that assumes direct Stripe
+integration should state why the MoR route does not fit.
 
 ### Hosting a product on the operator's VPS
 
@@ -403,6 +480,12 @@ Stated rather than papered over:
   credentials plus read access to its transaction feed. Funding it can wait
   until a proposal actually needs a purchase — the account matters from day
   one for the *receive* side, since revenue is unobservable without it.
+- Create a **dedicated email account** for the system, structured like the
+  card: the operator holds the password and 2FA, the system gets a revocable
+  app password for IMAP/SMTP. Without an email identity the system cannot
+  register for any service on its own, which puts a human back into every
+  signup. It must **never** be the recovery address for the spend account —
+  anything registered to a system-readable inbox is system-controlled.
 
 **Build order:**
 
