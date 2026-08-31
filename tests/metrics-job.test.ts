@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runMetricsJob } from "../src/metrics.js";
 import { FakeRevenueTransport } from "../src/control/revenue-transport.js";
+import type { RevenueTransport } from "../src/control/revenue-transport.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import { RunStore, newRunId } from "../src/run-store.js";
@@ -56,7 +57,7 @@ describe("runMetricsJob", () => {
     await f.taskStore.update(created.id, {
       status: "done", finishedAt: WITHIN_WINDOW.toISOString(), result: { summary: "done", path: "x" },
     });
-    await f.memory.append({ domain: "revenue", kind: "proposal", subject: "sell widgets", body: "a proposal", importance: 5, createdBy: "system" });
+    await f.memory.append({ ts: WITHIN_WINDOW.toISOString(), domain: "revenue", kind: "proposal", subject: "sell widgets", body: "a proposal", importance: 5, createdBy: "system" });
     f.revenue.seedSale({ id: "s1", product: "widget", timestampIso: WITHIN_WINDOW.toISOString(), amountUsd: 20 });
 
     const metrics = await runMetricsJob({
@@ -66,6 +67,7 @@ describe("runMetricsJob", () => {
 
     expect(metrics.netIncomeUsd).toBe(20);
     expect(metrics.computedAt).toBe(NOW.toISOString());
+    expect(metrics.noveltySharePercent).toBe(100);
     const persisted = await f.metricsStore.listAll();
     expect(persisted).toEqual([metrics]);
     rmSync(f.dataDir, { recursive: true, force: true });
@@ -99,6 +101,31 @@ describe("runMetricsJob", () => {
     expect(metrics.costPerCompletedTaskUsd).toBeNull();
     expect(metrics.queueStarvationHours).not.toBeNull();
     expect(metrics.queueStarvationHours).toBeGreaterThan(24 * 30);
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  it("still computes and persists a snapshot from the other stores when the revenue transport fails", async () => {
+    const f = fixtures();
+    await recordRun(f.runStore, WITHIN_WINDOW, "builder", 3);
+    const created = await f.taskStore.create({ text: "ship it", createdBy: "system" });
+    await f.taskStore.update(created.id, {
+      status: "done", finishedAt: WITHIN_WINDOW.toISOString(), result: { summary: "done", path: "x" },
+    });
+    const failingRevenue: RevenueTransport = {
+      listSales: async () => {
+        throw new Error("stripe unavailable");
+      },
+    };
+
+    const metrics = await runMetricsJob({
+      runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
+      revenue: failingRevenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+    });
+
+    expect(metrics.netIncomeUsd).toBe(0);
+    expect(metrics.costPerCompletedTaskUsd).not.toBeNull();
+    const persisted = await f.metricsStore.listAll();
+    expect(persisted).toEqual([metrics]);
     rmSync(f.dataDir, { recursive: true, force: true });
   });
 });

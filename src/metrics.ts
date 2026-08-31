@@ -98,12 +98,15 @@ export async function runMetricsJob(deps: MetricsJobDeps): Promise<Metrics> {
   const now = deps.now ?? new Date();
   const since = new Date(now.getTime() - deps.windowDays * 24 * 60 * 60 * 1000);
 
-  const [runsInWindow, allTasks, allMemory, salesInWindow] = await Promise.all([
+  const [runsInWindow, allTasks, allMemory] = await Promise.all([
     deps.runStore.listSince(since, now),
     deps.taskStore.list(),
     deps.memory.list(),
-    deps.revenue.listSales(since.toISOString()),
   ]);
+  const salesInWindow = await deps.revenue.listSales(since.toISOString()).catch((error: unknown) => {
+    console.error("[metrics] revenue transport failed; this snapshot's netIncomeUsd reflects a data gap, not zero sales", error);
+    return [];
+  });
 
   const memoryRecordsInWindow = allMemory.filter((r) => new Date(r.ts) >= since && new Date(r.ts) <= now);
   const doneTasksInWindow = allTasks.filter(

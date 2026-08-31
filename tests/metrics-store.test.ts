@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -71,6 +71,17 @@ describe("MetricsStore", () => {
     const only = metrics({ computedAt: "2026-09-07T04:00:00.000Z" });
     await store.write(only);
     expect(await store.latestTwo()).toEqual({ latest: only, previous: null });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("skips an unparseable snapshot file instead of throwing, and still returns the valid ones", async () => {
+    const { dataDir, store } = makeStore();
+    const valid = metrics({ computedAt: "2026-09-07T04:00:00.000Z" });
+    await store.write(valid);
+    writeFileSync(join(dataDir, "state", "metrics-2026-09-08.json"), "{ not valid json");
+    const all = await store.listAll();
+    expect(all).toHaveLength(1);
+    expect(all).toEqual([valid]);
     rmSync(dataDir, { recursive: true, force: true });
   });
 

@@ -134,7 +134,10 @@ export const MetricsSchema = z
     enabled: z.boolean().default(true),
     // Weekly, Monday 04:00 by default — one hour after reflection's Monday
     // 03:00 (MemorySchema.reflectionSchedule below), so the two weekly
-    // passes never tick at the same instant.
+    // passes never tick at the same instant. Cron syntax is validated
+    // below, but cadence is not: MetricsStore keys snapshots by calendar
+    // date, so a sub-daily schedule silently collapses to at most one
+    // snapshot per day rather than one per tick.
     schedule: z.string().default("0 4 * * 1"),
     timezone: IanaTimezone.default("UTC"),
     /** How far back each snapshot's window reaches. */

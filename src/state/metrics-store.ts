@@ -12,6 +12,14 @@ export interface NotAchievedByAgent {
 export interface Metrics {
   computedAt: string;
   windowDays: number;
+  /**
+   * Gross revenue in the window — the sum of every completed sale's
+   * amountUsd, nothing subtracted. Reads as true net income only because
+   * external spend is currently always $0 (no spend-card grant exists
+   * yet); once the spend pot is funded this stops being "net" and the
+   * field will need renaming. See the weekly-metrics-job plan's Global
+   * Constraints for why revenue-per-spend isn't computed here yet.
+   */
   netIncomeUsd: number;
   /** null when no run graded "success" fell in the window — the rate has no denominator. */
   notAchievedRate: number | null;
@@ -50,12 +58,16 @@ export class MetricsStore {
     await writeFileAtomic(this.path(dateStamp), JSON.stringify(metrics, null, 2) + "\n");
   }
 
-  /** Every persisted snapshot, oldest first. */
+  /** Every persisted snapshot, oldest first. A file that fails to parse is logged and skipped, not thrown — one corrupt snapshot must never take down the whole digest that reads latestTwo(). */
   async listAll(): Promise<Metrics[]> {
     const names = await readdir(this.dir()).catch(() => [] as string[]);
     const all: Metrics[] = [];
     for (const name of names.filter((n) => FILENAME.test(n))) {
-      all.push(JSON.parse(await readFile(join(this.dir(), name), "utf8")) as Metrics);
+      try {
+        all.push(JSON.parse(await readFile(join(this.dir(), name), "utf8")) as Metrics);
+      } catch (error) {
+        console.error(`[metrics-store] skipping unparseable snapshot "${name}"`, error);
+      }
     }
     all.sort((a, b) => (a.computedAt < b.computedAt ? -1 : a.computedAt > b.computedAt ? 1 : 0));
     return all;
