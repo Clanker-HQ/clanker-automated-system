@@ -21,7 +21,7 @@ function fakeResponse(opts: {
 }
 
 function prJson(overrides: Record<string, unknown> = {}) {
-  return { head: { sha: "sha-1" }, title: "A change", body: "Does a thing.", ...overrides };
+  return { head: { sha: "sha-1" }, base: { ref: "main" }, title: "A change", body: "Does a thing.", ...overrides };
 }
 
 describe("GithubApiTransport.getPullRequest", () => {
@@ -131,6 +131,19 @@ describe("GithubApiTransport.getPullRequest", () => {
     const t = new GithubApiTransport({ token: "x", fetchImpl });
     await expect(t.getPullRequest("owner/repo", 1)).rejects.toThrow(/failed to fetch diff/);
   });
+
+  it("reports the PR's base branch from the API response", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/files")) return fakeResponse({ json: [{ filename: "src/a.ts" }] });
+      return fakeResponse({ json: prJson({ base: { ref: "develop" } }), text: "diff --git a/x b/x" });
+    }) as unknown as typeof fetch;
+
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    const info = await t.getPullRequest("owner/repo", 1);
+
+    expect(info.base).toBe("develop");
+  });
 });
 
 describe("GithubApiTransport.mergePullRequest", () => {
@@ -174,5 +187,73 @@ describe("GithubApiTransport.createPullRequest", () => {
     await expect(
       t.createPullRequest("owner/repo", { head: "agent/builder/add-x", base: "main", title: "Add X", body: "" }),
     ).rejects.toThrow(/422/);
+  });
+});
+
+describe("GithubApiTransport.getFileContent", () => {
+  it("decodes base64 content from the Contents API", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeResponse({ json: { content: Buffer.from("grants:\n  - id: x\n").toString("base64"), encoding: "base64" } }),
+    ) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    const content = await t.getFileContent("owner/repo", "main", "grants.yaml");
+
+    expect(content).toBe("grants:\n  - id: x\n");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/repo/contents/grants.yaml?ref=main",
+      expect.anything(),
+    );
+  });
+
+  it("returns null for a 404 (file absent at that ref) rather than throwing", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: false, status: 404 })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    expect(await t.getFileContent("owner/repo", "main", "grants.yaml")).toBeNull();
+  });
+
+  it("throws on a non-404 error response", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: false, status: 500 })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.getFileContent("owner/repo", "main", "grants.yaml")).rejects.toThrow(/500/);
+  });
+
+  it("URL-encodes each path segment, so a query-string character in a path doesn't get misread as starting the query", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: false, status: 404 })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await t.getFileContent("owner/repo", "main", "agents/weird name/agent.yaml");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/repo/contents/agents/weird%20name/agent.yaml?ref=main",
+      expect.anything(),
+    );
+  });
+});
+
+describe("GithubApiTransport.listRepoFiles", () => {
+  it("returns blob paths under the given prefix from the recursive tree", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeResponse({
+        json: {
+          truncated: false,
+          tree: [
+            { path: "agents/foo/agent.yaml", type: "blob" },
+            { path: "agents/foo/prompt.md", type: "blob" },
+            { path: "agents", type: "tree" },
+            { path: "src/index.ts", type: "blob" },
+          ],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    const files = await t.listRepoFiles("owner/repo", "main", "agents/");
+
+    expect(files).toEqual(["agents/foo/agent.yaml", "agents/foo/prompt.md"]);
+  });
+
+  it("fails closed on a truncated tree rather than returning an incomplete listing", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ json: { truncated: true, tree: [] } })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.listRepoFiles("owner/repo", "main", "agents/")).rejects.toThrow(/truncated/);
   });
 });

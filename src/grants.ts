@@ -211,7 +211,7 @@ function grantTargetPattern(grant: Grant): string {
   }
 }
 
-function globMatch(pattern: string, value: string): boolean {
+export function globMatch(pattern: string, value: string): boolean {
   const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === "*" ? "\\uFFFF" : `\\${c}`));
   const regex = new RegExp(`^${escaped.replace(/\\uFFFF/g, ".*")}$`);
   return regex.test(value);
