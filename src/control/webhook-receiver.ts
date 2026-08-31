@@ -10,6 +10,18 @@ export interface WebhookEvent {
 
 const RELEVANT_ACTIONS: ReadonlySet<string> = new Set(["opened", "synchronize", "reopened"]);
 
+/**
+ * GitHub computes this relationship itself and includes it on every
+ * `pull_request` payload — no extra API call needed to tell a stranger's
+ * fork PR apart from the operator's own or a trusted collaborator's. Fail
+ * closed: only these three admit the PR; anything else (a real but
+ * lower-trust value, or the field/object missing entirely) is ignored the
+ * same as an irrelevant action, since a webhook signature only proves the
+ * event came from GitHub, not that the PR's author should be trusted with
+ * a real, quota-consuming review run.
+ */
+const TRUSTED_AUTHOR_ASSOCIATIONS: ReadonlySet<string> = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
 export class WebhookReceiver {
   private readonly secret: string;
   private readonly requestTimeoutMs: number;
@@ -48,8 +60,15 @@ export class WebhookReceiver {
     const action = typeof payload.action === "string" ? payload.action : "";
     const repo = (payload.repository as Record<string, unknown> | undefined)?.full_name;
     const number = payload.number;
+    const authorAssociation = (payload.pull_request as Record<string, unknown> | undefined)?.author_association;
 
-    if (!RELEVANT_ACTIONS.has(action) || typeof repo !== "string" || typeof number !== "number") {
+    if (
+      !RELEVANT_ACTIONS.has(action) ||
+      typeof repo !== "string" ||
+      typeof number !== "number" ||
+      typeof authorAssociation !== "string" ||
+      !TRUSTED_AUTHOR_ASSOCIATIONS.has(authorAssociation)
+    ) {
       return { status: 200, body: "ignored" };
     }
 

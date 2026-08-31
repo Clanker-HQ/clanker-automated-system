@@ -25,7 +25,11 @@ function sign(body: string): string {
 }
 
 function prPayload(repo: string, number: number, action = "opened"): string {
-  return JSON.stringify({ action, number, repository: { full_name: repo } });
+  // author_association defaults to a trusted value so this file's tests
+  // (none of which are about author trust) keep exercising the accepted
+  // path — see tests/webhook-receiver.test.ts for the dedicated coverage
+  // of the author-association filter itself.
+  return JSON.stringify({ action, number, repository: { full_name: repo }, pull_request: { author_association: "OWNER" } });
 }
 
 /** Mirrors tests/orchestrator.test.ts's realHarness() — a real Governor
