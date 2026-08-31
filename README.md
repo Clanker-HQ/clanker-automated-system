@@ -180,15 +180,17 @@ dispatcher tick rather than firing immediately, so a genuinely broken task
 doesn't burn two attempts back-to-back. `!retry` on an already-failed task
 resets this, so a manual retry always gets its own fresh silent attempt too.
 
-**Daily digest and data retention.** Two scheduled jobs, both configured under
-`digest:`/`retention:` in `config.yaml`, neither needing a command:
+**Daily digest, retention, and metrics.** Scheduled jobs, configured under
+`digest:`/`retention:`/`metrics:` in `config.yaml`, none needing a command:
 - `digest` posts once a day (08:00 by default): runs and spend in the last
   24h, tasks done/failed, anything still `waiting` on you regardless of
   how old, and — when there was any memory activity in the window — a count
   of findings/proposals/outcomes/reflections recorded and duplicate
   proposals the novelty gate suppressed at queue time. So a day away doesn't mean piecing
   state back together from `!status`/`!tasks`/memory of what you last
-  checked.
+  checked. On the day a fresh weekly metrics snapshot lands, the digest
+  also posts its delta: net income, not-achieved rate, cost per completed
+  task, novelty share, and queue starvation.
 - `retention` runs weekly and deletes run transcripts/results and specialist
   workspace files (e.g. research findings) older than `retention.days`
   (30 by default). A run still in progress (no `result.json` yet) is never
@@ -197,6 +199,11 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
   with no result ever recorded — that's not a run still in progress (every
   agent's timeout caps at 3 hours), it's one the process crashed mid-way
   through.
+- `metrics` runs weekly (Monday 04:00 by default) and computes a snapshot —
+  net income, not-achieved rate, cost per completed task, novelty share,
+  and queue starvation — over a trailing `metrics.windowDays`-day window
+  (7 by default), then persists it under `data/state/`. Posts nothing on
+  its own; the next `digest` run is what surfaces the delta above.
 
 **The system can queue its own tasks, not just yours.** Four cron-triggered
 agents each propose up to 3 tasks via a `queueTask` tool — no human approval
