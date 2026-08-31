@@ -547,7 +547,7 @@ git commit -m "feat: add computeMetrics, pure arithmetic over runs/tasks/memory/
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runMetricsJob } from "../src/metrics.js";
 import { FakeRevenueTransport } from "../src/control/revenue-transport.js";
 import { TaskStore } from "../src/control/task-store.js";
@@ -567,11 +567,22 @@ function fixtures() {
   };
 }
 
-/** Mirrors tests/digest.test.ts's recordRun helper: RunWriter.close() stamps startedAt from the real clock. */
+/**
+ * RunWriter.close() stamps startedAt from the real system clock, not from
+ * any date embedded in the runId — faking the clock is the only way to land
+ * a run's RunResult.startedAt at a chosen time. Mirrors tests/digest.test.ts's
+ * own recordRun helper exactly, for the same reason.
+ */
 async function recordRun(store: RunStore, at: Date, agent: string, costUsd: number) {
-  const writer = await store.open(newRunId(agent, at), agent);
-  await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd, durationMs: 1 });
-  await writer.close({ status: "success", summary: "" });
+  vi.useFakeTimers();
+  vi.setSystemTime(at);
+  try {
+    const writer = await store.open(newRunId(agent, at), agent);
+    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd, durationMs: 1 });
+    await writer.close({ status: "success", summary: "" });
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 const NOW = new Date("2026-09-07T04:00:00.000Z");
@@ -579,6 +590,10 @@ const WITHIN_WINDOW = new Date("2026-09-05T00:00:00.000Z");
 const BEFORE_WINDOW = new Date("2026-08-01T00:00:00.000Z");
 
 describe("runMetricsJob", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("gathers data from every store and the revenue transport, computes and persists one snapshot", async () => {
     const f = fixtures();
     await recordRun(f.runStore, WITHIN_WINDOW, "builder", 3);
@@ -606,8 +621,17 @@ describe("runMetricsJob", () => {
     await recordRun(f.runStore, BEFORE_WINDOW, "builder", 100);
     await recordRun(f.runStore, WITHIN_WINDOW, "builder", 1);
     await f.memory.append({ ts: BEFORE_WINDOW.toISOString(), domain: "revenue", kind: "proposal", subject: "old", body: "old proposal", importance: 1, createdBy: "system" });
-    // A task still "pending" from well before the window — starvation must see it regardless.
-    await f.taskStore.create({ text: "still waiting", createdBy: "system" });
+    // A task still "pending" from well before the window — starvation must
+    // see it regardless. TaskStore.create() stamps createdAt from the real
+    // clock (it has no createdAt parameter), so faking the clock is the only
+    // way to land it at a chosen time, same reasoning as recordRun above.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T00:00:00.000Z"));
+    try {
+      await f.taskStore.create({ text: "still waiting", createdBy: "system" });
+    } finally {
+      vi.useRealTimers();
+    }
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
