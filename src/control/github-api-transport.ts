@@ -120,7 +120,13 @@ export class GithubApiTransport implements GithubTransport {
   }
 
   async getFileContent(repo: string, ref: string, path: string): Promise<string | null> {
-    const res = await this.fetchImpl(`https://api.github.com/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`, {
+    // Each segment is encoded individually rather than the whole path at once:
+    // the "/" separators must stay literal for the Contents API, but anything
+    // else — `path` now comes from PR-controlled data via evaluateSelfBuildPr's
+    // info.changedFiles — must not be able to end the path early (a raw "?" or
+    // "#" would otherwise start the query string or fragment).
+    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+    const res = await this.fetchImpl(`https://api.github.com/repos/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`, {
       headers: this.headers(),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });

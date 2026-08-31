@@ -405,7 +405,7 @@ export class SdkRunner implements Runner {
           tools: [
             tool(
               "mergePR",
-              "Merge a pull request that has passed review. Only succeeds if the repo is granted, the diff doesn't touch a security-sensitive path, and the PR's head hasn't moved since you reviewed it.",
+              "Merge a pull request that has passed review. Only succeeds if the repo is granted, the PR's head hasn't moved since you reviewed it, and the diff either doesn't touch a security-sensitive path or is a self-build change (grants.yaml or agents/*/{agent.yaml,prompt.md} alone), which is checked against four mechanical rules instead.",
               {
                 repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
                 number: z.number().int().positive(),

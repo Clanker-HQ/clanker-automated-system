@@ -36,6 +36,21 @@
  * grantRefs: [infra-repo]` to some unrelated agent hands that agent merge
  * capability without ever touching the excluded `grants.yaml`. Listing today's
  * agent files by name would silently stop protecting tomorrow's.
+ *
+ * As of the self-build merge gate (`src/control/self-build-gate.ts`), a PR
+ * whose changed files are EXACTLY `grants.yaml`, or EXACTLY
+ * `agents/<name>/{agent.yaml,prompt.md}` for one agent, is no longer
+ * refused outright — it is instead checked against four mechanical rules
+ * (schema-valid, no in-place grant edit, credential scope, CI green)
+ * before `mergePR`'s other gates run. Everything else — including any PR
+ * that mixes a self-build file with anything outside that exact shape —
+ * is still refused here, unconditionally, exactly as before. The scenario
+ * this comment originally warned about (a `grants.yaml`-free path to
+ * `tier: autonomous, approval: auto`) is now possible in principle, but
+ * only through a PR the four rules above admit — see
+ * docs/superpowers/specs/2026-08-30-self-evaluation-design.md's rule-3
+ * amendment for why that is the intended, credential-bounded trade rather
+ * than an oversight.
  */
 export const EXCLUDED_PATHS: readonly string[] = [
   // The parent governance files.

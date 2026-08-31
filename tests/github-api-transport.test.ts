@@ -217,6 +217,16 @@ describe("GithubApiTransport.getFileContent", () => {
     const t = new GithubApiTransport({ token: "x", fetchImpl });
     await expect(t.getFileContent("owner/repo", "main", "grants.yaml")).rejects.toThrow(/500/);
   });
+
+  it("URL-encodes each path segment, so a query-string character in a path doesn't get misread as starting the query", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: false, status: 404 })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await t.getFileContent("owner/repo", "main", "agents/weird name/agent.yaml");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/repo/contents/agents/weird%20name/agent.yaml?ref=main",
+      expect.anything(),
+    );
+  });
 });
 
 describe("GithubApiTransport.listRepoFiles", () => {
