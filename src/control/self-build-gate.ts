@@ -1,6 +1,7 @@
 import { ValidationError } from "../errors.js";
 import { globMatch, parseGrants, validateGrantRefs, type Grant } from "../grants.js";
 import { parseAgent } from "../registry.js";
+import type { GithubTransport, PullRequestInfo } from "./github-transport.js";
 
 /**
  * The only file-set shape this gate ever evaluates: `grants.yaml` exactly, or
@@ -141,4 +142,45 @@ export function evaluateSelfBuildChange(input: SelfBuildInput): SelfBuildVerdict
   }
 
   return { allowed: true };
+}
+
+/**
+ * Fetches the base-ref registry state and this PR's head-ref changes fresh
+ * from GitHub, then hands them to the pure evaluateSelfBuildChange above.
+ * Kept separate so the actual decision logic stays a pure function no test
+ * needs to mock GitHub for.
+ */
+export async function evaluateSelfBuildPr(
+  github: GithubTransport,
+  repo: string,
+  info: Pick<PullRequestInfo, "base" | "headSha" | "changedFiles">,
+  env: Record<string, string | undefined>,
+): Promise<SelfBuildVerdict> {
+  const [baseGrantsYaml, baseAgentPaths] = await Promise.all([
+    github.getFileContent(repo, info.base, "grants.yaml"),
+    github.listRepoFiles(repo, info.base, "agents/"),
+  ]);
+
+  const baseAgentFiles = await Promise.all(
+    baseAgentPaths
+      .filter((p) => p.endsWith("/agent.yaml"))
+      .map(async (path) => ({ path, content: (await github.getFileContent(repo, info.base, path)) ?? "" })),
+  );
+
+  const changedAgentPaths = info.changedFiles.filter((f) => f.endsWith("/agent.yaml"));
+  const changedAgentFiles = await Promise.all(
+    changedAgentPaths.map(async (path) => ({ path, content: await github.getFileContent(repo, info.headSha, path) })),
+  );
+
+  const headGrantsYaml = info.changedFiles.includes("grants.yaml")
+    ? ((await github.getFileContent(repo, info.headSha, "grants.yaml")) ?? "grants: []\n")
+    : undefined;
+
+  return evaluateSelfBuildChange({
+    baseAgentFiles,
+    baseGrantsYaml: baseGrantsYaml ?? "grants: []\n",
+    changedAgentFiles,
+    headGrantsYaml,
+    env,
+  });
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { evaluateSelfBuildChange, isSelfBuildChange } from "../src/control/self-build-gate.js";
+import { evaluateSelfBuildChange, evaluateSelfBuildPr, isSelfBuildChange } from "../src/control/self-build-gate.js";
+import { FakeGithubTransport } from "../src/control/github-transport.js";
 
 const FOO_AGENT_V1 = `
 name: foo
@@ -177,5 +178,56 @@ describe("evaluateSelfBuildChange", () => {
       env: {},
     });
     expect(verdict).toEqual({ allowed: true });
+  });
+});
+
+describe("evaluateSelfBuildPr", () => {
+  it("fetches base and head grants.yaml and allows a self-build change that passes all rules", async () => {
+    const github = new FakeGithubTransport();
+    github.seedFile("owner/repo", "main", "grants.yaml", 'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n');
+    github.seedFile(
+      "owner/repo", "sha-1", "grants.yaml",
+      'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n' +
+        '  - id: new-thing\n    kind: github-pr\n    repos: ["owner/other"]\n    secret: GITHUB_PR_TOKEN\n',
+    );
+
+    const verdict = await evaluateSelfBuildPr(
+      github, "owner/repo",
+      { base: "main", headSha: "sha-1", changedFiles: ["grants.yaml"] },
+      { GITHUB_PR_TOKEN: "provisioned" },
+    );
+
+    expect(verdict).toEqual({ allowed: true });
+  });
+
+  it("fetches base agent files via listRepoFiles, so rule 1 catches a grants.yaml-only PR that deletes a grant an untouched base agent still references", async () => {
+    const github = new FakeGithubTransport();
+    const grantedAgent = "name: foo\ntrigger:\n  type: cron\n  schedule: \"0 7 * * *\"\n  timezone: Europe/Berlin\nrun:\n  model: claude-haiku-4-5\ntier: granted\napproval: notify\ngrantRefs: [infra-repo]\noutbox:\n  discord: ops\n";
+    github.seedFile("owner/repo", "main", "agents/foo/agent.yaml", grantedAgent);
+    github.seedFile("owner/repo", "main", "grants.yaml", 'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n');
+    github.seedFile("owner/repo", "sha-1", "grants.yaml", "grants: []\n");
+
+    const verdict = await evaluateSelfBuildPr(
+      github, "owner/repo",
+      { base: "main", headSha: "sha-1", changedFiles: ["grants.yaml"] },
+      {},
+    );
+
+    expect(verdict).toMatchObject({ allowed: false, rule: 1 });
+  });
+
+  it("treats an unseeded base grants.yaml as an empty grant list rather than throwing", async () => {
+    const github = new FakeGithubTransport();
+    const verdict = await evaluateSelfBuildPr(
+      github, "owner/repo",
+      { base: "main", headSha: "sha-1", changedFiles: ["agents/foo/agent.yaml"] },
+      {},
+    );
+    // No agent seeded at head either — getFileContent returns null, which
+    // evaluateSelfBuildChange's changedAgentFiles then carries as a deletion
+    // of a path that was never in the base set either. Novel-agent creation
+    // is exercised by the "allows a new grant..." case above; this one only
+    // proves the wrapper never crashes on an all-empty GitHub state.
+    expect(verdict.allowed).toBe(true);
   });
 });
