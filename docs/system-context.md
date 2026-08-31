@@ -33,7 +33,7 @@ close enough to work already recorded as achieved, a computed priority
 (goal alignment, novelty, importance, recency) ranks what gets through below
 any human-issued task, and a completed task can propose its own bounded
 chain of successors. The log also feeds forward — a dispatched task's prompt
-is prepended with whatever it already knows about the same subject, and a
+ends with whatever it already knows about the same subject, and a
 cron scout can look the same thing up via a `recallMemory` tool — and a
 periodic reflection pass synthesises recent entries into higher-level
 conclusions. None of this changes what an agent is allowed to reach; it only

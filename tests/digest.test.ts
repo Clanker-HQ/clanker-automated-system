@@ -40,6 +40,12 @@ describe("buildDigestText", () => {
     expect(await buildDigestText({ store, tasks, since: SINCE })).toBe("📅 Daily digest: nothing happened in the last 24h.");
   });
 
+  it("still says nothing happened when only memory activity is in the window", async () => {
+    const { store, tasks, memory } = stores();
+    await memory.append({ domain: "research", kind: "finding", subject: "x", body: "y", importance: 5, createdBy: "agent:research" });
+    expect(await buildDigestText({ store, tasks, since: SINCE, memory })).toBe("📅 Daily digest: nothing happened in the last 24h.");
+  });
+
   it("counts runs and spend within the window, ignoring runs before it", async () => {
     const { store, tasks } = stores();
     // Distinct timestamps: newRunId derives its id from agent name + time, so

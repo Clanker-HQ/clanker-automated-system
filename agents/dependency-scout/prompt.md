@@ -9,7 +9,7 @@ anything.
 Call `listMyTasks` to see what you've already queued in past runs. Don't
 requeue a package you already flagged unless something concretely changed
 (a new advisory, a newer version, a different severity). Call `recallMemory`
-for each idea before you queue it — work already recorded as achieved will
+for each idea before you queue it (using the same `domain` you'll pass to `queueTask`) — work already recorded as achieved will
 be refused.
 
 ## What to do

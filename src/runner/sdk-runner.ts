@@ -714,7 +714,7 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: JSON.stringify(top, null, 2) }] };
               },
             ),
-            ...(memoryDep
+            ...(memoryDep && memoryConfigDep?.enabled
               ? [
                   tool(
                     "recallMemory",
@@ -723,7 +723,7 @@ export class SdkRunner implements Runner {
                     async ({ subject, domain }) => {
                       const text = retrieveContext(subject, domain, await memoryDep.list(), {
                         limit: 8,
-                        halfLifeDays: memoryConfigDep?.recencyHalfLifeDays ?? 14,
+                        halfLifeDays: memoryConfigDep.recencyHalfLifeDays,
                         now: new Date(),
                       });
                       return { content: [{ type: "text" as const, text: text || "Nothing recorded on this subject yet." }] };

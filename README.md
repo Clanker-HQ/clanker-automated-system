@@ -186,7 +186,7 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
   24h, tasks done/failed, anything still `waiting` on you regardless of
   how old, and — when there was any memory activity in the window — a count
   of findings/proposals/outcomes/reflections recorded and duplicate
-  proposals the novelty gate suppressed. So a day away doesn't mean piecing
+  proposals the novelty gate suppressed at queue time. So a day away doesn't mean piecing
   state back together from `!status`/`!tasks`/memory of what you last
   checked.
 - `retention` runs weekly and deletes run transcripts/results and specialist
@@ -240,13 +240,13 @@ successfully can also propose its own **successors** — up to a few follow-up
 tasks drawn from the run's own summary, capped by chain depth and a
 per-parent rate limit so one completed task can't cascade into an unbounded
 chain of self-generated work. The log feeds forward as well as back: a
-dispatched task's prompt is prepended with whatever the log already knows
+dispatched task's prompt ends with whatever the log already knows
 about its subject (same domain, ranked by similarity and recency, reflections
 included), and a cron scout — which never goes through the dispatcher — gets
 the same lookup through a `recallMemory` tool, meant to be called before
 every `queueTask`. The daily digest reports on all of it: how many findings,
 proposals, outcomes, and reflections were recorded in the last 24h, and how
-many duplicate proposals the novelty gate suppressed.
+many duplicate proposals the novelty gate suppressed at queue time.
 
 **A process crash is no longer invisible.** An uncaught exception or
 unhandled rejection anywhere is caught, written to `data/state/crash.log`,

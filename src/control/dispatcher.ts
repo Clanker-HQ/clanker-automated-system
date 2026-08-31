@@ -203,14 +203,17 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       ? `\n\n(A previous attempt at this task finished without error, but grading found it did not fully achieve ` +
         `the objective: "${task.lastVerificationReason}". Address that gap this time.)`
       : "";
-    const memoryContext =
-      deps.memory && deps.memoryConfig?.enabled
-        ? retrieveContext(task.text.slice(0, 200), agent.name, await deps.memory.list(), {
-            limit: 5,
-            halfLifeDays: deps.memoryConfig.recencyHalfLifeDays,
-            now: now(),
-          })
-        : "";
+    let memoryContext = "";
+    if (deps.memory && deps.memoryConfig?.enabled) {
+      try {
+        memoryContext = retrieveContext(task.text.slice(0, 200), agent.name, await deps.memory.list(), {
+          limit: 5, halfLifeDays: deps.memoryConfig.recencyHalfLifeDays, now: now(),
+        });
+      } catch (error) {
+        // Enriching a prompt is a bonus; it must never stop the task from running.
+        console.error("[dispatcher] memory retrieval skipped", error);
+      }
+    }
     const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${memoryContext}`;
     const result = await deps.orchestrator.executeRun(agent, now(), promptContext);
 
