@@ -5,6 +5,7 @@ import { touchesExcludedPath } from "../control/excluded-paths.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
+import { evaluateSelfBuildPr, isSelfBuildChange } from "../control/self-build-gate.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../control/task-store.js";
 import { decide, detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { MemoryStore } from "../memory/memory-store.js";
@@ -383,7 +384,12 @@ export class SdkRunner implements Runner {
     //      "trusted from an earlier step" that Lock 4 exists to rule out
     //      (prompt injection in the PR diff/body, a truncated file list, or
     //      plain model error could all under-report what a PR touches), so
-    //      the tool doesn't accept one at all.
+    //      the tool doesn't accept one at all. EXCEPTION: a PR whose changed
+    //      files are exactly the self-build shape (grants.yaml, or
+    //      agents/*/{agent.yaml,prompt.md} in isolation — see
+    //      isSelfBuildChange in ../control/self-build-gate.js) gets the
+    //      mechanical four-rule self-build gate (evaluateSelfBuildPr) instead
+    //      of this unconditional refusal; everything else is unaffected.
     //   2. grant check — does this agent hold a github-pr grant covering this
     //      repo, via decide()/detectOutwardEffect/matchGrant.
     //   3. stale-SHA check — the freshly-fetched head is compared against
@@ -408,11 +414,25 @@ export class SdkRunner implements Runner {
               async ({ repo, number, expectedHeadSha }) => {
                 const info = await github.getPullRequest(repo, number);
 
-                // Gate 1 — the excluded-path check, against the PR's real,
-                // GitHub-reported changed files. This runs first and
-                // unconditionally: no grant, no review verdict, nothing
-                // later in this handler can override it.
-                if (touchesExcludedPath(info.changedFiles)) {
+                // Gate 1 — self-build changes (grants.yaml, or agents/*/{agent.yaml,
+                // prompt.md} in isolation — see isSelfBuildChange) get the mechanical
+                // four-rule self-build gate instead of an unconditional refusal;
+                // everything else still gets the unconditional excluded-path refusal,
+                // exactly as before this gate existed. This runs first: no grant, no
+                // review verdict, nothing later in this handler can override either branch.
+                if (isSelfBuildChange(info.changedFiles)) {
+                  const verdict = await evaluateSelfBuildPr(github, repo, info, process.env);
+                  if (!verdict.allowed) {
+                    return {
+                      content: [
+                        { type: "text" as const, text: `Refused: self-build rule ${verdict.rule} failed — ${verdict.reason}` },
+                      ],
+                    };
+                  }
+                  // Passed all four rules — fall through to gates 2/3 below, same as
+                  // any other merge: a self-build change still needs a grant and a
+                  // fresh SHA.
+                } else if (touchesExcludedPath(info.changedFiles)) {
                   return {
                     content: [
                       {
