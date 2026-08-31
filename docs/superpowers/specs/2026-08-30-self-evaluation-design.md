@@ -10,17 +10,23 @@ fake) landed in `docs/superpowers/plans/2026-08-31-goal-file-and-spend-accountin
 `goals.yaml` itself is now committed (operator bootstrap, done), and
 `StripeRevenueTransport` (`src/control/stripe-revenue-transport.ts`) is the
 real, read-only-scoped `RevenueTransport` implementation against Stripe's
-Charges API — landed, tested, not yet wired into any running job. Still
-needed: a separate write-scoped commerce capability so the system can
-create what it sells (a Stripe Product/Price/Payment Link) — nothing in
-this codebase can list anything for sale yet, `RevenueTransport` only ever
-reads completed sales, so this needs its own grant and its own restricted
-key once a product proposal actually needs it, not bundled into the
-read-only revenue key; the weekly metrics job and its digest integration
-(the piece that actually calls `listSales`); instrumental subordination and
-the means-constraint classifier in the proposal/queue path; quota-aware
-shedding in the Governor; `architecture-scout`, which the spec's own build
-order places last.
+Charges API — landed, tested, not yet wired into any running job. Still needed: a separate write-scoped commerce capability so the system
+can create what it sells (a Stripe Product/Price/Payment Link) — nothing
+in this codebase can list anything for sale yet, `RevenueTransport` only
+ever reads completed sales, so this needs its own grant and its own
+restricted key once a product proposal actually needs it, not bundled
+into the read-only revenue key. The weekly metrics job
+(`docs/superpowers/plans/2026-08-31-weekly-metrics-job.md`) now ships,
+computing net income, not-achieved rate per agent, cost per completed
+task, novelty share/suppression rate, and queue starvation, with the delta
+posted in the digest — but three named metrics are deliberately deferred
+(see that plan's Global Constraints): revenue per external spend (spend
+events aren't logged with amount+timestamp), funnel counts /
+time-to-first-revenue (no funnel-stage tracking exists), and PR-review
+rework rate (no `pr-reviewer` verdict is persisted). Also still needed:
+instrumental subordination and the means-constraint classifier in the
+proposal/queue path; quota-aware shedding in the Governor;
+`architecture-scout`, which the spec's own build order places last.
 
 Supersedes an earlier draft of this file that proposed a human-curated
 scorecard of eight process metrics. That draft was wrong in a specific way:

@@ -415,13 +415,22 @@ outside that exact shape is refused exactly as before.
 Subsystem 2's foundation pieces are in place: `src/goals.ts` (a `goals.yaml`
 schema and loader — the file itself is never authored by the system, only
 by the operator, and is excluded from the merge pipeline the same as
-`grants.yaml`), `src/spend/spend-accounting.ts` + `src/state/spend-store.ts`
-(spend-pot bookkeeping for a `provision`-kind grant), and
-`src/control/revenue-transport.ts` (the interface a weekly metrics job will
-read sales from). None of these run yet: `goals.yaml` doesn't exist until
-the operator commits it, no spend-card grant exists in `grants.yaml` yet,
-and the real revenue transport (a specific merchant-of-record's API) is
-still unwritten. See `docs/superpowers/specs/2026-08-30-self-evaluation-design.md`.
+`grants.yaml`; `goals.yaml` is now committed at the repo root),
+`src/spend/spend-accounting.ts` + `src/state/spend-store.ts` (spend-pot
+bookkeeping for a `provision`-kind grant), and `src/control/revenue-transport.ts`
+plus `src/control/stripe-revenue-transport.ts` (the real, read-only Stripe
+implementation). The weekly metrics job (`src/metrics.ts`/
+`src/triggers/metrics.ts`) computes net income, not-achieved rate per agent,
+cost per completed task, novelty share/suppression rate, and queue
+starvation into `data/state/metrics-<date>.json`, with the delta posted in
+the daily digest. No spend-card grant exists in `grants.yaml` yet, and
+three metrics named in the spec are deliberately deferred because nothing
+in this codebase yet produces the data they'd need: revenue per external
+spend (spend events aren't logged with amount+timestamp, only current
+balance), funnel counts / time-to-first-revenue (no funnel-stage tracking
+exists), and PR-review rework rate (no `pr-reviewer` verdict is persisted
+anywhere) — see `docs/superpowers/plans/2026-08-31-weekly-metrics-job.md`.
+See also `docs/superpowers/specs/2026-08-30-self-evaluation-design.md`.
 
 Still genuinely deferred:
 
