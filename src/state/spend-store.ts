@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { writeFileAtomic } from "../atomic-write.js";
 
 export interface SpendCommitment {
   id: string;
@@ -31,13 +32,20 @@ export class SpendStore {
   async read(): Promise<SpendState> {
     try {
       return JSON.parse(await readFile(this.path(), "utf8")) as SpendState;
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        // A torn write or corrupt file is not the same as "nothing written
+        // yet" — silently returning the zero-default here would make the
+        // next write permanently erase the real balance. Log it so a
+        // genuine loss is visible instead of vanishing.
+        console.error("[spend-store] failed to read spend.json, treating as empty", err);
+      }
       return { balanceUsd: 0, commitments: [] };
     }
   }
 
   async write(state: SpendState): Promise<void> {
     await mkdir(join(this.dataDir, "state"), { recursive: true });
-    await writeFile(this.path(), JSON.stringify(state, null, 2) + "\n");
+    await writeFileAtomic(this.path(), JSON.stringify(state, null, 2) + "\n");
   }
 }

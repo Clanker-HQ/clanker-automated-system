@@ -42,4 +42,14 @@ describe("SpendStore", () => {
     expect(await store.read()).toEqual({ balanceUsd: 1, commitments: [] });
     rmSync(dataDir, { recursive: true, force: true });
   });
+
+  it("treats a malformed (unparseable) file the same as missing, without throwing", async () => {
+    const { dataDir, store } = makeStore();
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(dataDir, "state"), { recursive: true });
+    await writeFile(join(dataDir, "state", "spend.json"), "{ not valid json");
+
+    expect(await store.read()).toEqual({ balanceUsd: 0, commitments: [] });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
 });

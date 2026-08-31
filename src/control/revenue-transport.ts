@@ -1,6 +1,7 @@
 export interface Sale {
   id: string;
   product: string;
+  /** UTC, Z-suffixed ISO 8601 (e.g. "2026-06-01T00:00:00.000Z") — FakeRevenueTransport compares these as strings, which is only chronologically correct in this exact format. */
   timestampIso: string;
   amountUsd: number;
 }

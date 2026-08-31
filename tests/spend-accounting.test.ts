@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { availableToSpendUsd, wouldExhaustBeforeRenewal } from "../src/spend/spend-accounting.js";
-import type { SpendState } from "../src/state/spend-store.js";
+import { MemoryStore } from "../src/memory/memory-store.js";
+import { availableToSpendUsd, recordSpend, wouldExhaustBeforeRenewal } from "../src/spend/spend-accounting.js";
+import { SpendStore, type SpendState } from "../src/state/spend-store.js";
 
 describe("availableToSpendUsd", () => {
   it("equals the full balance when there are no commitments", () => {
@@ -63,13 +67,6 @@ describe("wouldExhaustBeforeRenewal", () => {
     expect(wouldExhaustBeforeRenewal(state, candidate)).toBe(false);
   });
 });
-
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { MemoryStore } from "../src/memory/memory-store.js";
-import { SpendStore } from "../src/state/spend-store.js";
-import { recordSpend } from "../src/spend/spend-accounting.js";
 
 function fixtures() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-record-spend-"));
@@ -181,6 +178,64 @@ describe("recordSpend", () => {
       importance: 3,
       createdBy: "system:spend-accounting",
     });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("refuses a negative amountUsd, leaving state and memory untouched", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({ balanceUsd: 100, commitments: [] });
+
+    const result = await recordSpend(store, memory, {
+      amountUsd: -50,
+      recurring: false,
+      nextRenewalAt: null,
+      description: "refund gone wrong",
+      rationale: "should never be accepted",
+      importance: 5,
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(await store.read()).toEqual({ balanceUsd: 100, commitments: [] });
+    expect(await memory.list()).toEqual([]);
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("refuses a NaN amountUsd, leaving state and memory untouched", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({ balanceUsd: 100, commitments: [] });
+
+    const result = await recordSpend(store, memory, {
+      amountUsd: NaN,
+      recurring: false,
+      nextRenewalAt: null,
+      description: "malformed request",
+      rationale: "should never be accepted",
+      importance: 5,
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(await store.read()).toEqual({ balanceUsd: 100, commitments: [] });
+    expect(await memory.list()).toEqual([]);
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("refuses a recurring spend with nextRenewalAt: null", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({ balanceUsd: 100, commitments: [] });
+
+    const result = await recordSpend(store, memory, {
+      amountUsd: 10,
+      recurring: true,
+      nextRenewalAt: null,
+      description: "malformed recurring request",
+      rationale: "should never be accepted",
+      importance: 5,
+    });
+
+    expect(result.recorded).toBe(false);
+    const state = await store.read();
+    expect(state.commitments).toHaveLength(0);
+    expect(await memory.list()).toEqual([]);
     rmSync(dataDir, { recursive: true, force: true });
   });
 });

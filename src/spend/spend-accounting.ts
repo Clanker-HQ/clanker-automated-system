@@ -50,31 +50,37 @@ export async function recordSpend(
   memory: MemoryStore,
   request: SpendRequest,
 ): Promise<SpendResult> {
+  if (!Number.isFinite(request.amountUsd) || request.amountUsd <= 0) {
+    return { recorded: false, reason: `amountUsd must be a positive finite number, got ${request.amountUsd}` };
+  }
+  if (request.recurring && !request.nextRenewalAt) {
+    return { recorded: false, reason: "a recurring spend requires a non-null nextRenewalAt" };
+  }
+
   const state = await store.read();
-  const commitment: SpendCommitment = {
-    id: `spend_${randomUUID().slice(0, 12)}`,
-    amountUsd: request.amountUsd,
-    recurring: request.recurring,
-    nextRenewalAt: request.nextRenewalAt,
-  };
+  let nextState: SpendState;
 
   if (request.recurring) {
+    const commitment: SpendCommitment = {
+      id: `spend_${randomUUID().slice(0, 12)}`,
+      amountUsd: request.amountUsd,
+      recurring: true,
+      nextRenewalAt: request.nextRenewalAt,
+    };
     if (wouldExhaustBeforeRenewal(state, commitment)) {
       return {
         recorded: false,
         reason: `committing $${request.amountUsd}/cycle would exceed the balance once every recurring commitment is counted`,
       };
     }
-  } else if (request.amountUsd > availableToSpendUsd(state)) {
-    return {
-      recorded: false,
-      reason: `$${request.amountUsd} exceeds the $${availableToSpendUsd(state)} available to spend`,
-    };
+    nextState = { ...state, commitments: [...state.commitments, commitment] };
+  } else {
+    const available = availableToSpendUsd(state);
+    if (request.amountUsd > available) {
+      return { recorded: false, reason: `$${request.amountUsd} exceeds the $${available} available to spend` };
+    }
+    nextState = { ...state, balanceUsd: state.balanceUsd - request.amountUsd };
   }
-
-  const nextState: SpendState = request.recurring
-    ? { ...state, commitments: [...state.commitments, commitment] }
-    : { ...state, balanceUsd: state.balanceUsd - request.amountUsd };
 
   await store.write(nextState);
   await memory.append({
