@@ -1,8 +1,10 @@
+import type { MemoryConfig } from "../config.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import type { PendingStore } from "../control/pending.js";
 import type { TaskStore } from "../control/task-store.js";
 import type { Grant } from "../grants.js";
+import type { MemoryStore } from "../memory/memory-store.js";
 import { FakeRunner } from "./fake-runner.js";
 import { SdkRunner } from "./sdk-runner.js";
 import type { Runner } from "./types.js";
@@ -27,6 +29,8 @@ export function buildRunner(
     tasks?: TaskStore;
     wake?: () => Promise<void>;
     systemContext?: string;
+    memory?: MemoryStore;
+    memoryConfig?: MemoryConfig;
   },
   env: NodeJS.ProcessEnv = process.env,
 ): Runner {

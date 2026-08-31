@@ -5,7 +5,9 @@ import { ConfigOverridesStore, resolveGovernorSettings } from "./config-override
 import { DiscordBot } from "./control/bot.js";
 import { reconcileAndConnectBot } from "./control/boot-wiring.js";
 import { buildOutcomeVerifier } from "./control/build-outcome-verifier.js";
+import { buildReflectionSynthesiser } from "./control/build-reflection-synthesiser.js";
 import { buildRouter } from "./control/build-router.js";
+import { buildSuccessorSuggester } from "./control/build-successor-suggester.js";
 import { Dispatcher } from "./control/dispatcher.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
 import { RealGitPusher } from "./control/git-pusher.js";
@@ -18,6 +20,7 @@ import { installCrashHandlers } from "./crash-handlers.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
+import { MemoryStore } from "./memory/memory-store.js";
 import { Orchestrator } from "./orchestrator.js";
 import { DiscordOutbox } from "./outbox/discord.js";
 import { type AgentDef, loadRegistry } from "./registry.js";
@@ -68,6 +71,7 @@ function main(): void {
   let dispatcher: Dispatcher | undefined;
 
   const tasks = new TaskStore(DATA_DIR);
+  const memory = new MemoryStore(DATA_DIR);
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
@@ -97,6 +101,8 @@ function main(): void {
       grants, pending: new PendingStore(DATA_DIR), github,
       gitPusher: new RealGitPusher(),
       tasks,
+      memory,
+      memoryConfig: config.memory,
       systemContext,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound
@@ -195,6 +201,9 @@ function main(): void {
     agents,
     orchestrator,
     dataDir: DATA_DIR,
+    memory,
+    memoryConfig: config.memory,
+    suggestSuccessors: buildSuccessorSuggester(),
     // No agent has been chosen yet at this point (a routing failure, or no
     // registered specialist at all), so there is no agent.outbox.discord to
     // report through — "ops" is this project's one configured channel,
@@ -263,6 +272,8 @@ function main(): void {
           store: runStore,
           tasks,
           outbox,
+          memory,
+          memoryConfig: config.memory,
         });
       })
       .catch((error: unknown) => {
@@ -280,10 +291,33 @@ function main(): void {
           days: config.retention.days,
           channel: config.retention.channel,
           outbox,
+          memory,
+          memoryConfig: config.memory,
         });
       })
       .catch((error: unknown) => {
         console.error("[boot] failed to start the data-retention schedule", error);
+      });
+  }
+
+  // Gated on memory.enabled, the same flag that gates successor proposals and
+  // retention's memory pruning above — a reflection pass has nothing to
+  // synthesise from, and nowhere useful to write its output, when memory
+  // itself is off.
+  if (config.memory.enabled) {
+    void import("./triggers/reflection.js")
+      .then(({ startReflection }) => {
+        startReflection({
+          schedule: config.memory.reflectionSchedule,
+          timezone: config.memory.reflectionTimezone,
+          windowDays: config.memory.reflectionWindowDays,
+          memory,
+          runStore,
+          synthesise: buildReflectionSynthesiser(),
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the reflection schedule", error);
       });
   }
 

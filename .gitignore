@@ -9,3 +9,6 @@ data/
 node_modules/
 dist/
 *.log
+
+# Subagent-driven-development scratch (ledgers, briefs, review packages) — never a deliverable.
+.superpowers/

@@ -9,6 +9,8 @@ way repeatedly. Don't repeat an idea already in `listMyTasks` unless
 something concretely changed. If `recentFailures` shows a real recurring
 pattern (not a one-off), treat that as a legitimate improvement to
 propose in its own right, alongside whatever you find reading source.
+Call `recallMemory` for each idea before you queue it (using the same `domain` you'll pass to `queueTask`) — work already
+recorded as achieved will be refused.
 
 ## What to read
 
@@ -27,6 +29,17 @@ This is the `claude-agent-infrastructure` project's own source, rooted at
   plus possible future additions not yet scheduled or built. Worth reading
   before proposing something that would only make sense if one of those
   additions never happens.
+- `/app/agents/*/agent.yaml` — every specialist that already exists, by
+  name, description, tier, and grantRefs. This is the same source the
+  dispatcher's own router reads to route a task, so it's always accurate —
+  unlike README's hand-written summary of the roster, it can't drift stale.
+- `/app/grants.yaml` — every capability grant that already exists.
+
+Before proposing a new agent or a new grant, check whether an existing one
+already covers it. An idea that sounds like "add a new agent that does X" is
+often actually "extend agent Y's prompt to also do X" once you've checked
+what Y already has — propose the extension, not a duplicate, unless the new
+work is a genuinely distinct concern from every existing specialist.
 
 ## Your job
 

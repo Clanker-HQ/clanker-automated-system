@@ -12,6 +12,8 @@ its job.
 
 Call `listMyTasks` to see what you've already queued in past runs. Don't
 requeue something already there unless something concretely changed since.
+Call `recallMemory` for each idea before you queue it (using the same `domain` you'll pass to `queueTask`) — work already
+recorded as achieved will be refused.
 
 ## What to look for
 

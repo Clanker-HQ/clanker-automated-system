@@ -3,9 +3,11 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { MemoryStore } from "../src/memory/memory-store.js";
 import { findOrphanedRuns, pruneOldData } from "../src/retention.js";
 
 const OLD = new Date("2020-01-01T00:00:00.000Z");
+const MID = new Date("2023-06-01T00:00:00.000Z");
 const RECENT = new Date("2026-08-27T00:00:00.000Z");
 const CUTOFF = new Date("2026-08-01T00:00:00.000Z");
 
@@ -74,8 +76,48 @@ describe("pruneOldData", () => {
   it("does nothing, without throwing, when runs/ and workspaces/ don't exist yet", async () => {
     const dir = await dataDir();
     await expect(pruneOldData({ dataDir: dir, olderThan: CUTOFF })).resolves.toEqual({
-      removedRuns: [], removedWorkspaceFiles: [],
+      removedRuns: [], removedWorkspaceFiles: [], removedMemoryRecords: 0,
     });
+  });
+
+  it("prunes raw memory records older than the cutoff", async () => {
+    const dir = await dataDir();
+    const store = new MemoryStore(dir);
+    await store.append({ domain: "test", kind: "finding", subject: "old finding", body: "b", importance: 5, createdBy: "test", ts: OLD.toISOString() });
+    await store.append({ domain: "test", kind: "finding", subject: "fresh finding", body: "b", importance: 5, createdBy: "test", ts: RECENT.toISOString() });
+    const result = await pruneOldData({
+      dataDir: dir,
+      olderThan: CUTOFF,
+      memory: { store, olderThan: CUTOFF, reflectionsOlderThan: OLD },
+    });
+    expect(result.removedMemoryRecords).toBe(1);
+    const remaining = await store.list();
+    expect(remaining.map((r) => r.subject)).toEqual(["fresh finding"]);
+  });
+
+  it("keeps reflections past the raw-record cutoff", async () => {
+    const dir = await dataDir();
+    const store = new MemoryStore(dir);
+    await store.append({ domain: "test", kind: "reflection", subject: "old reflection", body: "b", importance: 5, createdBy: "test", ts: MID.toISOString() });
+    await store.append({ domain: "test", kind: "finding", subject: "old finding", body: "b", importance: 5, createdBy: "test", ts: MID.toISOString() });
+    const result = await pruneOldData({
+      dataDir: dir,
+      olderThan: CUTOFF,
+      memory: { store, olderThan: CUTOFF, reflectionsOlderThan: OLD },
+    });
+    expect(result.removedMemoryRecords).toBe(1);
+    const remaining = await store.list();
+    expect(remaining.map((r) => r.kind)).toEqual(["reflection"]);
+  });
+
+  it("leaves the log untouched when no memory option is supplied", async () => {
+    const dir = await dataDir();
+    const store = new MemoryStore(dir);
+    await store.append({ domain: "test", kind: "finding", subject: "old finding", body: "b", importance: 5, createdBy: "test", ts: OLD.toISOString() });
+    const result = await pruneOldData({ dataDir: dir, olderThan: CUTOFF });
+    expect(result.removedMemoryRecords).toBe(0);
+    const remaining = await store.list();
+    expect(remaining).toHaveLength(1);
   });
 });
 

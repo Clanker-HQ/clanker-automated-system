@@ -1,6 +1,8 @@
 import { Cron } from "croner";
+import type { MemoryConfig } from "../config.js";
 import type { TaskStore } from "../control/task-store.js";
 import { buildDigestText } from "../digest.js";
+import type { MemoryStore } from "../memory/memory-store.js";
 import type { RunStore } from "../run-store.js";
 
 interface DigestOutbox {
@@ -15,12 +17,17 @@ export function startDigest(opts: {
   tasks: TaskStore;
   outbox: DigestOutbox;
   now?: () => Date;
+  memory?: MemoryStore;
+  /** Passed straight through: buildDigestText drops its memory section when this says memory is off. */
+  memoryConfig?: MemoryConfig;
 }): Cron {
   const now = opts.now ?? (() => new Date());
   const job = new Cron(opts.schedule, { timezone: opts.timezone, protect: true }, () => {
     void (async () => {
       const since = new Date(now().getTime() - 24 * 60 * 60 * 1000);
-      const text = await buildDigestText({ store: opts.store, tasks: opts.tasks, since });
+      const text = await buildDigestText({
+        store: opts.store, tasks: opts.tasks, since, memory: opts.memory, memoryConfig: opts.memoryConfig,
+      });
       await opts.outbox.postAlert(opts.channel, text);
     })().catch((error: unknown) => {
       console.error("[digest] failed to build/post the daily digest", error);

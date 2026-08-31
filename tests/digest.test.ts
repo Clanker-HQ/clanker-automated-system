@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskStore } from "../src/control/task-store.js";
 import { buildDigestText } from "../src/digest.js";
+import { MemoryStore } from "../src/memory/memory-store.js";
 import { RunStore, newRunId } from "../src/run-store.js";
 
 function stores() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-"));
-  return { store: new RunStore(dataDir), tasks: new TaskStore(dataDir) };
+  return { store: new RunStore(dataDir), tasks: new TaskStore(dataDir), memory: new MemoryStore(dataDir) };
 }
 
 const SINCE = new Date("2026-08-27T00:00:00.000Z");
@@ -37,6 +38,12 @@ describe("buildDigestText", () => {
   it("says nothing happened when the window is empty", async () => {
     const { store, tasks } = stores();
     expect(await buildDigestText({ store, tasks, since: SINCE })).toBe("📅 Daily digest: nothing happened in the last 24h.");
+  });
+
+  it("still says nothing happened when only memory activity is in the window", async () => {
+    const { store, tasks, memory } = stores();
+    await memory.append({ domain: "research", kind: "finding", subject: "x", body: "y", importance: 5, createdBy: "agent:research" });
+    expect(await buildDigestText({ store, tasks, since: SINCE, memory })).toBe("📅 Daily digest: nothing happened in the last 24h.");
   });
 
   it("counts runs and spend within the window, ignoring runs before it", async () => {
@@ -111,5 +118,72 @@ describe("buildDigestText", () => {
     const text = await buildDigestText({ store, tasks, since: SINCE });
     expect(text).toContain("Tasks: 0 done, 7 failed");
     expect(text).toContain("…and 2 more failed task(s)");
+  });
+
+  it("includes memory counts, including suppressed duplicates, within the window", async () => {
+    const { store, tasks, memory } = stores();
+    // Needs at least one run/task in the window to get past the "nothing
+    // happened" early return — this test is about the memory section's
+    // content, not about whether the digest fires on a memory-only day.
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+    vi.useFakeTimers();
+    vi.setSystemTime(WITHIN_WINDOW);
+    try {
+      await memory.append({ domain: "research", kind: "finding", subject: "x", body: "found something", importance: 5, createdBy: "agent:research" });
+      await memory.append({ domain: "research", kind: "outcome", subject: "x", body: "did something", importance: 5, createdBy: "agent:research" });
+      await memory.append({ domain: "research", kind: "proposal", subject: "x", body: "suppressed as a duplicate of mem_prior", importance: 5, createdBy: "agent:research" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const text = await buildDigestText({ store, tasks, since: SINCE, memory });
+    expect(text).toContain("🧠 Memory:");
+    expect(text).toContain("1 finding");
+    expect(text).toContain("1 outcome");
+    expect(text).toContain("1 proposal");
+    expect(text).toContain("1 duplicate proposal(s) suppressed");
+  });
+
+  it("omits the memory section when memory is explicitly disabled in config", async () => {
+    const { store, tasks, memory } = stores();
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+    vi.useFakeTimers();
+    vi.setSystemTime(WITHIN_WINDOW);
+    try {
+      await memory.append({ domain: "research", kind: "finding", subject: "x", body: "found something", importance: 5, createdBy: "agent:research" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const memoryConfig = {
+      enabled: false, retentionDays: 90, reflectionRetentionDays: 365,
+      similarityThreshold: 0.75, stalenessDays: 30, recencyHalfLifeDays: 14,
+      maxChainDepth: 3, maxAgentTasksPerDay: 20,
+      weights: { goal: 0.5, novelty: 0.25, importance: 0.15, recency: 0.1 },
+      reflectionSchedule: "0 3 * * 1", reflectionTimezone: "UTC", reflectionWindowDays: 14,
+    };
+    const text = await buildDigestText({ store, tasks, since: SINCE, memory, memoryConfig });
+    expect(text).not.toContain("🧠 Memory");
+  });
+
+  it("omits the memory section when there is no memory activity in the window", async () => {
+    const { store, tasks, memory } = stores();
+    // A run in the window (so the digest actually fires) but zero memory
+    // records at all — the section must not appear.
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+    const text = await buildDigestText({ store, tasks, since: SINCE, memory });
+    expect(text).not.toContain("🧠 Memory");
+  });
+
+  it("omits the memory section when memory activity is outside the window", async () => {
+    const { store, tasks, memory } = stores();
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+    vi.useFakeTimers();
+    vi.setSystemTime(BEFORE_WINDOW);
+    try {
+      await memory.append({ domain: "research", kind: "finding", subject: "x", body: "old finding", importance: 5, createdBy: "agent:research" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const text = await buildDigestText({ store, tasks, since: SINCE, memory });
+    expect(text).not.toContain("🧠 Memory");
   });
 });

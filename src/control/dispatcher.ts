@@ -1,4 +1,9 @@
 import { join } from "node:path";
+import type { MemoryConfig } from "../config.js";
+import type { MemoryStore } from "../memory/memory-store.js";
+import { retrieveContext } from "../memory/retrieval.js";
+import { proposeSuccessors, type SuccessorSuggester } from "../memory/successor.js";
+import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
 import type { Router, Specialist } from "./router.js";
@@ -23,6 +28,12 @@ export interface DispatcherDeps {
   notify: (text: string) => Promise<void>;
   dataDir: string;
   now?: () => Date;
+  /** Optional: without it the dispatcher behaves exactly as before, writing no memory records. */
+  memory?: MemoryStore;
+  /** Optional, alongside memory/suggestSuccessors: without all three, no successor pass runs. */
+  memoryConfig?: MemoryConfig;
+  /** Optional, alongside memory/memoryConfig: without all three, no successor pass runs. */
+  suggestSuccessors?: SuccessorSuggester;
 }
 
 /**
@@ -50,6 +61,27 @@ async function notifyBestEffort(deps: DispatcherDeps, text: string): Promise<voi
     await deps.notify(text);
   } catch (error) {
     console.error("[dispatcher] notify failed", error);
+  }
+}
+
+/**
+ * Recording to the memory log must never change what a task RECORDS about
+ * itself — identical reasoning to notifyBestEffort above. A broken or full
+ * disk under data/memory/ is not a reason to lose a task's real status.
+ *
+ * `memoryConfig?.enabled === false` (rather than `!memoryConfig?.enabled`) is
+ * deliberate: production always supplies memoryConfig alongside memory, so the
+ * only way the config is absent is a caller that never opted into it at all
+ * (tests). Turning `memory.enabled: false` into "skip" matters because
+ * retention's pruning checks that same flag — without this the log would keep
+ * growing while nothing ever pruned or read it.
+ */
+async function rememberBestEffort(deps: DispatcherDeps, input: MemoryInput): Promise<void> {
+  if (!deps.memory || deps.memoryConfig?.enabled === false) return;
+  try {
+    await deps.memory.append(input);
+  } catch (error) {
+    console.error("[dispatcher] memory append failed", error);
   }
 }
 
@@ -168,6 +200,35 @@ async function claimAndStart(deps: DispatcherDeps, exclude: ReadonlySet<string>)
 async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: AgentDef): Promise<DispatchOutcome> {
   const now = deps.now ?? (() => new Date());
 
+  // `domain` is a namespace shared by everything in the memory log, and both
+  // the novelty gate and retrieval match it as an EXACT string. A proposal is
+  // written under the free-text topic tag whoever queued it chose
+  // ("dependencies", "cleanup", the schema's "general"), so recording this
+  // task's outcome under the executing specialist's NAME instead would file it
+  // where no future proposal in that topic could ever find it — the novelty
+  // gate would stop suppressing real duplicates and retrieval would stop
+  // finding anything. So the domain (and, in the same pass, the chain depth)
+  // comes from this task's OWN proposal record, keyed by sourceTaskId.
+  //
+  // A task created by a human via `!task` has no proposal record at all — it
+  // keeps the previous behaviour: the agent's name as its domain, depth 0.
+  let taskDomain = agent.name;
+  let taskChainDepth = 0;
+  if (deps.memory) {
+    try {
+      const ownProposal = (await deps.memory.list()).find((r) => r.kind === "proposal" && r.sourceTaskId === task.id);
+      if (ownProposal) {
+        taskDomain = ownProposal.domain;
+        taskChainDepth = ownProposal.chainDepth;
+      }
+    } catch (error) {
+      // Same posture as rememberBestEffort: a memory read must never be able
+      // to fail a task. Falling back to the defaults reproduces exactly the
+      // pre-memory behaviour rather than losing the run.
+      console.error(`[dispatcher] could not read task ${task.id}'s own proposal record`, error);
+    }
+  }
+
   try {
     // Applied here, not in each specialist's own prompt.md, so every current
     // and future dispatched agent gets the same "-d" behavior for free rather
@@ -178,7 +239,18 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       ? `\n\n(A previous attempt at this task finished without error, but grading found it did not fully achieve ` +
         `the objective: "${task.lastVerificationReason}". Address that gap this time.)`
       : "";
-    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}`;
+    let memoryContext = "";
+    if (deps.memory && deps.memoryConfig?.enabled) {
+      try {
+        memoryContext = retrieveContext(task.text.slice(0, 200), taskDomain, await deps.memory.list(), {
+          limit: 5, halfLifeDays: deps.memoryConfig.recencyHalfLifeDays, now: now(),
+        });
+      } catch (error) {
+        // Enriching a prompt is a bonus; it must never stop the task from running.
+        console.error("[dispatcher] memory retrieval skipped", error);
+      }
+    }
+    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${memoryContext}`;
     const result = await deps.orchestrator.executeRun(agent, now(), promptContext);
 
     if (!result) {
@@ -227,6 +299,12 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         `⚠️ Task \`${task.id}\` done after ${MAX_RETRIES} retries, still graded not-achieved ` +
           `(${result.verifiedOutcome.reason}): ${result.summary}`,
       );
+      await rememberBestEffort(deps, {
+        domain: taskDomain, kind: "outcome", subject: task.text.slice(0, 200),
+        body: result.verifiedOutcome.reason, importance: 5,
+        createdBy: `agent:${agent.name}`, verdict: "not-achieved",
+        sourceTaskId: task.id, sourceRunId: result.runId,
+      });
     } else if (result.status === "success") {
       await deps.tasks.update(task.id, {
         status: "done",
@@ -234,6 +312,36 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         result: { summary: result.summary, path: join(deps.dataDir, "runs", result.runId) },
       });
       await notifyBestEffort(deps, `✅ Task \`${task.id}\` done: ${result.summary}`);
+      await rememberBestEffort(deps, {
+        domain: taskDomain, kind: "outcome", subject: task.text.slice(0, 200),
+        body: result.summary, importance: 5, createdBy: `agent:${agent.name}`,
+        verdict: result.verifiedOutcome?.verdict ?? "unclear",
+        sourceTaskId: task.id, sourceRunId: result.runId,
+      });
+      if (deps.memory && deps.memoryConfig?.enabled && deps.suggestSuccessors) {
+        try {
+          // `task` is the task that JUST completed — it is the "parentTask" for
+          // whatever proposeSuccessors creates next, so what's needed here is
+          // task's OWN chain depth, not its parent's. That depth was recorded
+          // on task's own proposal record at creation time (Task 5's queueTask,
+          // or this same successor mechanism one level up), keyed by
+          // sourceTaskId === task.id — NOT task.parentId, which would fetch
+          // the depth of the task ONE LEVEL ABOVE this one and silently
+          // undercount by one at every generation past the first. It is read
+          // once, at the top of this function, alongside taskDomain — the same
+          // record answers both questions, so there is no second list() here.
+          await proposeSuccessors({
+            parentTask: task, summary: result.summary, parentDepth: taskChainDepth,
+            agentName: agent.name, tasks: deps.tasks, memory: deps.memory,
+            config: deps.memoryConfig, suggest: deps.suggestSuccessors, now: now(),
+          });
+        } catch (error) {
+          // Same posture as rememberBestEffort/notifyBestEffort: this must
+          // never be able to turn an already-completed, already-recorded
+          // success into a failed task.
+          console.error("[dispatcher] successor pass skipped", error);
+        }
+      }
     } else if (result.status === "parked" || result.status === "question") {
       // NOT a failure: the run is alive and paused mid-execution awaiting a
       // human approve/deny/answer, which Orchestrator.resumeRun will continue
@@ -279,6 +387,11 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         failureReason: reason,
       });
       await notifyBestEffort(deps, `❌ Task \`${task.id}\` failed: ${reason}`);
+      await rememberBestEffort(deps, {
+        domain: taskDomain, kind: "outcome", subject: task.text.slice(0, 200),
+        body: reason, importance: 5, createdBy: `agent:${agent.name}`,
+        verdict: "not-achieved", sourceTaskId: task.id, sourceRunId: result.runId,
+      });
     }
     return { ran: true, taskId: task.id };
   } catch (error) {

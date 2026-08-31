@@ -14,6 +14,9 @@ function prOpenedPayload(overrides: Record<string, unknown> = {}): string {
     action: "opened",
     number: 42,
     repository: { full_name: "owner/repo" },
+    // Defaults to a trusted author so every existing test (which doesn't
+    // care about this field) keeps exercising the "accepted" path.
+    pull_request: { author_association: "OWNER" },
     ...overrides,
   });
 }
@@ -68,6 +71,60 @@ describe("WebhookReceiver.handleRequest", () => {
     const body = prOpenedPayload();
     const result = await receiver.handleRequest(body, sign(body));
     expect(result.status).toBe(202);
+  });
+
+  it.each(["MEMBER", "COLLABORATOR"])(
+    "calls the handler for a PR authored by a %s",
+    async (authorAssociation) => {
+      const receiver = new WebhookReceiver({ secret: SECRET });
+      const handler = vi.fn().mockResolvedValue(undefined);
+      receiver.onEvent(handler);
+
+      const body = prOpenedPayload({ pull_request: { author_association: authorAssociation } });
+      const result = await receiver.handleRequest(body, sign(body));
+
+      expect(result.status).toBe(202);
+      expect(handler).toHaveBeenCalledWith({ repo: "owner/repo", event: "pull_request", action: "opened", pullRequestNumber: 42 });
+    },
+  );
+
+  it.each(["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "MANNEQUIN"])(
+    "ignores a PR authored by a %s, without calling the handler",
+    async (authorAssociation) => {
+      const receiver = new WebhookReceiver({ secret: SECRET });
+      const handler = vi.fn();
+      receiver.onEvent(handler);
+
+      const body = prOpenedPayload({ pull_request: { author_association: authorAssociation } });
+      const result = await receiver.handleRequest(body, sign(body));
+
+      expect(result.status).toBe(200);
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed (ignores, does not call the handler) when author_association is missing", async () => {
+    const receiver = new WebhookReceiver({ secret: SECRET });
+    const handler = vi.fn();
+    receiver.onEvent(handler);
+
+    const body = prOpenedPayload({ pull_request: {} });
+    const result = await receiver.handleRequest(body, sign(body));
+
+    expect(result.status).toBe(200);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the pull_request object itself is missing", async () => {
+    const receiver = new WebhookReceiver({ secret: SECRET });
+    const handler = vi.fn();
+    receiver.onEvent(handler);
+
+    const body = prOpenedPayload({ pull_request: undefined });
+    const result = await receiver.handleRequest(body, sign(body));
+
+    expect(result.status).toBe(200);
+    expect(handler).not.toHaveBeenCalled();
   });
 });
 

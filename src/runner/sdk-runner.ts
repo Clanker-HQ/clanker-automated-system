@@ -1,11 +1,16 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import type { MemoryConfig } from "../config.js";
 import { touchesExcludedPath } from "../control/excluded-paths.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../control/task-store.js";
 import { decide, detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
+import type { MemoryStore } from "../memory/memory-store.js";
+import { assessNovelty } from "../memory/novelty-gate.js";
+import { retrieveContext } from "../memory/retrieval.js";
+import { priorityScore, toPriority } from "../memory/scoring.js";
 import type { AgentDef } from "../registry.js";
 import { resolveCredentials } from "./credentials.js";
 import type { RunContext, RunEvent, Runner } from "./types.js";
@@ -214,6 +219,9 @@ export class SdkRunner implements Runner {
       wake?: () => Promise<void>;
       /** docs/system-context.md's contents, read once at boot (src/index.ts). Optional so tests/scripts that don't care can skip it — the systemContext tool is simply not registered without it. */
       systemContext?: string;
+      /** Optional, same shape as `tasks`: without it queueTask keeps its old flat-priority behaviour and writes no memory records. */
+      memory?: MemoryStore;
+      memoryConfig?: MemoryConfig;
     } = {
       grants: [],
       pending: new PendingStore(process.cwd()),
@@ -558,6 +566,8 @@ export class SdkRunner implements Runner {
     let queueTaskCalls = 0;
     const tasksDep = this.deps.tasks;
     const wakeDep = this.deps.wake;
+    const memoryDep = this.deps.memory;
+    const memoryConfigDep = this.deps.memoryConfig;
     /**
      * None of these three tools has an outward effect (they only touch this
      * process's own task queue, not the network), so none of them needs a
@@ -576,9 +586,17 @@ export class SdkRunner implements Runner {
               ? [
                   tool(
                     "queueTask",
-                    "Queue a new task for the system to work on later — the same durable queue a human's !task command adds to. Use this to propose research or an improvement rather than doing it yourself in this run.",
-                    { text: z.string().min(1).max(MAX_TASK_TEXT_LENGTH), priority: z.number().int().nonnegative().optional() },
-                    async ({ text, priority }) => {
+                    "Queue a new task for the system to work on later — the same durable queue a human's !task command adds to. Use this to propose research or an improvement rather than doing it yourself in this run. Give a `domain` and a one-line `subject` so the system can tell whether this repeats work it already did.",
+                    {
+                      text: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
+                      priority: z.number().int().nonnegative().optional(),
+                      domain: z.string().min(1).default("general"),
+                      subject: z.string().min(1).max(200).optional(),
+                      key: z.string().max(200).optional(),
+                      importance: z.number().int().min(1).max(10).default(5),
+                      goalAlignment: z.number().min(0).max(1).default(0.5),
+                    },
+                    async ({ text, priority, domain, subject, key, importance, goalAlignment }) => {
                       // A hard cap enforced here, not just in the prompt: the code is
                       // the boundary, the same posture detectOutwardEffect already
                       // uses for outward effects — an over-eager or confused model
@@ -593,17 +611,87 @@ export class SdkRunner implements Runner {
                           ],
                         };
                       }
+
+                      const memory = memoryDep;
+                      const cfg = memoryConfigDep;
+                      let annotation = "";
+                      let computedPriority = Math.min(priority ?? DEFAULT_SELF_QUEUED_PRIORITY, DEFAULT_SELF_QUEUED_PRIORITY);
+
+                      if (memory && cfg?.enabled) {
+                        const now = new Date();
+                        const candidate = { domain, subject: subject ?? text.slice(0, 200), ...(key ? { key } : {}) };
+                        const verdict = assessNovelty(candidate, await memory.list(), {
+                          threshold: cfg.similarityThreshold,
+                          stalenessDays: cfg.stalenessDays,
+                          now,
+                        });
+
+                        if (verdict.kind === "suppressed") {
+                          // Counted against the per-run cap deliberately: a run
+                          // that keeps proposing duplicates should run out of
+                          // attempts rather than retry forever.
+                          queueTaskCalls += 1;
+                          // Best-effort, exactly like the dispatcher's
+                          // rememberBestEffort: a memory write that throws must
+                          // never turn a decided tool call into a generic SDK
+                          // error, which a well-behaved agent would read as
+                          // "that didn't go through" and retry.
+                          try {
+                            await memory.append({
+                              domain, kind: "proposal", subject: candidate.subject, body: `suppressed as a duplicate of ${verdict.priorId}`,
+                              importance, createdBy: `agent:${agent.name}`,
+                            });
+                          } catch (error) {
+                            console.error(`[queueTask] failed to record suppressed duplicate for agent ${agent.name}`, error);
+                          }
+                          return {
+                            content: [{ type: "text" as const, text: `Refused: this already covers work recorded as achieved (${verdict.priorId}, similarity ${verdict.maxSimilarity.toFixed(2)}). Propose something else.` }],
+                          };
+                        }
+
+                        if (verdict.kind === "retry" && verdict.priorReason) {
+                          annotation = `\n\n(A previous attempt at closely related work recorded: "${verdict.priorReason}". Take that into account.)`;
+                        }
+
+                        computedPriority = toPriority(
+                          priorityScore(
+                            { goalAlignment, maxSimilarity: verdict.maxSimilarity, importance, proposedAt: now.toISOString() },
+                            cfg.weights,
+                            now,
+                          ),
+                        );
+                      }
+
                       queueTaskCalls += 1;
                       const created = await tasksDep.create({
-                        text,
-                        priority: Math.min(priority ?? DEFAULT_SELF_QUEUED_PRIORITY, DEFAULT_SELF_QUEUED_PRIORITY),
+                        // `text` alone was already bounded by the schema's
+                        // .max(MAX_TASK_TEXT_LENGTH) above, but `annotation`
+                        // (built from a prior record's full body) is appended
+                        // afterwards, so only the combined string is what
+                        // actually has to respect the cap.
+                        text: `${text}${annotation}`.slice(0, MAX_TASK_TEXT_LENGTH),
+                        priority: computedPriority,
                         createdBy: `agent:${agent.name}`,
                         wantsDetail: true,
                       });
+                      if (memory && cfg?.enabled) {
+                        // Best-effort for the same reason as the suppressed
+                        // branch above — the task is already created, and
+                        // losing its proposal record is far better than
+                        // reporting a failure that invites a duplicate.
+                        try {
+                          await memory.append({
+                            domain, kind: "proposal", subject: subject ?? text.slice(0, 200), ...(key ? { key } : {}),
+                            body: text, importance, createdBy: `agent:${agent.name}`, sourceTaskId: created.id,
+                          });
+                        } catch (error) {
+                          console.error(`[queueTask] failed to record proposal ${created.id} for agent ${agent.name}`, error);
+                        }
+                      }
                       void wakeDep().catch((err: unknown) => {
                         console.error(`[queueTask] dispatcher wake failed after queuing ${created.id} (agent ${agent.name})`, err);
                       });
-                      return { content: [{ type: "text" as const, text: `Queued task ${created.id}.` }] };
+                      return { content: [{ type: "text" as const, text: `Queued task ${created.id} at priority ${created.priority}.` }] };
                     },
                   ),
                 ]
@@ -648,6 +736,23 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: JSON.stringify(top, null, 2) }] };
               },
             ),
+            ...(memoryDep && memoryConfigDep?.enabled
+              ? [
+                  tool(
+                    "recallMemory",
+                    "Search what this system already knows about a subject — prior findings, outcomes, and reflections. Call this BEFORE proposing work, so you don't propose something that has already been done and will be refused.",
+                    { subject: z.string().min(1).max(200), domain: z.string().min(1) },
+                    async ({ subject, domain }) => {
+                      const text = retrieveContext(subject, domain, await memoryDep.list(), {
+                        limit: 8,
+                        halfLifeDays: memoryConfigDep.recencyHalfLifeDays,
+                        now: new Date(),
+                      });
+                      return { content: [{ type: "text" as const, text: text || "Nothing recorded on this subject yet." }] };
+                    },
+                  ),
+                ]
+              : []),
           ],
         })
       : undefined;

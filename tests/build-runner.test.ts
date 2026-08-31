@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeGitPusher } from "../src/control/git-pusher.js";
 import { PendingStore } from "../src/control/pending.js";
 import { TaskStore } from "../src/control/task-store.js";
+import { MemoryStore } from "../src/memory/memory-store.js";
 import { buildRunner } from "../src/runner/build-runner.js";
 import { FakeRunner } from "../src/runner/fake-runner.js";
 import { SdkRunner } from "../src/runner/sdk-runner.js";
@@ -49,6 +50,14 @@ describe("buildRunner", () => {
     const { grants, pending } = opts();
     const gitPusher = new FakeGitPusher();
     const runner = buildRunner({ grants, pending, gitPusher }, {}) as SdkRunner;
+    expect(runner).toBeInstanceOf(SdkRunner);
+  });
+
+  it("accepts memory/memoryConfig and still returns the real runner when provided", () => {
+    const { grants, pending } = opts();
+    const memory = new MemoryStore(mkdtempSync(join(tmpdir(), "cai-buildrunner-")));
+    const memoryConfig = { enabled: true } as any; // only `enabled` matters to buildRunner itself
+    const runner = buildRunner({ grants, pending, memory, memoryConfig }, {}) as SdkRunner;
     expect(runner).toBeInstanceOf(SdkRunner);
   });
 });
