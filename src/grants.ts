@@ -27,7 +27,11 @@ const ProvisionGrant = z
   .object({
     id: z.string().min(1),
     kind: z.literal("provision"),
-    resource: z.enum(["github-repo", "host-site", "dns-subdomain"]),
+    // "spend-card" backs the prepaid-card grant described in
+    // docs/superpowers/specs/2026-08-30-self-evaluation-design.md ("The
+    // spend pot") — the system holds card-spend credentials behind this
+    // resource, never the account's own login.
+    resource: z.enum(["github-repo", "host-site", "dns-subdomain", "spend-card"]),
     scope: z.string().min(1),
     limit: z.object({ perDay: z.number().int().positive() }).strict(),
     secret: z.string().min(1),
