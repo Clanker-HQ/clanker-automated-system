@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,8 @@ import { TaskStore } from "../src/control/task-store.js";
 import { buildDigestText } from "../src/digest.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import { RunStore, newRunId } from "../src/run-store.js";
+import type { Metrics } from "../src/state/metrics-store.js";
+import { MetricsStore } from "../src/state/metrics-store.js";
 
 function stores() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-"));
@@ -185,5 +187,95 @@ describe("buildDigestText", () => {
     }
     const text = await buildDigestText({ store, tasks, since: SINCE, memory });
     expect(text).not.toContain("🧠 Memory");
+  });
+});
+
+function metricsSnapshot(overrides: Partial<Metrics> = {}): Metrics {
+  return {
+    computedAt: WITHIN_WINDOW.toISOString(),
+    windowDays: 7,
+    netIncomeUsd: 42,
+    notAchievedRate: 0.1,
+    notAchievedByAgent: [],
+    costPerCompletedTaskUsd: 1.5,
+    noveltySharePercent: 90,
+    suppressedProposalCount: 1,
+    queueStarvationHours: 2,
+    ...overrides,
+  };
+}
+
+describe("buildDigestText — metrics section", () => {
+  it("includes a fresh snapshot's net income when one landed within the digest window", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ netIncomeUsd: 42 }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).toContain("$42.00 net income");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("shows the delta against the previous snapshot when one exists", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ computedAt: BEFORE_WINDOW.toISOString(), netIncomeUsd: 30 }));
+    await metricsStore.write(metricsSnapshot({ computedAt: WITHIN_WINDOW.toISOString(), netIncomeUsd: 42 }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).toContain("+$12.00");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("omits the metrics section when the latest snapshot predates the digest window", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ computedAt: BEFORE_WINDOW.toISOString() }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).not.toContain("net income");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("omits the metrics section entirely when no metricsStore is passed", async () => {
+    const { store, tasks } = stores();
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+
+    const text = await buildDigestText({ store, tasks, since: SINCE });
+
+    expect(text).not.toContain("net income");
+  });
+
+  it("treats a fresh metrics snapshot as activity, not returning the empty-digest message, even with no runs or tasks", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot());
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).not.toBe("📅 Daily digest: nothing happened in the last 24h.");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("handles null-valued metric fields without printing 'null' or 'NaN'", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(
+      metricsSnapshot({ notAchievedRate: null, costPerCompletedTaskUsd: null, noveltySharePercent: null, queueStarvationHours: null }),
+    );
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).not.toContain("null");
+    expect(text).not.toContain("NaN");
+    rmSync(dataDir, { recursive: true, force: true });
   });
 });
