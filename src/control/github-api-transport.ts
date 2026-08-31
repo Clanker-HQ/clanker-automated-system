@@ -55,13 +55,14 @@ export class GithubApiTransport implements GithubTransport {
       );
     }
 
-    const pr = (await prRes.json()) as { head: { sha: string }; title: string; body: string | null };
+    const pr = (await prRes.json()) as { head: { sha: string }; base: { ref: string }; title: string; body: string | null };
     const files = (await filesRes.json()) as { filename: string; previous_filename?: string }[];
     const diff = await diffRes.text();
     return {
       number,
       repo,
       headSha: pr.head.sha,
+      base: pr.base.ref,
       // A rename is reported as one entry with `filename` = the NEW path and
       // `previous_filename` = the OLD one. Reporting only the new path would
       // let a PR move an excluded file out from under Lock 4's exact-path set
@@ -116,5 +117,37 @@ export class GithubApiTransport implements GithubTransport {
     if (!res.ok) throw new Error(`GitHub API: failed to open a pull request for ${repo}:${opts.head} (${res.status})`);
     const pr = (await res.json()) as { number: number; html_url: string };
     return { number: pr.number, url: pr.html_url };
+  }
+
+  async getFileContent(repo: string, ref: string, path: string): Promise<string | null> {
+    const res = await this.fetchImpl(`https://api.github.com/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`GitHub API: failed to fetch ${repo}/${path}@${ref} (${res.status})`);
+    const body = (await res.json()) as { content: string; encoding: string };
+    return Buffer.from(body.content, "base64").toString("utf8");
+  }
+
+  /**
+   * Uses the Git Trees API recursively rather than the Contents API, which
+   * only lists one directory level per call — this needs every
+   * agents directory's agent.yaml regardless of nesting depth in one round trip.
+   * Fails closed on a truncated tree for the same reason getPullRequest
+   * fails closed on a paginated changed-files list: an incomplete listing
+   * here could hide an agent.yaml from the self-build gate's schema check.
+   */
+  async listRepoFiles(repo: string, ref: string, pathPrefix: string): Promise<string[]> {
+    const res = await this.fetchImpl(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`GitHub API: failed to list files in ${repo}@${ref} (${res.status})`);
+    const body = (await res.json()) as { tree: { path: string; type: string }[]; truncated: boolean };
+    if (body.truncated) {
+      throw new Error(`GitHub API: file tree for ${repo}@${ref} is truncated; refusing to enumerate an incomplete listing`);
+    }
+    return body.tree.filter((e) => e.type === "blob" && e.path.startsWith(pathPrefix)).map((e) => e.path);
   }
 }

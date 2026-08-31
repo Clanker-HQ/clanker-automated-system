@@ -2,6 +2,8 @@ export interface PullRequestInfo {
   number: number;
   repo: string;
   headSha: string;
+  /** The branch this PR targets, e.g. "main" — used by the self-build gate to fetch the CURRENT (not stale) base-ref registry state. */
+  base: string;
   changedFiles: string[];
   diff: string;
   title: string;
@@ -16,6 +18,10 @@ export interface GithubTransport {
   /** Refuses (merged: false) rather than merging if the PR's current head has moved past expectedHeadSha. */
   mergePullRequest(repo: string, number: number, expectedHeadSha: string): Promise<MergeResult>;
   createPullRequest(repo: string, opts: { head: string; base: string; title: string; body: string }): Promise<{ number: number; url: string }>;
+  /** Content of `path` at `ref` (a branch name or commit SHA), or null if it doesn't exist there. */
+  getFileContent(repo: string, ref: string, path: string): Promise<string | null>;
+  /** Every blob path under `pathPrefix` at `ref`, recursively. */
+  listRepoFiles(repo: string, ref: string, pathPrefix: string): Promise<string[]>;
 }
 
 /** Test double: lets a test seed PR state and inspect what was posted/merged, with no real GitHub calls. */
@@ -24,14 +30,33 @@ export class FakeGithubTransport implements GithubTransport {
   merged: { repo: string; number: number }[] = [];
   createdPullRequests: { repo: string; head: string; base: string; title: string; body: string }[] = [];
   private pulls = new Map<string, PullRequestInfo>();
+  private files = new Map<string, string>();
   private nextPrNumber = 1;
 
   private key(repo: string, number: number): string {
     return `${repo}#${number}`;
   }
 
-  seedPullRequest(info: PullRequestInfo): void {
-    this.pulls.set(this.key(info.repo, info.number), info);
+  private fileKey(repo: string, ref: string, path: string): string {
+    return `${repo}@${ref}:${path}`;
+  }
+
+  seedPullRequest(info: Omit<PullRequestInfo, "base"> & { base?: string }): void {
+    this.pulls.set(this.key(info.repo, info.number), { ...info, base: info.base ?? "main" });
+  }
+
+  /** Seeds the content a getFileContent/listRepoFiles call returns for `path` at `ref`. */
+  seedFile(repo: string, ref: string, path: string, content: string): void {
+    this.files.set(this.fileKey(repo, ref, path), content);
+  }
+
+  async getFileContent(repo: string, ref: string, path: string): Promise<string | null> {
+    return this.files.get(this.fileKey(repo, ref, path)) ?? null;
+  }
+
+  async listRepoFiles(repo: string, ref: string, pathPrefix: string): Promise<string[]> {
+    const prefix = this.fileKey(repo, ref, pathPrefix);
+    return [...this.files.keys()].filter((k) => k.startsWith(prefix)).map((k) => k.slice(this.fileKey(repo, ref, "").length));
   }
 
   async getPullRequest(repo: string, number: number): Promise<PullRequestInfo> {
