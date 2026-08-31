@@ -63,3 +63,124 @@ describe("wouldExhaustBeforeRenewal", () => {
     expect(wouldExhaustBeforeRenewal(state, candidate)).toBe(false);
   });
 });
+
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MemoryStore } from "../src/memory/memory-store.js";
+import { SpendStore } from "../src/state/spend-store.js";
+import { recordSpend } from "../src/spend/spend-accounting.js";
+
+function fixtures() {
+  const dataDir = mkdtempSync(join(tmpdir(), "cai-record-spend-"));
+  return { dataDir, store: new SpendStore(dataDir), memory: new MemoryStore(dataDir) };
+}
+
+describe("recordSpend", () => {
+  it("records a one-off spend within the available balance, reducing it", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({ balanceUsd: 100, commitments: [] });
+
+    const result = await recordSpend(store, memory, {
+      amountUsd: 30,
+      recurring: false,
+      nextRenewalAt: null,
+      description: "domain registration",
+      rationale: "needed for HTTPS on the first product",
+      importance: 5,
+    });
+
+    expect(result).toEqual({ recorded: true, state: { balanceUsd: 70, commitments: [] } });
+    expect(await store.read()).toEqual({ balanceUsd: 70, commitments: [] });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("refuses a one-off spend that exceeds the available balance, without touching state", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({ balanceUsd: 10, commitments: [] });
+
+    const result = await recordSpend(store, memory, {
+      amountUsd: 30,
+      recurring: false,
+      nextRenewalAt: null,
+      description: "domain registration",
+      rationale: "needed for HTTPS",
+      importance: 5,
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(await store.read()).toEqual({ balanceUsd: 10, commitments: [] });
+    expect(await memory.list()).toEqual([]);
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("records a recurring spend that fits, adding a commitment without reducing the balance", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({ balanceUsd: 100, commitments: [] });
+
+    const result = await recordSpend(store, memory, {
+      amountUsd: 15,
+      recurring: true,
+      nextRenewalAt: "2026-10-01T00:00:00.000Z",
+      description: "hosting API credit",
+      rationale: "backs the first product's usage-metered API calls",
+      importance: 6,
+    });
+
+    expect(result.recorded).toBe(true);
+    const state = await store.read();
+    expect(state.balanceUsd).toBe(100);
+    expect(state.commitments).toHaveLength(1);
+    expect(state.commitments[0]).toMatchObject({ amountUsd: 15, recurring: true, nextRenewalAt: "2026-10-01T00:00:00.000Z" });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("refuses a recurring spend that would exhaust the balance, adding no commitment", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({
+      balanceUsd: 100,
+      commitments: [{ id: "existing", amountUsd: 90, recurring: true, nextRenewalAt: "2026-09-30T00:00:00.000Z" }],
+    });
+
+    const result = await recordSpend(store, memory, {
+      amountUsd: 20,
+      recurring: true,
+      nextRenewalAt: "2026-10-01T00:00:00.000Z",
+      description: "another subscription",
+      rationale: "not affordable alongside the existing commitment",
+      importance: 4,
+    });
+
+    expect(result.recorded).toBe(false);
+    const state = await store.read();
+    expect(state.commitments).toHaveLength(1);
+    expect(await memory.list()).toEqual([]);
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("appends a memory-log record with the spend's rationale on success", async () => {
+    const { dataDir, store, memory } = fixtures();
+    await store.write({ balanceUsd: 100, commitments: [] });
+
+    await recordSpend(store, memory, {
+      amountUsd: 12,
+      recurring: false,
+      nextRenewalAt: null,
+      description: "npm package publish fee",
+      rationale: "one-time cost to ship the first library",
+      importance: 3,
+    });
+
+    const records = await memory.list();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      domain: "spend",
+      kind: "outcome",
+      subject: "npm package publish fee",
+      body: "one-time cost to ship the first library",
+      importance: 3,
+      createdBy: "system:spend-accounting",
+    });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+});
