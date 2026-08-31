@@ -119,8 +119,9 @@ system-originated work; revenue per euro of external spend; time from
 prospect to first revenue; funnel counts (prospect → validated → built →
 shipped → earning) and the stage where threads die.
 
-Income is read from the spend pot's transaction feed (see below) — the one
-metric grounded outside the system's own reporting.
+Income is read from the merchant-of-record's per-sale records via
+`RevenueTransport` (see below) — the one metric grounded outside the
+system's own reporting.
 
 **Instrumental (capability), only meaningful as they move the above:**
 `not-achieved` rate per agent and trend; cost per completed task; rework rate
@@ -486,9 +487,14 @@ Stated rather than papered over:
   and confirm no system-held credential has `Administration` here.
 - Issue the broad `Clanker-HQ` credential and swap it in.
 - Open the virtual prepaid card with auto-topup disabled, and add its
-  credentials plus read access to its transaction feed. Funding it can wait
-  until a proposal actually needs a purchase — the account matters from day
-  one for the *receive* side, since revenue is unobservable without it.
+  credentials. Funding it can wait until a proposal actually needs a
+  purchase — this account is a **spend instrument only** (see "The revenue
+  instrument is the payment processor, not the bank"); it needs no read API
+  of its own.
+- Open a merchant-of-record account (Lemon Squeezy / Gumroad / Stripe) and
+  add its API credentials. This one matters from day one for the *receive*
+  side — revenue is unobservable without it, since it is what
+  `RevenueTransport` reads per-sale records from.
 - Create a **dedicated email account** for the system, structured like the
   card: the operator holds the password and 2FA, the system gets a revocable
   app password for IMAP/SMTP. Without an email identity the system cannot
@@ -501,7 +507,7 @@ Stated rather than papered over:
 1. Subsystem 1 ships; the log accumulates real data.
 2. Self-build merge gate ships, with the amended rule 3.
 3. `goals.yaml` excluded; metric job ships seeded with the set above; spend
-   accounting and the transaction-feed reader land with it, since revenue is
-   the primary metric and is unobservable without them.
+   accounting and the `RevenueTransport` reader land with it, since revenue
+   is the primary metric and is unobservable without them.
 4. `architecture-scout` last — it is useless before metrics exist, since
    every proposal must cite one.
