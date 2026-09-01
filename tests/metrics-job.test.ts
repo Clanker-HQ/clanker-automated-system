@@ -66,7 +66,7 @@ describe("runMetricsJob", () => {
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: f.revenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: f.revenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     expect(metrics.netIncomeUsd).toBe(20);
@@ -96,7 +96,7 @@ describe("runMetricsJob", () => {
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: f.revenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: f.revenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     // Only the in-window run's $1 counts toward cost — but there's no done
@@ -123,7 +123,7 @@ describe("runMetricsJob", () => {
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: failingRevenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: failingRevenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     expect(metrics.netIncomeUsd).toBe(0);
@@ -146,8 +146,7 @@ describe("runMetricsJob", () => {
 
     await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: f.revenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
-      overrides: f.overrides,
+      revenue: f.revenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     const overrides = await f.overrides.read();

@@ -94,8 +94,16 @@ export interface MetricsJobDeps {
   metricsStore: MetricsStore;
   windowDays: number;
   now?: Date;
-  /** Optional so every existing caller and test keeps compiling — absent means probation is simply not evaluated. */
-  overrides?: ConfigOverridesStore;
+  /**
+   * Required. It was optional at first, so that existing callers kept
+   * compiling — and the scheduled path in src/triggers/metrics.ts then never
+   * passed it, leaving the probation check fully implemented, fully tested,
+   * and never once executed in production. That is the same "computed by
+   * something, consumed by nothing" failure this check exists to catch, so
+   * the type now refuses it: a caller that forgets fails `npm run typecheck`
+   * rather than silently doing half the job.
+   */
+  overrides: ConfigOverridesStore;
   /** Only consulted when an agent is actually disabled; absent means the disable still happens but nothing is posted. */
   outbox?: MetricsOutbox;
 }
@@ -139,7 +147,7 @@ export async function runMetricsJob(deps: MetricsJobDeps): Promise<Metrics> {
 
   await deps.metricsStore.write(metrics);
 
-  if (deps.overrides) {
+  {
     const toDisable = evaluateProbation(metrics, PROBATION_OPTIONS);
     if (toDisable.length > 0) {
       const current = await deps.overrides.read();
