@@ -1,5 +1,6 @@
 import type { AgentYaml } from "../agent-schema.js";
 import { isValidCron } from "../config.js";
+import { parseDeploysShape, type Deployment } from "../deploy/deploys-schema.js";
 import { ValidationError } from "../errors.js";
 import { globMatch, parseGrants, validateGrantRefs, type Grant } from "../grants.js";
 import { parseAgent } from "../registry.js";
@@ -24,7 +25,10 @@ import type { GithubTransport, PullRequestInfo } from "./github-transport.js";
 const AGENT_FILE_PATTERN = /^agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|prompt\.md)$/;
 
 export function isSelfBuildChange(changedFiles: string[]): boolean {
-  return changedFiles.length > 0 && changedFiles.every((f) => f === "grants.yaml" || AGENT_FILE_PATTERN.test(f));
+  return (
+    changedFiles.length > 0 &&
+    changedFiles.every((f) => f === "grants.yaml" || f === "deploys.yaml" || AGENT_FILE_PATTERN.test(f))
+  );
 }
 
 export interface SelfBuildAgentFile {
@@ -46,9 +50,13 @@ export interface SelfBuildInput {
   agentNamesWithPromptMd: ReadonlySet<string>;
   /** process.env-shaped: a secret counts as "provisioned" when its value here is truthy. */
   env: Record<string, string | undefined>;
+  /** deploys.yaml content at the base ref. */
+  baseDeploysYaml: string;
+  /** deploys.yaml content at the head ref, or undefined when this PR does not touch it (base content is then reused unchanged). */
+  headDeploysYaml?: string;
 }
 
-export type SelfBuildVerdict = { allowed: true } | { allowed: false; rule: 1 | 2 | 3; reason: string };
+export type SelfBuildVerdict = { allowed: true } | { allowed: false; rule: 1 | 2 | 3 | 4; reason: string };
 
 function messageFor(err: unknown): string {
   return err instanceof ValidationError ? err.lines.join("; ") : (err as Error).message;
@@ -184,6 +192,56 @@ export function evaluateSelfBuildChange(input: SelfBuildInput): SelfBuildVerdict
     };
   }
 
+  // Rule 4 — deploys.yaml. Schema-valid, no entry edited in place, no
+  // hostname claimed twice. The cap and the env-name check deliberately are
+  // NOT here: both need config.yaml, which this pure function is not given —
+  // the same limitation the outbox.discord note above describes. They run in
+  // loadDeploys at boot and in tests/deploys-file.test.ts, so a PR that gets
+  // one wrong fails CI, and in the worst case rolls back at deploy exactly as
+  // that note describes. See design §3.1.
+  const resultingDeploysYaml = input.headDeploysYaml ?? input.baseDeploysYaml;
+  let deployments: Deployment[];
+  try {
+    deployments = parseDeploysShape("deploys.yaml", resultingDeploysYaml);
+  } catch (err) {
+    return { allowed: false, rule: 4, reason: `deploys.yaml does not validate: ${messageFor(err)}` };
+  }
+
+  let baseDeployments: Deployment[];
+  try {
+    baseDeployments = parseDeploysShape("deploys.yaml", input.baseDeploysYaml);
+  } catch {
+    // Unreachable in practice for the same reason baseGrants' catch is: the
+    // base ref is the live, already-merged state, which passed this check
+    // when it landed. Treat as nothing deployed rather than let a caller-side
+    // data problem masquerade as this PR editing something.
+    baseDeployments = [];
+  }
+
+  const baseBySlug = new Map(baseDeployments.map((d) => [d.slug, d]));
+  for (const d of deployments) {
+    const prior = baseBySlug.get(d.slug);
+    if (prior && JSON.stringify(prior) !== JSON.stringify(d)) {
+      return {
+        allowed: false,
+        rule: 4,
+        reason: `deployment "${d.slug}" was edited in place; a deployment may only be added or removed — an in-place edit could repoint a live hostname at a different repo`,
+      };
+    }
+  }
+
+  const claimedHostnames = new Set<string>();
+  for (const d of deployments) {
+    if (claimedHostnames.has(d.hostname)) {
+      return {
+        allowed: false,
+        rule: 4,
+        reason: `hostname "${d.hostname}" is claimed by more than one deployment; two services cannot share one hostname`,
+      };
+    }
+    claimedHostnames.add(d.hostname);
+  }
+
   return { allowed: true };
 }
 
@@ -204,8 +262,9 @@ export async function evaluateSelfBuildPr(
   info: Pick<PullRequestInfo, "base" | "headSha" | "changedFiles">,
   env: Record<string, string | undefined>,
 ): Promise<SelfBuildVerdict> {
-  const [baseGrantsYaml, baseRepoFiles] = await Promise.all([
+  const [baseGrantsYaml, baseDeploysYaml, baseRepoFiles] = await Promise.all([
     github.getFileContent(repo, info.base, "grants.yaml"),
+    github.getFileContent(repo, info.base, "deploys.yaml"),
     github.listRepoFiles(repo, info.base, "agents/"),
   ]);
 
@@ -245,6 +304,10 @@ export async function evaluateSelfBuildPr(
     ? ((await github.getFileContent(repo, info.headSha, "grants.yaml")) ?? "grants: []\n")
     : undefined;
 
+  const headDeploysYaml = info.changedFiles.includes("deploys.yaml")
+    ? ((await github.getFileContent(repo, info.headSha, "deploys.yaml")) ?? "deployments: []\n")
+    : undefined;
+
   return evaluateSelfBuildChange({
     baseAgentFiles,
     baseGrantsYaml: baseGrantsYaml ?? "grants: []\n",
@@ -252,5 +315,7 @@ export async function evaluateSelfBuildPr(
     headGrantsYaml,
     agentNamesWithPromptMd,
     env,
+    baseDeploysYaml: baseDeploysYaml ?? "deployments: []\n",
+    headDeploysYaml,
   });
 }
