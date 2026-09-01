@@ -2,9 +2,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { PendingStore } from "../src/control/pending.js";
 import type { AgentDef } from "../src/registry.js";
 import type { RunEvent } from "../src/runner/types.js";
+import { BreakerStore } from "../src/state/breaker.js";
+import { StrategyStore } from "../src/world/strategy.js";
 import { WorldModel } from "../src/world/world-model.js";
 
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
@@ -30,6 +33,14 @@ const AGENT = {
 } as unknown as AgentDef;
 
 const CTX = { runId: "research-run", workspace: "/tmp/ws/research", prompt: "Research VPS providers." };
+
+const OVERSEER_AGENT = {
+  name: "overseer",
+  run: { model: "claude-opus-5", effort: "high", maxTurns: 40, timeoutMinutes: 30, maxBudgetUsd: 5 },
+  permissions: { allowedTools: ["Read", "Glob", "Grep"], disallowedTools: [] },
+} as unknown as AgentDef;
+
+const OVERSEER_CTX = { runId: "overseer-run", workspace: "/tmp/ws/overseer", prompt: "Decide the next cycle's strategy." };
 
 const RESULT_MESSAGE = {
   type: "result", subtype: "success", is_error: false,
@@ -230,5 +241,226 @@ describe("SdkRunner worldModel tools", () => {
     expect(result.isError).toBe(true);
     expect(await world.readPortfolio()).toEqual([]);
     await client.close();
+  });
+});
+
+const VALID_EXPECTATION = { id: "e1", dueAt: "2026-10-01", check: { kind: "netIncomeUsd" as const, atLeast: 50 } };
+
+describe("SdkRunner overseer tools", () => {
+  it("registers neither writeStrategy nor setAgentEnabled when none of their deps are wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir) });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    expect(params.options.mcpServers.overseer).toBeUndefined();
+  });
+
+  // These two tools are the only ones in this file gated on the calling
+  // agent's identity, not just on which deps are wired in — see the doc
+  // comment on `overseerServer` in sdk-runner.ts for why: unlike
+  // recordFinding/queueTask (meant for every agent), writeStrategy and
+  // setAgentEnabled are powers Design §3 of the autonomous-operation plan
+  // reserves for the overseer alone.
+  it("registers neither tool for a non-overseer agent, even when every dependency is wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-strategy-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const strategyStore = new StrategyStore(dataDir);
+    const overrides = new ConfigOverridesStore(dataDir);
+    const breaker = new BreakerStore(dataDir);
+    const agents = [{ name: "overseer" }, { name: "research" }] as unknown as AgentDef[];
+    const outbox = { postAlert: vi.fn().mockResolvedValue("delivered" as const) };
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({
+      grants: [], pending: new PendingStore(dir), strategyStore, overrides, breaker, agents, outbox: outbox as never,
+    });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    expect(params.options.mcpServers.overseer).toBeUndefined();
+  });
+
+  it("writes a strategy that StrategyStore then returns", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-strategy-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const strategyStore = new StrategyStore(dataDir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), strategyStore });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.overseer!.instance!._registeredTools.writeStrategy!.handler;
+
+    const result = await handler({
+      intent: "Push the CLI product toward its first paying customer.",
+      allocation: { research: 20, build: 60, maintain: 20 },
+      expectations: [VALID_EXPECTATION],
+      changeReason: "",
+    });
+
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Strategy") }] });
+    const latest = await strategyStore.latest();
+    expect(latest).toMatchObject({
+      intent: "Push the CLI product toward its first paying customer.",
+      allocation: { research: 20, build: 60, maintain: 20 },
+      expectations: [VALID_EXPECTATION],
+    });
+  });
+
+  it("refuses to write a strategy whose allocation does not sum to 100, without touching StrategyStore", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-strategy-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const strategyStore = new StrategyStore(dataDir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), strategyStore });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.overseer!.instance!._registeredTools.writeStrategy!.handler;
+
+    const result = (await handler({
+      intent: "x",
+      allocation: { research: 10, build: 10, maintain: 10 },
+      expectations: [],
+      changeReason: "",
+    })) as { content: { type: string; text: string }[] };
+
+    expect(result.content[0]!.text).toContain("Refused");
+    expect(await strategyStore.latest()).toBeNull();
+  });
+
+  // Calling .handler directly bypasses Zod entirely (see the equivalent
+  // comment on the worldModel tests above), so this drives the real MCP
+  // protocol layer instead.
+  it("rejects a malformed expectation check at the schema level, never reaching StrategyStore.write", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-strategy-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const strategyStore = new StrategyStore(dataDir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), strategyStore });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const instance = params.options.mcpServers.overseer!.instance as unknown as { connect: (t: unknown) => Promise<void> };
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    await Promise.all([instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: "writeStrategy",
+      arguments: {
+        intent: "x",
+        allocation: { research: 20, build: 60, maintain: 20 },
+        expectations: [{ id: "e1", dueAt: "2026-10-01", check: { kind: "somethingElse" } }],
+        changeReason: "",
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(await strategyStore.latest()).toBeNull();
+    await client.close();
+  });
+
+  it("registers writeStrategy without setAgentEnabled when only strategyStore is wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-strategy-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const strategyStore = new StrategyStore(dataDir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), strategyStore });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const tools = params.options.mcpServers.overseer!.instance!._registeredTools;
+    expect(tools.writeStrategy).toBeDefined();
+    expect(tools.setAgentEnabled).toBeUndefined();
+  });
+
+  function setAgentEnabledFixture() {
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-overrides-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const overrides = new ConfigOverridesStore(dataDir);
+    const breaker = new BreakerStore(dataDir);
+    const agents = [{ name: "overseer" }, { name: "builder" }] as unknown as AgentDef[];
+    const outbox = { postAlert: vi.fn().mockResolvedValue("delivered" as const) };
+    return { dataDir, dir, overrides, breaker, agents, outbox };
+  }
+
+  it("refuses to disable the overseer itself", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = setAgentEnabledFixture();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.overseer!.instance!._registeredTools.setAgentEnabled!.handler;
+
+    const result = (await handler({ agent: "overseer", enabled: false, reason: "test" })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Refused");
+    expect((await overrides.read()).disabledAgents ?? []).not.toContain("overseer");
+    expect(outbox.postAlert).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown agent name, naming the agents that do exist", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = setAgentEnabledFixture();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.overseer!.instance!._registeredTools.setAgentEnabled!.handler;
+
+    const result = (await handler({ agent: "nonexistent", enabled: false, reason: "test" })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("nonexistent");
+    expect(result.content[0]!.text).toContain("builder");
+  });
+
+  it("disables a known agent and posts the reason to Discord", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = setAgentEnabledFixture();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.overseer!.instance!._registeredTools.setAgentEnabled!.handler;
+
+    await handler({ agent: "builder", enabled: false, reason: "kept failing to achieve anything" });
+
+    expect((await overrides.read()).disabledAgents).toContain("builder");
+    expect(outbox.postAlert).toHaveBeenCalledTimes(1);
+    const [channel, text] = outbox.postAlert.mock.calls[0]!;
+    expect(channel).toBe("ops");
+    expect(text).toContain("builder");
+    expect(text).toContain("kept failing to achieve anything");
+  });
+
+  it("re-enabling a disabled agent also resets its circuit breaker", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = setAgentEnabledFixture();
+    await overrides.set("disabledAgents", ["builder"], "test-setup");
+    await breaker.recordResult("builder", "failed");
+    await breaker.recordResult("builder", "failed");
+    await breaker.recordResult("builder", "failed");
+    expect(await breaker.isTripped("builder")).toBe(true);
+
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.overseer!.instance!._registeredTools.setAgentEnabled!.handler;
+
+    await handler({ agent: "builder", enabled: true, reason: "probation cleared" });
+
+    expect((await overrides.read()).disabledAgents ?? []).not.toContain("builder");
+    expect(await breaker.isTripped("builder")).toBe(false);
   });
 });

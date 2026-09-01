@@ -1,10 +1,15 @@
 import type { MemoryConfig } from "../config.js";
+import type { ConfigOverridesStore } from "../config-overrides.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import type { PendingStore } from "../control/pending.js";
 import type { TaskStore } from "../control/task-store.js";
 import type { Grant } from "../grants.js";
 import type { MemoryStore } from "../memory/memory-store.js";
+import type { DiscordOutbox } from "../outbox/discord.js";
+import type { AgentDef } from "../registry.js";
+import type { BreakerStore } from "../state/breaker.js";
+import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
 import { FakeRunner } from "./fake-runner.js";
 import { SdkRunner } from "./sdk-runner.js";
@@ -33,6 +38,11 @@ export function buildRunner(
     memory?: MemoryStore;
     memoryConfig?: MemoryConfig;
     world?: WorldModel;
+    strategyStore?: StrategyStore;
+    overrides?: ConfigOverridesStore;
+    breaker?: BreakerStore;
+    agents?: AgentDef[];
+    outbox?: DiscordOutbox;
   },
   env: NodeJS.ProcessEnv = process.env,
 ): Runner {

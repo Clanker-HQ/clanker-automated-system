@@ -36,6 +36,7 @@ import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
 import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
+import { StrategyStore } from "./world/strategy.js";
 import { WorldModel } from "./world/world-model.js";
 
 const ROOT = process.env.APP_ROOT ?? process.cwd();
@@ -76,13 +77,25 @@ function main(): void {
   let revenue: RevenueTransport;
   let revenueMode: string;
   let dispatcher: Dispatcher | undefined;
+  // Constructed inside the try block, right after `config` loads (it needs
+  // nothing else) — hoisted out of its old spot further down so buildRunner,
+  // just below, can pass it to SdkRunner for the overseer's setAgentEnabled
+  // tool (Task C3) the same way installCrashHandlers/Orchestrator use it later.
+  let outbox: DiscordOutbox;
 
   const tasks = new TaskStore(DATA_DIR);
   const memory = new MemoryStore(DATA_DIR);
   const world = new WorldModel(DATA_DIR);
+  const strategyStore = new StrategyStore(DATA_DIR);
+  // Hoisted out of their old spot further down (see `outbox` above): both
+  // are plain constructors with no I/O, and SdkRunner's setAgentEnabled tool
+  // (Task C3) needs them threaded through buildRunner below.
+  const overrides = new ConfigOverridesStore(DATA_DIR);
+  const breaker = new BreakerStore(DATA_DIR);
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
+    outbox = new DiscordOutbox({ config, dataDir: DATA_DIR });
     agents = loadRegistry({ agentsDir: join(ROOT, "agents"), dataDir: DATA_DIR, config });
     // Hoisted out of buildRunner's argument list so the same list can be
     // cross-checked against every agent's grantRefs: a typo there is otherwise
@@ -134,6 +147,11 @@ function main(): void {
       memoryConfig: config.memory,
       systemContext,
       world,
+      strategyStore,
+      overrides,
+      breaker,
+      agents,
+      outbox,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound
       // too) — but this closure is only ever CALLED much later, once a real
@@ -175,8 +193,6 @@ function main(): void {
 
   const runStore = new RunStore(DATA_DIR);
   const metricsStore = new MetricsStore(DATA_DIR);
-  const overrides = new ConfigOverridesStore(DATA_DIR);
-  const breaker = new BreakerStore(DATA_DIR);
   const approvedGrants = new ApprovedGrantsStore(DATA_DIR);
   const governor = new Governor({
     dataDir: DATA_DIR, config, store: runStore, overrides,
@@ -200,8 +216,6 @@ function main(): void {
   // constructed, so the `if (!bot)` guard is a formality rather than a real
   // window.
   let bot: DiscordBot | undefined;
-
-  const outbox = new DiscordOutbox({ config, dataDir: DATA_DIR });
 
   // Installed as early as an outbox exists to alert through, so it covers
   // everything from here on — the config/credential loading above is already
@@ -377,10 +391,42 @@ function main(): void {
       });
   }
 
-  // Imported lazily so a boot failure above never starts a schedule.
+  // Gated on the agent's own `enabled` field (agents/overseer/agent.yaml),
+  // the same flag startCron's generic loop already checks for every other
+  // cron agent — there is no separate config.overseer.enabled, since the
+  // agent definition already carries this switch.
+  const overseerAgent = agents.find((a) => a.name === "overseer");
+  if (overseerAgent?.enabled) {
+    void import("./triggers/overseer.js")
+      .then(({ startOverseer }) => {
+        startOverseer({
+          agent: overseerAgent,
+          orchestrator,
+          strategyStore,
+          world,
+          metricsStore,
+          revenue,
+          goalsPath: join(ROOT, "goals.yaml"),
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the overseer schedule", error);
+      });
+  }
+
+  // Imported lazily so a boot failure above never starts a schedule. The
+  // overseer is excluded here even though its own agent.yaml also declares
+  // trigger.type: cron: it is scheduled separately just above, through a
+  // bespoke trigger that grades the previous cycle's expectations and reads
+  // goals.yaml before the run starts (Task C3). Scheduling it again here
+  // too would fire it a second time on the same tick — once with that rich
+  // context, once with only the generic world-model summary this loop
+  // passes to every other cron agent — silently writing two different
+  // Strategy documents for one cycle and corrupting the grading this whole
+  // plan is built on.
   void import("./triggers/cron.js")
     .then(({ startCron }) => {
-      startCron(agents, orchestrator, world);
+      startCron(agents.filter((a) => a.name !== "overseer"), orchestrator, world);
       console.log("[boot] supervisor running");
     })
     .catch((error: unknown) => {
