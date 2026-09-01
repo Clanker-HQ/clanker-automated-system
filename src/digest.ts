@@ -112,9 +112,8 @@ function formatMetricsLine(latest: Metrics, previous: Metrics | null): string {
   // the merchant of record. Against a data gap it invents a collapse (or a
   // recovery) out of a number nobody measured.
   const comparable = previous !== null && !previous.revenueUnavailable && !latest.revenueUnavailable;
-  const revenueDelta = comparable
-    ? ` (${latest.netIncomeUsd - previous.netIncomeUsd >= 0 ? "+" : ""}$${(latest.netIncomeUsd - previous.netIncomeUsd).toFixed(2)} vs prior snapshot)`
-    : "";
+  const delta = comparable ? latest.netIncomeUsd - previous.netIncomeUsd : 0;
+  const revenueDelta = comparable ? ` (${delta >= 0 ? "+" : "-"}$${Math.abs(delta).toFixed(2)} vs prior snapshot)` : "";
   // netIncomeUsd is 0 whether there were no sales or the transport failed;
   // only the flag separates them, so the flag decides what gets rendered.
   const revenue = latest.revenueUnavailable

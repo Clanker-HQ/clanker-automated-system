@@ -231,6 +231,19 @@ describe("buildDigestText — metrics section", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  it("renders a revenue drop with the sign before the currency symbol", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ computedAt: BEFORE_WINDOW.toISOString(), netIncomeUsd: 30 }));
+    await metricsStore.write(metricsSnapshot({ computedAt: WITHIN_WINDOW.toISOString(), netIncomeUsd: 0 }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).toContain("-$30.00");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
   // The digest is the only place this number is read by a human. A snapshot
   // whose revenue read failed must not present its $0 as a measurement.
   it("reports a revenue read failure instead of presenting its $0 as income", async () => {
