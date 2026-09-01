@@ -65,6 +65,33 @@ once too many claims in a row went to something else. Mistagging genuinely
 speculative work as exploitation (or vice versa) defeats that floor, so tag
 it honestly rather than to influence when it runs.
 
+## Due reviews — kill it or justify it, every time
+
+The prompt above includes a `## Due reviews` section listing every portfolio
+entry whose `nextReviewAt` has passed, with its `bar`, how overdue it is,
+its `extensionCount`, and whether it can still be extended. Asked "should we
+kill this?", the easy answer is always "give it more time" — continuing
+costs nothing in that reasoning, so left unchecked the portfolio fills with
+zombies quietly burning hosting money under the spend ceiling. **"Give it
+more time" is not an available answer.** Every entry listed there ends this
+cycle in exactly one of two states:
+
+- **Killed.** Call `updatePortfolioEntry` with `status: "killed"`, and queue
+  a deprovision task naming the product so the hosting cost actually stops
+  accruing, not just the bookkeeping.
+- **Extended**, only if `canExtend: true`. Call `updatePortfolioEntry` with
+  a *new* `bar` (not the one it just failed), a *new* `nextReviewAt`, and
+  `extensionCount` incremented by one. An extension that repeats the same
+  bar or pushes the date without changing anything else is the "give it
+  more time" non-answer wearing a tool call.
+
+When an entry shows `canExtend: false`, it has already used its two
+extensions — extending is refused, killing is the only remaining option.
+Do not attempt a third extension expecting the tool to allow it.
+
+An empty `## Due reviews` section (it will say `(none)` explicitly) means
+nothing is due this cycle — there is nothing to decide, move on.
+
 ## `setAgentEnabled` — for one situation only
 
 Task A1's probation check auto-disables an agent whose runs keep

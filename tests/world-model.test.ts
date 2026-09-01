@@ -18,6 +18,7 @@ function entry(overrides: Partial<PortfolioEntry> = {}): PortfolioEntry {
     bar: "at least one paying customer",
     monthlyCostUsd: 12,
     notes: ["2026-09-01: launched"],
+    extensionCount: 0,
     ...overrides,
   };
 }

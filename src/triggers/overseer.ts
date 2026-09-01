@@ -5,8 +5,9 @@ import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
 import type { MetricsStore } from "../state/metrics-store.js";
 import { gradeExpectations, type Verdict } from "../world/grade-expectations.js";
+import { canExtend, dueReviews } from "../world/reviews.js";
 import type { Strategy, StrategyStore } from "../world/strategy.js";
-import type { WorldModel } from "../world/world-model.js";
+import type { PortfolioEntry, WorldModel } from "../world/world-model.js";
 
 function renderGoals(goalsPath: string): string {
   const goals = loadGoals(goalsPath);
@@ -33,6 +34,27 @@ function renderPreviousStrategy(strategy: Strategy | null): string {
 function renderVerdicts(verdicts: Verdict[]): string {
   if (verdicts.length === 0) return "None — no expectations were due, or this is the first cycle.";
   return verdicts.map((v) => `- ${v.expectationId}: ${v.outcome} — ${v.detail}`).join("\n");
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Renders every entry dueReviews() surfaced, or says explicitly that none
+ * are due — an empty section here would read as a rendering bug rather than
+ * "nothing to review", and the whole point of Task C5 is that the overseer
+ * cannot miss a due review by not noticing an empty list.
+ */
+function renderDueReviews(due: PortfolioEntry[], now: Date): string {
+  if (due.length === 0) return "(none)";
+  return due
+    .map((entry) => {
+      const overdueDays = Math.floor((now.getTime() - new Date(entry.nextReviewAt).getTime()) / MS_PER_DAY);
+      return (
+        `- ${entry.slug}: bar "${entry.bar}", ${overdueDays}d overdue, ` +
+        `extensionCount: ${entry.extensionCount ?? 0}, canExtend: ${canExtend(entry)}`
+      );
+    })
+    .join("\n");
 }
 
 /**
@@ -67,11 +89,13 @@ async function buildPromptContext(opts: {
       })
     : [];
   const worldSummary = await opts.world.summaryForPrompt();
+  const due = dueReviews(portfolio, opts.now);
 
   return (
     `## Goals\n\n${renderGoals(opts.goalsPath)}\n\n` +
     `## Previous strategy\n\n${renderPreviousStrategy(previousStrategy)}\n\n` +
     `## Verdicts on the previous cycle's expectations\n\n${renderVerdicts(verdicts)}\n\n` +
+    `## Due reviews\n\n${renderDueReviews(due, opts.now)}\n\n` +
     `## World model\n\n${worldSummary}`
   );
 }

@@ -104,6 +104,7 @@ describe("runDispatchTick", () => {
       bar: "at least one paying customer",
       monthlyCostUsd: 12,
       notes: ["2026-09-01: launched"],
+      extensionCount: 0,
     });
     await tasks.create({ text: "find a profitable niche", createdBy: "discord:owner" });
     const executeRun = vi.fn().mockResolvedValue(successResult());

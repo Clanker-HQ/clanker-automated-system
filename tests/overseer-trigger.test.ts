@@ -166,6 +166,96 @@ describe("startOverseer", () => {
     }
   });
 
+  it("renders a due review with its bar, how overdue it is, and whether it can still be extended", async () => {
+    const f = fixtures();
+    await f.world.upsertPortfolioEntry({
+      slug: "widget-api",
+      purpose: "Paid API for widget conversion",
+      status: "live",
+      nextReviewAt: "2026-09-01",
+      bar: "at least one paying customer",
+      monthlyCostUsd: 12,
+      notes: [],
+      extensionCount: 2,
+    });
+    // A killed entry must never appear under "Due reviews", however overdue.
+    await f.world.upsertPortfolioEntry({
+      slug: "dead-product",
+      purpose: "test",
+      status: "killed",
+      nextReviewAt: "2020-01-01",
+      bar: "n/a",
+      monthlyCostUsd: 0,
+      notes: [],
+      extensionCount: 1,
+    });
+
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const job = startOverseer({
+      agent: agent(),
+      orchestrator,
+      strategyStore: f.strategyStore,
+      world: f.world,
+      metricsStore: f.metricsStore,
+      revenue: f.revenue,
+      goalsPath: f.goalsPath,
+      now: () => NOW,
+    });
+
+    try {
+      await job.trigger();
+      const [, , promptContext] = executeRun.mock.calls[0]!;
+      expect(promptContext).toContain("Due reviews");
+      expect(promptContext).toContain("widget-api");
+      expect(promptContext).toContain("at least one paying customer");
+      expect(promptContext).toContain("extensionCount: 2");
+      expect(promptContext).toMatch(/widget-api[\s\S]*canExtend: false/);
+      const dueSection = promptContext.slice(promptContext.indexOf("## Due reviews"), promptContext.indexOf("## World model"));
+      expect(dueSection).not.toContain("dead-product");
+    } finally {
+      job.stop();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("says explicitly when no reviews are due", async () => {
+    const f = fixtures();
+    await f.world.upsertPortfolioEntry({
+      slug: "widget-api",
+      purpose: "Paid API for widget conversion",
+      status: "live",
+      nextReviewAt: "2099-01-01",
+      bar: "at least one paying customer",
+      monthlyCostUsd: 12,
+      notes: [],
+      extensionCount: 0,
+    });
+
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const job = startOverseer({
+      agent: agent(),
+      orchestrator,
+      strategyStore: f.strategyStore,
+      world: f.world,
+      metricsStore: f.metricsStore,
+      revenue: f.revenue,
+      goalsPath: f.goalsPath,
+      now: () => NOW,
+    });
+
+    try {
+      await job.trigger();
+      const [, , promptContext] = executeRun.mock.calls[0]!;
+      expect(promptContext).toContain("Due reviews");
+      expect(promptContext).toMatch(/Due reviews\n\n(- )?\(?none/i);
+    } finally {
+      job.stop();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("still runs on the first ever cycle, with no previous strategy to grade", async () => {
     const f = fixtures();
     const executeRun = vi.fn().mockResolvedValue(undefined);

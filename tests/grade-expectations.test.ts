@@ -79,6 +79,7 @@ describe("gradeExpectations", () => {
           bar: "test",
           monthlyCostUsd: 0,
           notes: [],
+          extensionCount: 0,
         },
       ],
       now: NOW,

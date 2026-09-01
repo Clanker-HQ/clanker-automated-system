@@ -848,6 +848,7 @@ export class SdkRunner implements Runner {
                 bar: z.string().min(1),
                 monthlyCostUsd: z.number().nonnegative(),
                 notes: z.array(z.string()).default([]),
+                extensionCount: z.number().int().nonnegative().default(0),
               },
               async (entry) => {
                 await worldDep.upsertPortfolioEntry(entry);

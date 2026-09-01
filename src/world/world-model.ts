@@ -13,6 +13,13 @@ export interface PortfolioEntry {
   monthlyCostUsd: number;
   /** Leading indicators, newest last, e.g. "2026-09-01: 3 signups". */
   notes: string[];
+  /**
+   * How many times a review has extended this entry instead of killing it —
+   * see MAX_EXTENSIONS and canExtend in reviews.ts. Entries persisted before
+   * this field existed read back `undefined` here, not 0; callers that care
+   * about the cap must treat the two the same rather than trusting the type.
+   */
+  extensionCount: number;
 }
 
 export interface ShelfItem {

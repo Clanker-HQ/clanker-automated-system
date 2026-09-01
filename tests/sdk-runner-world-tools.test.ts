@@ -175,6 +175,32 @@ describe("SdkRunner worldModel tools", () => {
     ]);
   });
 
+  it("round-trips extensionCount when the caller sets it", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-world-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const world = new WorldModel(dataDir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.worldModel!.instance!._registeredTools.updatePortfolioEntry!.handler;
+
+    await handler({
+      slug: "widget-tool",
+      purpose: "A tool that does widgets.",
+      status: "live",
+      nextReviewAt: "2026-10-01",
+      bar: "Must show 5 paying customers.",
+      monthlyCostUsd: 12,
+      notes: [],
+      extensionCount: 2,
+    });
+
+    const portfolio = await world.readPortfolio();
+    expect(portfolio[0]?.extensionCount).toBe(2);
+  });
+
   // Both tools must go through Zod at the MCP layer, exactly like queueTask —
   // an agent passing a bad enum value must get a tool error, never a
   // corrupted world model, since other agents treat these files as fact.
