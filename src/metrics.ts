@@ -103,8 +103,15 @@ export async function runMetricsJob(deps: MetricsJobDeps): Promise<Metrics> {
     deps.taskStore.list(),
     deps.memory.list(),
   ]);
+  // Recorded on the snapshot, not just logged: the console.error below reaches
+  // the container log, while the $0 it explains reaches Discord. Without the
+  // flag travelling with the number, "no sales yet" and "we could not read
+  // sales" render identically in the digest — the exact silent failure a
+  // revenue-driven system must never have.
+  let revenueUnavailable = false;
   const salesInWindow = await deps.revenue.listSales(since.toISOString()).catch((error: unknown) => {
     console.error("[metrics] revenue transport failed; this snapshot's netIncomeUsd reflects a data gap, not zero sales", error);
+    revenueUnavailable = true;
     return [];
   });
 
@@ -114,15 +121,21 @@ export async function runMetricsJob(deps: MetricsJobDeps): Promise<Metrics> {
   );
   const pendingTasksNow = allTasks.filter((t) => t.status === "pending");
 
-  const metrics = computeMetrics({
-    computedAt: now,
-    windowDays: deps.windowDays,
-    runsInWindow,
-    memoryRecordsInWindow,
-    salesInWindow,
-    doneTasksInWindow,
-    pendingTasksNow,
-  });
+  // Added here rather than threaded through computeMetrics: that function is
+  // deliberately pure arithmetic over already-gathered data, and this is a
+  // provenance fact about the gathering, which happened here.
+  const metrics: Metrics = {
+    ...computeMetrics({
+      computedAt: now,
+      windowDays: deps.windowDays,
+      runsInWindow,
+      memoryRecordsInWindow,
+      salesInWindow,
+      doneTasksInWindow,
+      pendingTasksNow,
+    }),
+    revenueUnavailable,
+  };
 
   await deps.metricsStore.write(metrics);
   return metrics;

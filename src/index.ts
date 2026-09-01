@@ -13,6 +13,7 @@ import { DiscordJsTransport } from "./control/discord-transport.js";
 import { RealGitPusher } from "./control/git-pusher.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
+import { LemonSqueezyRevenueTransport } from "./control/lemonsqueezy-revenue-transport.js";
 import { FakeRevenueTransport, type RevenueTransport } from "./control/revenue-transport.js";
 import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
 import { TaskStore } from "./control/task-store.js";
@@ -72,6 +73,7 @@ function main(): void {
   let webhookPort: number;
   let github: GithubApiTransport;
   let revenue: RevenueTransport;
+  let revenueMode: string;
   let dispatcher: Dispatcher | undefined;
 
   const tasks = new TaskStore(DATA_DIR);
@@ -100,9 +102,22 @@ function main(): void {
     // does — the metrics job simply reports $0 net income via the fake
     // until the operator's merchant-of-record account exists.
     const revenueToken = process.env.REVENUE_API_TOKEN;
-    revenue = revenueToken
-      ? new StripeRevenueTransport({ token: revenueToken, apiBase: process.env.REVENUE_API_BASE })
-      : new FakeRevenueTransport();
+    if (revenueToken) {
+      // Which transport, from config, not from whichever one happened to be
+      // written first: Lemon Squeezy and Stripe agree on nothing (endpoint,
+      // auth headers, pagination, response shape), and runMetricsJob
+      // deliberately swallows a revenue failure so one outage can't take the
+      // whole snapshot down. Guessing wrong here therefore surfaces as $0
+      // income forever, not as an error.
+      revenue =
+        config.revenue.provider === "stripe"
+          ? new StripeRevenueTransport({ token: revenueToken, apiBase: process.env.REVENUE_API_BASE })
+          : new LemonSqueezyRevenueTransport({ token: revenueToken, apiBase: process.env.REVENUE_API_BASE });
+      revenueMode = config.revenue.provider;
+    } else {
+      revenue = new FakeRevenueTransport();
+      revenueMode = "fake (REVENUE_API_TOKEN unset — every snapshot reports $0)";
+    }
     // Optional, not mustEnv'd: an agent that can't Read files (research) just
     // loses the systemContext tool if this is missing, rather than boot
     // failing over a doc file. See docs/system-context.md itself, and the
@@ -153,6 +168,7 @@ function main(): void {
 
   console.log(`[boot] ${agents.length} agent(s) loaded: ${agents.map((a) => a.name).join(", ")}`);
   if (credentialMode) console.log(`[boot] credentials: ${credentialMode}`);
+  console.log(`[boot] revenue: ${revenueMode}`);
 
   const runStore = new RunStore(DATA_DIR);
   const metricsStore = new MetricsStore(DATA_DIR);

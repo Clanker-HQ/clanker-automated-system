@@ -27,6 +27,18 @@ retention:
   timezone: Europe/Berlin
   channel: ops
 
+# Which merchant-of-record API REVENUE_API_TOKEN belongs to. Written out
+# explicitly rather than left to the schema default: picking the wrong one
+# does not error, it reports $0 income forever (see src/index.ts).
+#
+# "stripe", not "lemonsqueezy": Stripe acquired Lemon Squeezy, and new
+# signups now land on Stripe Managed Payments — Stripe's own dashboard and
+# API (a normal Stripe secret key, the ordinary Charges API), not Lemon
+# Squeezy's separate JSON:API. Managed Payments explicitly does not support
+# the Connect-style setup that would route through Lemon Squeezy's surface.
+revenue:
+  provider: stripe   # lemonsqueezy | stripe
+
 metrics:
   enabled: true
   schedule: "0 4 * * 1"   # weekly (Monday 04:00) — one hour after memory.reflectionSchedule

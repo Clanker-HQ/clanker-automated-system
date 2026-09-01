@@ -128,4 +128,40 @@ describe("runMetricsJob", () => {
     expect(persisted).toEqual([metrics]);
     rmSync(f.dataDir, { recursive: true, force: true });
   });
+
+  // A $0 snapshot that could equally mean "no sales" or "we could not read
+  // sales" is the one reading the operator must never have to guess at: the
+  // console.error the catch already writes goes to the container log, while
+  // the digest posts the $0 to Discord with nothing distinguishing the two.
+  it("flags the snapshot as a revenue data gap when the transport fails", async () => {
+    const f = fixtures();
+    const failingRevenue: RevenueTransport = {
+      listSales: async () => {
+        throw new Error("lemon squeezy unavailable");
+      },
+    };
+
+    const metrics = await runMetricsJob({
+      runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
+      revenue: failingRevenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+    });
+
+    expect(metrics.revenueUnavailable).toBe(true);
+    expect((await f.metricsStore.listAll())[0]?.revenueUnavailable).toBe(true);
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  it("does not flag a data gap when the revenue transport answers", async () => {
+    const f = fixtures();
+    f.revenue.seedSale({ id: "s1", product: "widget", timestampIso: WITHIN_WINDOW.toISOString(), amountUsd: 5 });
+
+    const metrics = await runMetricsJob({
+      runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
+      revenue: f.revenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+    });
+
+    expect(metrics.revenueUnavailable).toBe(false);
+    expect(metrics.netIncomeUsd).toBe(5);
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
 });

@@ -31,6 +31,14 @@ export interface Metrics {
   suppressedProposalCount: number;
   /** null when no task is currently pending. */
   queueStarvationHours: number | null;
+  /**
+   * True when the revenue transport failed and `netIncomeUsd` is therefore a
+   * data gap rather than a measured $0. Optional because snapshots written
+   * before this field existed have no way to say either — absent reads as
+   * "the revenue figure is trustworthy", which is correct for them: they were
+   * all computed against FakeRevenueTransport, whose $0 was real.
+   */
+  revenueUnavailable?: boolean;
 }
 
 const FILENAME = /^metrics-\d{4}-\d{2}-\d{2}\.json$/;

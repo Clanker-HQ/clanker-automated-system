@@ -93,10 +93,19 @@ export async function buildDigestText(opts: {
 }
 
 function formatMetricsLine(latest: Metrics, previous: Metrics | null): string {
-  const revenueDelta = previous
+  // A delta is only meaningful between two snapshots that both actually read
+  // the merchant of record. Against a data gap it invents a collapse (or a
+  // recovery) out of a number nobody measured.
+  const comparable = previous !== null && !previous.revenueUnavailable && !latest.revenueUnavailable;
+  const revenueDelta = comparable
     ? ` (${latest.netIncomeUsd - previous.netIncomeUsd >= 0 ? "+" : ""}$${(latest.netIncomeUsd - previous.netIncomeUsd).toFixed(2)} vs prior snapshot)`
     : "";
-  const parts = [`📊 **Weekly metrics** (${latest.windowDays}d window): $${latest.netIncomeUsd.toFixed(2)} net income${revenueDelta}`];
+  // netIncomeUsd is 0 whether there were no sales or the transport failed;
+  // only the flag separates them, so the flag decides what gets rendered.
+  const revenue = latest.revenueUnavailable
+    ? "⚠️ revenue unavailable — could not read the merchant of record, so this is a data gap, not $0"
+    : `$${latest.netIncomeUsd.toFixed(2)} net income${revenueDelta}`;
+  const parts = [`📊 **Weekly metrics** (${latest.windowDays}d window): ${revenue}`];
   if (latest.notAchievedRate !== null) parts.push(`${(latest.notAchievedRate * 100).toFixed(0)}% not-achieved`);
   if (latest.costPerCompletedTaskUsd !== null) parts.push(`$${latest.costPerCompletedTaskUsd.toFixed(2)}/completed task`);
   if (latest.noveltySharePercent !== null) {

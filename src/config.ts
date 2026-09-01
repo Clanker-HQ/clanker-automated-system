@@ -203,9 +203,24 @@ export const GovernorSchema = z
   })
   .strict();
 
+/**
+ * Which merchant-of-record API `REVENUE_API_TOKEN` belongs to. An enum rather
+ * than a free string because the two transports share nothing — endpoint,
+ * auth headers, pagination and response shape all differ — so pointing one at
+ * the other's account fails as an opaque HTTP error inside a job that
+ * deliberately swallows revenue failures. A provider with no transport must
+ * therefore be a boot failure, not a runtime surprise.
+ */
+export const RevenueSchema = z
+  .object({
+    provider: z.enum(["lemonsqueezy", "stripe"]).default("lemonsqueezy"),
+  })
+  .strict();
+
 export const ConfigSchema = z
   .object({
     governor: GovernorSchema.prefault({}),
+    revenue: RevenueSchema.prefault({}),
     discord: z
       .object({
         channels: z.record(z.string(), z.string()).default({}),
@@ -227,6 +242,7 @@ export type DigestConfig = z.infer<typeof DigestSchema>;
 export type RetentionConfig = z.infer<typeof RetentionSchema>;
 export type MetricsConfig = z.infer<typeof MetricsSchema>;
 export type MemoryConfig = z.infer<typeof MemorySchema>;
+export type RevenueConfig = z.infer<typeof RevenueSchema>;
 
 export function parseConfig(source: string, yamlText: string): Config {
   const result = ConfigSchema.safeParse(parseYaml(yamlText) ?? {});
