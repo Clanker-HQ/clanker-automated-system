@@ -287,6 +287,37 @@ describe("buildDigestText — metrics section", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  // The digest window (`since`) only reaches back 24h, but the metrics pass
+  // is weekly — a snapshot this old means at least two cycles were missed,
+  // not just "nothing happened in the last day".
+  it("warns instead of showing the metrics section when the newest snapshot is long stale", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    const staleAt = new Date(SINCE.getTime() - 30 * 24 * 60 * 60 * 1000);
+    await metricsStore.write(metricsSnapshot({ computedAt: staleAt.toISOString() }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).toContain("stopped running");
+    expect(text).not.toContain("net income");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // A metrics store that has never been written to is the state a broken
+  // deploy leaves behind — it must not silently read as "nothing happened".
+  it("warns when metrics is configured but has never produced a snapshot, and treats it as activity", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).not.toBe("📅 Daily digest: nothing happened in the last 24h.");
+    expect(text).toMatch(/never completed|never been written/i);
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
   it("omits the metrics section entirely when no metricsStore is passed", async () => {
     const { store, tasks } = stores();
     await recordRun(store, WITHIN_WINDOW, "success", 1);
