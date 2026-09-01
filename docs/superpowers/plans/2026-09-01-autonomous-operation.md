@@ -1169,13 +1169,34 @@ git commit -m "feat: let the strategy's allocation pause a phase of work"
 4. **Deprovisioning.** Killing a product must cancel its services, or the spend continues under the ceiling forever. This is the failure mode most likely to survive every other guard in this plan.
 5. Paying at a checkout needs browser capability, which is not built (see `.env.example`'s `SPEND_CARD_*` note and README's "Not built yet"). Is that in scope, or is the system limited to services with a payment API?
 
-- [ ] **Step 1: Run the brainstorming skill on the questions above**
+**Verified against the repo on 2026-09-01, after C6 shipped.** Three things the questions above do not reflect:
 
-Use `superpowers:brainstorming`, architectural path. Do not skip to implementation.
+1. **A working unattended deploy path already exists — for this system.** `scripts/auto-deploy.sh`, `Dockerfile`'s `HEALTHCHECK` and `docker-compose.yml` already close the loop from "PR merged" to "live": fetch, fast-forward, `docker compose up --build -d`, poll Docker's health status, `git reset --hard` back to the previous commit if it does not go healthy within 90s, and a Discord line either way. `docs/decisions.md:88-118` records why it is host-side rather than an agent tool (mounting the Docker socket into an agent's container is close to host-root, for a step that needs no judgment) and why it is safe to run unattended. So question 1 is not "invent a deploy path", it is "generalise this one to a repo an agent wrote" — and the hard parts are specific:
+   - a product's healthcheck is **agent-authored**, so `HEALTHCHECK CMD exit 0` silently defeats rollback. This system's own healthcheck is protected by `EXCLUDED_PATHS`; a product's cannot be.
+   - one published port behind a tunnel is enough for a webhook receiver, not for N products on public URLs. Routing and DNS are genuinely unbuilt.
+   - nothing feeds "is it actually up" back anywhere. `src/state/liveness.ts` is about stale metrics passes, not deployed products, and `PortfolioEntry` has no liveness field — so a `status: "live"` entry that has been 502ing for a week still reads as live to the overseer. This is the same "computed by something, consumed by nothing" shape as the five instances already closed in this plan, inverted: an observable fact with nothing observing it.
 
-- [ ] **Step 2: Write the design to `docs/superpowers/specs/YYYY-MM-DD-ship-and-operate-design.md`**
+2. **`docs/decisions.md:31-40` contradicts this task's premise and must be resolved in the design, not footnoted.** It grounds the subscription-billing choice on "no user-facing product is planned", because Anthropic does not permit offering claude.ai login or rate limits to a third-party product's *end users* without prior approval. `goals.yaml`'s `means` forbid violating any service's terms, so a product that calls Claude on behalf of its own end users using the operator's subscription token is excluded by the goals themselves. The design must state plainly which path it takes: products that do not call Claude at all, or `ALLOW_API_BILLING=true` with API billing as a product cost line separate from the subscription. Silence is the failure mode here, because the obvious implementation is the forbidden one.
 
-- [ ] **Step 3: Write its implementation plan with `superpowers:writing-plans`**
+3. **Rule 3's replacement has a narrower job than it appears.** `evaluateSelfBuildChange`'s rule 3 (`src/control/self-build-gate.ts:171-185`) gates exactly one thing: a self-build PR that adds a grant naming an unprovisioned secret. It is not what stops the system signing up for a service — nothing does, because no agent has a tool that could. So "what replaces rule 3" is downstream of "what does provisioning look like at all", not a prerequisite for it.
+
+**This is three designs, not one.** Recommended split and order:
+
+- **D1a — the deploy path.** Repo → running service → public URL → liveness observed and written back into the portfolio. Needs no new credential, no new grant kind, and no capability the system lacks: it runs on the VPS that already exists, using the pattern that already works. Buildable immediately, and it is what makes the primary goal reachable at all rather than merely difficult.
+- **D1b — provisioning and deprovisioning.** A `provision` grant scoped by service pattern, what replaces rule 3, the runtime secret store (a key obtained at runtime is worthless if it needs a redeploy, so the store belongs to this design rather than its own), the bank-enforced ceiling, and the kill → cancel-services path. The riskiest of the three, and the one whose failure mode — spend continuing forever under the ceiling on a killed product — survives every other guard in this plan.
+- **D1c — paid checkouts that need a browser.** Last, and possibly never. It is the only one of the five open questions whose answer may legitimately be "out of scope", and D1b can ship restricted to services with a payment API.
+
+Each sub-design gets its own spec, its own implementation plan, and its own execution pass. Do not brainstorm all three at once.
+
+- [ ] **Step 1: Brainstorm D1a with `superpowers:brainstorming`, architectural path**
+
+Do not skip to implementation. Read this whole task, `docs/decisions.md:88-118`, `scripts/auto-deploy.sh`, `docker-compose.yml`, `Dockerfile` and `src/world/world-model.ts` before the first question.
+
+- [ ] **Step 2: Write the design to `docs/superpowers/specs/YYYY-MM-DD-deploy-path-design.md`**
+
+- [ ] **Step 3: Write its implementation plan with `superpowers:writing-plans`, then execute it task-per-session as this plan was**
+
+- [ ] **Step 4: Repeat Steps 1-3 for D1b, and decide whether D1c is in scope at all**
 
 ---
 
