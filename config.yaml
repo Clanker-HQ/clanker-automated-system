@@ -1,6 +1,6 @@
 governor:
   maxConcurrent: 2
-  dailyBudgetUsd: 10
+  dailyBudgetUsd: 40
   pendingTimeoutHours: 24
   # Local development: agents run at almost any hour; the window is nominal.
   quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
