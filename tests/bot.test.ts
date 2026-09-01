@@ -33,6 +33,7 @@ function setup() {
     stopped: false, quietHours: null, quietHoursActive: false,
     dailyBudgetUsd: 10, spentTodayUsd: 0, maxConcurrent: 2,
     breakerEnabled: true, disabledAgents: [],
+    rateLimitUtilization: null, rateLimitPauseThreshold: 0.95,
   };
   const governor = { status: async () => governorStatus, adjustConcurrency: vi.fn() };
   const bot = new DiscordBot({
@@ -642,7 +643,16 @@ describe("DiscordBot task commands", () => {
     expect(reply).toContain("Quiet hours: off");
     expect(reply).toContain("Circuit breaker: on");
     expect(reply).toContain("Disabled agents: none");
+    expect(reply).toContain("Rate limit: no reading yet");
     expect(reply).toContain("0 pending, 0 running, 0 waiting");
+  });
+
+  it("!status reports rate-limit utilization once a reading exists", async () => {
+    const { transport, bot, governorStatus } = setup();
+    governorStatus.rateLimitUtilization = 0.84;
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
+    expect(transport.sent[0]!.text).toContain("Rate limit: 84% of window (pauses at 95%)");
   });
 
   it("!status reflects a stopped, quiet-hours-active, breaker-off state with disabled agents", async () => {

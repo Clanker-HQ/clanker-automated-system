@@ -12,7 +12,15 @@ trigger:
 run:
   model: claude-haiku-4-5
   effort: medium
-  maxTurns: 30
+  # 30 -> 24 (2026-09-01): every turn resends the whole conversation, so a
+  # long research run pays again and again for whatever it already fetched.
+  # The account's real constraint is the subscription's shared rolling rate
+  # limit, not maxBudgetUsd (that figure is priced at API list rates on a
+  # subscription billed differently, and isn't the thing actually at risk).
+  # 24 still comfortably covers the one real run measured so far (20 turns,
+  # 11 WebSearch + 7 WebFetch, achieved its objective) with headroom, while
+  # capping how many times a single expensive turn can be re-paid for.
+  maxTurns: 24
   timeoutMinutes: 20
   maxBudgetUsd: 2.00
 

@@ -155,11 +155,34 @@ export function toRunEvents(message: unknown): RunEvent[] {
 
     case "result": {
       const usage = (m.usage as Record<string, unknown> | undefined) ?? {};
+      // The SDK's own type declarations (node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts,
+      // SDKResultSuccess) document `usage` as "MAIN AGENT LOOP ONLY ...
+      // per-turn in streaming-input sessions" and say to "prefer modelUsage
+      // for token/cost accounting" — modelUsage is "cumulative across
+      // turns", sharing total_cost_usd's lifecycle. Reading `usage` alone
+      // reports only the final turn's tokens next to a cost that correctly
+      // bills every turn: a 20-turn run recorded $0.56 next to 92 input
+      // tokens, a run that actually moved roughly half a million cumulative
+      // tokens. Sum every model's contribution — normally one, but a
+      // mid-run fallback adds a second key — rather than assuming exactly
+      // one. Falls back to `usage` when modelUsage is absent or every entry
+      // is zeroed, which the SDK's own docs say a crashed/startup-error
+      // result may do, and which an older SDK build predating the field
+      // also looks like.
+      const modelUsage = (m.modelUsage as Record<string, Record<string, unknown>> | undefined) ?? {};
+      let modelInputTokens = 0;
+      let modelOutputTokens = 0;
+      for (const entry of Object.values(modelUsage)) {
+        modelInputTokens += num(entry.inputTokens);
+        modelOutputTokens += num(entry.outputTokens);
+      }
+      const hasModelUsage = modelInputTokens > 0 || modelOutputTokens > 0;
+
       const events: RunEvent[] = [
         {
           type: "usage",
-          inputTokens: num(usage.input_tokens),
-          outputTokens: num(usage.output_tokens),
+          inputTokens: hasModelUsage ? modelInputTokens : num(usage.input_tokens),
+          outputTokens: hasModelUsage ? modelOutputTokens : num(usage.output_tokens),
           costUsd: num(m.total_cost_usd),
           durationMs: num(m.duration_ms),
         },

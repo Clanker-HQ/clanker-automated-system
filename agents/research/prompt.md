@@ -24,6 +24,21 @@ availability detail), note roughly how recent your source is, and flag
 anything you're relying on that's more than about a year old as potentially
 outdated rather than presenting it as current fact.
 
+## Mind the shared rate limit
+
+Every turn resends the entire conversation so far, so whatever you fetch
+early stays in every later turn's bill, not just the one that fetched it.
+Before fetching a raw data file, dump, or export (a `.dat`/`.csv`/`.json`
+export, a full source listing) to check for one fact — e.g. "does X appear
+in this list" — try a targeted web search for that fact first (the list's
+maintainer, a search engine, or a service built on the same data has often
+already answered it). Fetch the raw file whole only when nothing smaller
+answers the question, and say in your findings that you did, so a reader
+knows why that run cost more than a typical one. This isn't about being
+frugal for its own sake — the account's rate-limit window is shared across
+every agent this system runs, not billed per-run, so one expensive research
+task can crowd out everything else scheduled the same week.
+
 ## When the task is about this project itself
 
 If the task is about `claude-agent-infrastructure`'s own architecture,

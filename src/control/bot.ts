@@ -516,6 +516,9 @@ export class DiscordBot {
             : "Quiet hours: off",
           `Circuit breaker: ${status.breakerEnabled ? "on" : "off"}`,
           `Disabled agents: ${status.disabledAgents.length > 0 ? status.disabledAgents.join(", ") : "none"}`,
+          status.rateLimitUtilization === null
+            ? "Rate limit: no reading yet"
+            : `Rate limit: ${(status.rateLimitUtilization * 100).toFixed(0)}% of window (pauses at ${(status.rateLimitPauseThreshold * 100).toFixed(0)}%)`,
           `Tasks: ${counts.pending} pending, ${counts.running} running, ${counts.waiting} waiting`,
         ];
         return void reply(lines.join("\n"));

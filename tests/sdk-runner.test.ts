@@ -143,6 +143,82 @@ describe("toRunEvents", () => {
     ]);
   });
 
+  // The SDK's own type declarations document `usage` on a result message as
+  // "MAIN AGENT LOOP ONLY ... per-turn in streaming-input sessions" and say
+  // to "prefer modelUsage for token/cost accounting" — modelUsage is
+  // "cumulative across turns", sharing total_cost_usd's lifecycle. A 20-turn
+  // research run recorded costUsd: $0.56 (correct, from total_cost_usd) next
+  // to inputTokens: 92 (from `usage`, the last turn only) — a run that
+  // should have reported ~half a million cumulative input tokens looked like
+  // it cost 24x what its own token count implied. This is that bug's fix.
+  it("sums modelUsage's per-model totals for a result message's token counts, not the per-turn usage block", () => {
+    const events = toRunEvents({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      usage: { input_tokens: 92, output_tokens: 4562 },
+      modelUsage: {
+        "claude-haiku-4-5": {
+          inputTokens: 480000,
+          outputTokens: 4562,
+          cacheReadInputTokens: 400000,
+          cacheCreationInputTokens: 20000,
+          costUSD: 0.5556445,
+        },
+      },
+      total_cost_usd: 0.5556445,
+      duration_ms: 120718,
+    });
+    expect(events[0]).toEqual({
+      type: "usage", inputTokens: 480000, outputTokens: 4562, costUsd: 0.5556445, durationMs: 120718,
+    });
+  });
+
+  it("sums modelUsage across every model key — a mid-run fallback adds a second one", () => {
+    const events = toRunEvents({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      usage: { input_tokens: 10, output_tokens: 5 },
+      modelUsage: {
+        "claude-opus-5": { inputTokens: 100, outputTokens: 50, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0.01 },
+        "claude-opus-4-8": { inputTokens: 200, outputTokens: 75, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0.02 },
+      },
+      total_cost_usd: 0.03,
+      duration_ms: 5000,
+    });
+    expect(events[0]).toMatchObject({ inputTokens: 300, outputTokens: 125 });
+  });
+
+  it("falls back to the per-turn usage block when modelUsage is absent — an older SDK build, or a crashed/startup-error result the SDK documents as possibly carrying zeroed modelUsage", () => {
+    const events = toRunEvents({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      usage: { input_tokens: 11, output_tokens: 3 },
+      total_cost_usd: 0.002,
+      duration_ms: 4200,
+    });
+    expect(events[0]).toEqual({
+      type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200,
+    });
+  });
+
+  it("falls back to the per-turn usage block when modelUsage is present but empty", () => {
+    const events = toRunEvents({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      usage: { input_tokens: 11, output_tokens: 3 },
+      modelUsage: {},
+      total_cost_usd: 0.002,
+      duration_ms: 4200,
+    });
+    expect(events[0]).toEqual({
+      type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200,
+    });
+  });
+
   it("maps a rate_limit_event message to a rate_limit_event RunEvent", () => {
     const events = toRunEvents({
       type: "rate_limit_event",

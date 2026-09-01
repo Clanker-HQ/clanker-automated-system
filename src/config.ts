@@ -200,6 +200,18 @@ export const GovernorSchema = z
     dailyBudgetUsd: z.number().positive().default(10),
     pendingTimeoutHours: z.number().positive().default(24),
     quietHours: QuietHoursSchema.nullable().default(null),
+    /**
+     * Fraction of the subscription's rolling rate-limit window (0-1) at or
+     * above which admit() refuses new work outright, regardless of `status`.
+     * `status: "rejected"` alone isn't enough of a signal: the API can sit
+     * at "allowed_warning" for days while utilization climbs toward 1.0, and
+     * nothing before this read the number at all — a run was refused only
+     * after the account was already being rejected. dailyBudgetUsd cannot
+     * substitute for this: it caps a dollar figure priced at API list rates
+     * on a subscription that isn't billed that way, which is a different
+     * quantity from the account's real rolling-window capacity.
+     */
+    rateLimitPauseThreshold: z.number().min(0).max(1).default(0.95),
   })
   .strict();
 

@@ -174,6 +174,47 @@ describe("Governor.admit", () => {
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("rate limit"), alert: true });
   });
 
+  it("refuses once utilization crosses the pause threshold, even when status is only a warning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.97 });
+    const result = await build(dir).admit(agent(), "trigger");
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+  });
+
+  it("admits below the pause threshold, warning status and all", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.84 });
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  it("refuses a resume too, not only a fresh trigger — matching the adjacent rejected-status check's unconditional gating", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", utilization: 0.99 });
+    const result = await build(dir).admit(agent(), "resume");
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+  });
+
+  it("respects a configured rateLimitPauseThreshold instead of the built-in default", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 2\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\n  rateLimitPauseThreshold: 0.5\n  quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+    });
+    await new RateLimitTracker(dir).record({ status: "allowed", utilization: 0.6 });
+    const result = await governor.admit(agent(), "trigger");
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+  });
+
+  it("admits when utilization is absent from the snapshot, even with a warning status (fails open on missing data)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning" });
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
   it("admits when there is no rate-limit snapshot yet (fails open)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
@@ -314,6 +355,8 @@ describe("Governor.status", () => {
       maxConcurrent: 2,
       breakerEnabled: true,
       disabledAgents: [],
+      rateLimitUtilization: null,
+      rateLimitPauseThreshold: 0.95,
     });
   });
 

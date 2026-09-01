@@ -18,6 +18,9 @@ export interface GovernorStatus {
   maxConcurrent: number;
   breakerEnabled: boolean;
   disabledAgents: string[];
+  /** null when no rate_limit_event has ever been recorded — distinct from 0, which is a real reading. */
+  rateLimitUtilization: number | null;
+  rateLimitPauseThreshold: number;
 }
 
 function isWithinQuietHours(quietHours: QuietHours, now: Date): boolean {
@@ -102,6 +105,23 @@ export class Governor {
     if (snapshot?.status === "rejected") {
       return { kind: "refuse", reason: `rate limit currently rejected (as of ${snapshot.recordedAt})`, alert: true };
     }
+    // Utilization can climb toward 1.0 for days under "allowed_warning"
+    // before the API ever starts rejecting — the check above alone means
+    // finding out only once that happens. Gated on `snapshot.utilization`
+    // being present (fails open on `undefined`, same posture as a missing
+    // snapshot entirely) since a status-only record — no rate_limit_event
+    // has carried a figure yet — has nothing to compare against the
+    // threshold. Unconditional on `kind`, matching the rejected check right
+    // above it: a resume is exactly as costly against the real window as a
+    // fresh trigger, unlike the breaker/disabled-agent checks earlier in
+    // this function, which a resume deliberately bypasses.
+    if (snapshot?.utilization !== undefined && snapshot.utilization >= settings.rateLimitPauseThreshold) {
+      return {
+        kind: "refuse",
+        reason: `rate limit utilization ${(snapshot.utilization * 100).toFixed(0)}% has reached the pause threshold (${(settings.rateLimitPauseThreshold * 100).toFixed(0)}%, as of ${snapshot.recordedAt})`,
+        alert: true,
+      };
+    }
 
     await this.acquireSlot(settings.maxConcurrent);
     return { kind: "admit" };
@@ -132,6 +152,7 @@ export class Governor {
     const overrides = await this.overrides.read();
     const settings = resolveGovernorSettings(this.config, overrides);
     const now = this.now();
+    const snapshot = await this.rateLimits.read();
     return {
       stopped: existsSync(join(this.dataDir, "STOP")),
       quietHours: settings.quietHours,
@@ -141,6 +162,8 @@ export class Governor {
       maxConcurrent: settings.maxConcurrent,
       breakerEnabled: overrides.breakerEnabled !== false,
       disabledAgents: overrides.disabledAgents ?? [],
+      rateLimitUtilization: snapshot?.utilization ?? null,
+      rateLimitPauseThreshold: settings.rateLimitPauseThreshold,
     };
   }
 
