@@ -79,6 +79,14 @@
         }
       ]
     },
+    "category": {
+      "type": "string",
+      "enum": [
+        "research",
+        "build",
+        "maintain"
+      ]
+    },
     "run": {
       "type": "object",
       "properties": {

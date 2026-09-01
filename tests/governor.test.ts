@@ -266,14 +266,23 @@ describe("Governor.admit", () => {
       secondResolved = true;
       return r;
     });
+    // Both admit() calls must reach the queued-waiter stage before adjusting —
+    // admit() awaits overrides/breaker/spend/rate-limit reads first, so calling
+    // adjustConcurrency() synchronously right after starting them would find an
+    // empty waiters queue.
+    //
+    // They are enqueued ONE AT A TIME on purpose. adjustConcurrency(2) below
+    // grants exactly one waiter — waiters.shift() — so the assertions depend on
+    // b sitting ahead of c in the queue. Starting both at once and waiting for
+    // length 2 proves only that both are queued, not in which order: each
+    // admit() races an independent chain of file reads to reach acquireSlot,
+    // and whichever lands first is enqueued first. When that was c, the slot
+    // went to c, secondPromise never resolved, and the test timed out — roughly
+    // one run in six.
+    await waitForWaiters(governor, 1);
     void governor.admit(agent("c"), "trigger").then(() => {
       thirdResolved = true;
     });
-
-    // Let both admit() calls actually reach the queued-waiter stage before
-    // adjusting — admit() awaits overrides/rate-limit reads first, so calling
-    // adjustConcurrency() synchronously right after starting them would find
-    // an empty waiters queue.
     await waitForWaiters(governor, 2);
 
     // Raised to 2, not 3: only room for one more of the two queued waiters.

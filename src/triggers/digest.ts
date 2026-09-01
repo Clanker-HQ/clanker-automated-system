@@ -1,6 +1,7 @@
 import { Cron } from "croner";
 import type { MemoryConfig } from "../config.js";
 import type { TaskStore } from "../control/task-store.js";
+import type { ProbeStore } from "../deploy/probe-store.js";
 import { buildDigestText } from "../digest.js";
 import type { MemoryStore } from "../memory/memory-store.js";
 import type { RunStore } from "../run-store.js";
@@ -23,19 +24,26 @@ export function startDigest(opts: {
   memoryConfig?: MemoryConfig;
   /** Passed straight through: buildDigestText drops its metrics section when this is absent. */
   metricsStore?: MetricsStore;
+  /** Passed straight through: buildDigestText drops its deploy-liveness section when this is absent. */
+  probeStore?: ProbeStore;
+  /** Passed straight through: buildDigestText drops its deploy-liveness section when this is absent. */
+  declaredSlugs?: string[];
 }): Cron {
   const now = opts.now ?? (() => new Date());
-  const job = new Cron(opts.schedule, { timezone: opts.timezone, protect: true }, () => {
-    void (async () => {
+  // Async rather than `void run().catch()`: croner awaits an async callback,
+  // so `protect: true` genuinely prevents an overlapping run, and
+  // `job.trigger()` becomes awaitable — same reasoning as startMetrics.
+  const job = new Cron(opts.schedule, { timezone: opts.timezone, protect: true }, async () => {
+    try {
       const since = new Date(now().getTime() - 24 * 60 * 60 * 1000);
       const text = await buildDigestText({
         store: opts.store, tasks: opts.tasks, since, memory: opts.memory, memoryConfig: opts.memoryConfig,
-        metricsStore: opts.metricsStore,
+        metricsStore: opts.metricsStore, probeStore: opts.probeStore, declaredSlugs: opts.declaredSlugs,
       });
       await opts.outbox.postAlert(opts.channel, text);
-    })().catch((error: unknown) => {
+    } catch (error) {
       console.error("[digest] failed to build/post the daily digest", error);
-    });
+    }
   });
   console.log(
     `[digest] scheduled "${opts.schedule}" (${opts.timezone}) -> #${opts.channel}; next run ${job.nextRun()?.toISOString() ?? "never"}`,

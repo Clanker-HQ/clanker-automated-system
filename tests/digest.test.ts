@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskStore } from "../src/control/task-store.js";
+import { ProbeStore } from "../src/deploy/probe-store.js";
 import { buildDigestText } from "../src/digest.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import { RunStore, newRunId } from "../src/run-store.js";
 import type { Metrics } from "../src/state/metrics-store.js";
 import { MetricsStore } from "../src/state/metrics-store.js";
+import { startDigest } from "../src/triggers/digest.js";
 
 function stores() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-"));
@@ -231,6 +233,63 @@ describe("buildDigestText — metrics section", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  it("renders a revenue drop with the sign before the currency symbol", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ computedAt: BEFORE_WINDOW.toISOString(), netIncomeUsd: 30 }));
+    await metricsStore.write(metricsSnapshot({ computedAt: WITHIN_WINDOW.toISOString(), netIncomeUsd: 0 }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).toContain("-$30.00");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // The digest is the only place this number is read by a human. A snapshot
+  // whose revenue read failed must not present its $0 as a measurement.
+  it("reports a revenue read failure instead of presenting its $0 as income", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ netIncomeUsd: 0, revenueUnavailable: true }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).toContain("revenue unavailable");
+    expect(text).not.toContain("$0.00 net income");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("suppresses the revenue delta when the latest snapshot could not read revenue", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ computedAt: BEFORE_WINDOW.toISOString(), netIncomeUsd: 30 }));
+    await metricsStore.write(metricsSnapshot({ computedAt: WITHIN_WINDOW.toISOString(), netIncomeUsd: 0, revenueUnavailable: true }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    // A delta against an unmeasured $0 would read as revenue collapsing.
+    expect(text).not.toContain("vs prior snapshot");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("suppresses the revenue delta when the PREVIOUS snapshot could not read revenue", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    await metricsStore.write(metricsSnapshot({ computedAt: BEFORE_WINDOW.toISOString(), netIncomeUsd: 0, revenueUnavailable: true }));
+    await metricsStore.write(metricsSnapshot({ computedAt: WITHIN_WINDOW.toISOString(), netIncomeUsd: 42 }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    // A +$42 jump measured against a week nothing was read from is invented.
+    expect(text).toContain("$42.00 net income");
+    expect(text).not.toContain("vs prior snapshot");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
   it("omits the metrics section when the latest snapshot predates the digest window", async () => {
     const { store, tasks } = stores();
     const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
@@ -240,6 +299,37 @@ describe("buildDigestText — metrics section", () => {
     const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
 
     expect(text).not.toContain("net income");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // The digest window (`since`) only reaches back 24h, but the metrics pass
+  // is weekly — a snapshot this old means at least two cycles were missed,
+  // not just "nothing happened in the last day".
+  it("warns instead of showing the metrics section when the newest snapshot is long stale", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+    const staleAt = new Date(SINCE.getTime() - 30 * 24 * 60 * 60 * 1000);
+    await metricsStore.write(metricsSnapshot({ computedAt: staleAt.toISOString() }));
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).toContain("stopped running");
+    expect(text).not.toContain("net income");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // A metrics store that has never been written to is the state a broken
+  // deploy leaves behind — it must not silently read as "nothing happened".
+  it("warns when metrics is configured but has never produced a snapshot, and treats it as activity", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-metrics-"));
+    const metricsStore = new MetricsStore(dataDir);
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, metricsStore });
+
+    expect(text).not.toBe("📅 Daily digest: nothing happened in the last 24h.");
+    expect(text).toMatch(/never completed|never been written/i);
     rmSync(dataDir, { recursive: true, force: true });
   });
 
@@ -277,5 +367,80 @@ describe("buildDigestText — metrics section", () => {
     expect(text).not.toContain("null");
     expect(text).not.toContain("NaN");
     rmSync(dataDir, { recursive: true, force: true });
+  });
+});
+
+describe("buildDigestText — deploy liveness section", () => {
+  it("includes a warning line when a declared deployment is not serving", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-probe-"));
+    const probeStore = new ProbeStore(dataDir);
+    await probeStore.write([
+      {
+        slug: "status-page",
+        url: "https://status.example.com/",
+        lastProbeAt: "2026-08-27T23:50:00.000Z",
+        ok: false,
+        consecutiveFailures: 3,
+        detail: "HTTP 502",
+      },
+    ]);
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, probeStore, declaredSlugs: ["status-page"] });
+
+    expect(text).toContain("status-page");
+    expect(text).toContain("HTTP 502");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // The point of this test: probeStore/declaredSlugs are optional on
+  // buildDigestText, mirroring metricsStore, so an omission at the call site
+  // that wires startDigest into production would compile fine and just never
+  // run. Going through startDigest itself — the same function src/index.ts
+  // calls — proves the wiring actually forwards them, not a hand-written
+  // reimplementation that could quietly drift from what ships.
+  it("reaches the posted digest through startDigest, the production call site", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-probe-trigger-"));
+    const probeStore = new ProbeStore(dataDir);
+    const triggerNow = new Date("2026-09-01T10:00:00.000Z");
+    await probeStore.write([
+      {
+        slug: "status-page",
+        url: "https://status.example.com/",
+        lastProbeAt: new Date(triggerNow.getTime() - 5 * 60 * 1000).toISOString(),
+        ok: false,
+        consecutiveFailures: 1,
+        detail: "HTTP 500",
+      },
+    ]);
+    const posted: string[] = [];
+    const outbox = {
+      postAlert: async (_channel: string, text: string) => {
+        posted.push(text);
+        return "delivered" as const;
+      },
+    };
+    // Feb 29 on a non-leap year — never fires on its own, so only trigger() runs the job.
+    const NEVER = "0 0 29 2 *";
+    const job = startDigest({
+      schedule: NEVER,
+      timezone: "UTC",
+      channel: "ops",
+      store,
+      tasks,
+      outbox,
+      probeStore,
+      declaredSlugs: ["status-page"],
+      now: () => triggerNow,
+    });
+    try {
+      await job.trigger();
+      expect(posted).toHaveLength(1);
+      expect(posted[0]).toContain("status-page");
+    } finally {
+      job.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });

@@ -72,6 +72,39 @@ It posts a one-line Discord notification (to the `ops` channel) only when
 it actually deploys or rolls something back — silent on every tick where
 nothing changed, the same way `retention` already behaves.
 
+### Deploying products
+
+`deploys.yaml` is the desired state for everything besides this system
+itself: an agent puts a product live by opening a PR that adds one entry
+(`slug`, `repo`, `hostname`, `port`, and optionally `env`), which inherits
+CI, `pr-reviewer` and `mergePR`'s gates like any other PR — see
+`docs/superpowers/specs/2026-09-01-deploy-path-design.md`. Once merged, the
+supervisor renders routing (`caddy/Caddyfile`) and the host's own view of the
+list (`caddy/deployments.tsv`) from that file at every boot. `auto-deploy.sh`
+calls `scripts/deploy-products.sh` after its own deploy settles, on both the
+healthy and the rolled-back path: it clones or updates each declared repo,
+builds and starts it, reloads Caddy, and probes the entry's real public URL
+(through Caddy, over the internet — never the product's own Docker
+`HEALTHCHECK`) before treating the deploy as good, rolling back to the last
+version that passed if it isn't.
+
+An entry's `hostname` needs a real domain an operator has pointed at the
+host — the free `<name>.<ip-with-dashes>.sslip.io` form is for this system's
+own services only. Until that pointing is automated (a future project),
+pointing DNS at the host is a manual step the operator does once per
+product, outside this repo. `env` may only name variables already listed in
+`config.yaml`'s `deploy.availableProductEnv`; the **values** live in a
+`products.env` file the operator maintains directly on the host (never
+committed, never mounted into the supervisor's own container) and each
+product receives only the variables its own entry names — never another
+product's.
+
+The `caddy` service in `docker-compose.yml` is what actually terminates TLS
+and routes each hostname to its container; it bind-mounts the same `./caddy`
+directory the supervisor renders into, read-only, plus two named volumes
+(`caddy-data`, `caddy-config`) that must persist so certificates survive a
+restart instead of re-requesting from Let's Encrypt every time.
+
 ## Adding an agent
 
 Create `agents/<name>/agent.yaml` and `agents/<name>/prompt.md`, then restart the

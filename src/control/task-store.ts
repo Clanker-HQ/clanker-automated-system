@@ -14,6 +14,16 @@ import { KeyedMutex } from "../keyed-mutex.js";
 export const MAX_TASK_TEXT_LENGTH = 4000;
 
 /**
+ * Once this many tasks have been claimed in a row without one of them being
+ * "exploration", the next claim promotes a pending exploration task ahead of
+ * everything else regardless of priority — see claimNextPending. Without
+ * this, `weights.novelty` only biases proposal *ranking*, so once anything
+ * starts earning money every allocation decision looks better spent on it,
+ * and the system never tries anything new again.
+ */
+export const EXPLORATION_INTERVAL = 5;
+
+/**
  * "waiting" is a live run that stopped mid-execution to await a human
  * approve/deny/answer (a `parked`/`question` RunResult). It is neither finished
  * nor failed — the run resumes its original session once the owner replies —
@@ -21,11 +31,28 @@ export const MAX_TASK_TEXT_LENGTH = 4000;
  */
 export type TaskStatus = "pending" | "running" | "done" | "failed" | "waiting";
 
+/**
+ * "exploitation" is the default (see create()) so every existing caller —
+ * human `!task` requests, dispatcher retries, agent proposals that predate
+ * this field — is counted correctly by the exploration floor below without
+ * having to know it exists. Only the overseer is expected to ever tag a
+ * task "exploration"; nothing currently sets "maintenance" but the floor
+ * treats it the same as "exploitation" (i.e. it counts against the floor).
+ */
+export type TaskCategory = "exploration" | "exploitation" | "maintenance";
+
 export interface Task {
   id: string;
   text: string;
   priority: number;
   status: TaskStatus;
+  /**
+   * Optional, not required, because a task file written before this field
+   * existed has none on disk — every read site must fall back to
+   * "exploitation" (see create()'s default and claimNextPending below)
+   * rather than assume this is always present.
+   */
+  category?: TaskCategory;
   createdBy: string;
   createdAt: string;
   startedAt?: string;
@@ -72,13 +99,21 @@ export class TaskStore {
     return join(this.dir(), `${id}.json`);
   }
 
-  async create(input: { text: string; priority?: number; createdBy: string; parentId?: string; wantsDetail?: boolean }): Promise<Task> {
+  async create(input: {
+    text: string;
+    priority?: number;
+    createdBy: string;
+    parentId?: string;
+    wantsDetail?: boolean;
+    category?: TaskCategory;
+  }): Promise<Task> {
     await mkdir(this.dir(), { recursive: true });
     const task: Task = {
       id: randomUUID(),
       text: input.text,
       priority: input.priority ?? 50,
       status: "pending",
+      category: input.category ?? "exploitation",
       createdBy: input.createdBy,
       createdAt: new Date().toISOString(),
       ...(input.parentId ? { parentId: input.parentId } : {}),
@@ -140,6 +175,13 @@ export class TaskStore {
     });
   }
 
+  /** Shared by nextPending and claimNextPending's exploration-floor check — same eligibility rule, applied to two different sort orders. */
+  private async eligiblePending(exclude: ReadonlySet<string>, now: Date): Promise<Task[]> {
+    return (await this.list()).filter(
+      (t) => t.status === "pending" && !exclude.has(t.id) && (!t.nextRetryAt || new Date(t.nextRetryAt) <= now),
+    );
+  }
+
   /**
    * Highest priority first, ties broken by creation order (FIFO). Null when
    * nothing is pending. `exclude` skips ids a concurrent dispatch drain has
@@ -150,12 +192,38 @@ export class TaskStore {
    * excluded — it's backing off after a failed attempt, not actually ready.
    */
   async nextPending(exclude: ReadonlySet<string> = new Set(), now: Date = new Date()): Promise<Task | null> {
-    const pending = (await this.list()).filter(
-      (t) => t.status === "pending" && !exclude.has(t.id) && (!t.nextRetryAt || new Date(t.nextRetryAt) <= now),
-    );
+    const pending = await this.eligiblePending(exclude, now);
     if (pending.length === 0) return null;
     pending.sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
     return pending[0]!;
+  }
+
+  /**
+   * Under data/state/, not data/tasks/ — list() readdirs the tasks directory
+   * and parses every *.json in it as a Task, so a counter file living there
+   * would show up as a corrupt-task console.error on every tick, or worse, a
+   * phantom task the dispatcher tries to run.
+   */
+  private explorationFloorPath(): string {
+    return join(this.dataDir, "state", "exploration-floor.json");
+  }
+
+  /** Claims made since the last one that landed on an "exploration" task. Never mutated except from inside claimNextPending's own mutex — see there for why. */
+  private async readClaimsSinceExploration(): Promise<number> {
+    try {
+      const parsed = JSON.parse(await readFile(this.explorationFloorPath(), "utf8")) as { claimsSinceExploration: number };
+      return parsed.claimsSinceExploration;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        console.error("[task-store] failed to read exploration-floor.json, treating the floor as freshly reset", err);
+      }
+      return 0;
+    }
+  }
+
+  private async writeClaimsSinceExploration(count: number): Promise<void> {
+    await mkdir(join(this.dataDir, "state"), { recursive: true });
+    await writeFileAtomic(this.explorationFloorPath(), JSON.stringify({ claimsSinceExploration: count }, null, 2) + "\n");
   }
 
   /**
@@ -164,11 +232,39 @@ export class TaskStore {
    * concurrently can never both claim the same task — nextPending() alone is
    * just a read, with nothing stopping two callers from picking the same
    * result before either one flags it as taken.
+   *
+   * Also enforces the exploration floor: once EXPLORATION_INTERVAL claims in
+   * a row have gone to something other than "exploration", the next claim
+   * takes a pending exploration task over whatever priority would otherwise
+   * pick, if one exists. The counter lives in the same mutex.run callback as
+   * the claim itself (not a separate read-then-write) so two concurrent
+   * claims can never both count the same gap or both reset it, and it is
+   * persisted to disk on every claim — including when nothing was pending to
+   * promote — so a restart never loses progress toward the floor, and a long
+   * exploitation-only stretch is never quietly forgiven by leaving nothing
+   * pending to promote in the meantime.
    */
   async claimNextPending(exclude: ReadonlySet<string>, startedAt: string): Promise<Task | null> {
     return this.mutex.run(TaskStore.CLAIM_KEY, async () => {
-      const task = await this.nextPending(exclude, new Date(startedAt));
+      const now = new Date(startedAt);
+      const claimsSinceExploration = (await this.readClaimsSinceExploration()) + 1;
+
+      let task: Task | null = null;
+      if (claimsSinceExploration >= EXPLORATION_INTERVAL) {
+        const exploration = (await this.eligiblePending(exclude, now)).filter((t) => (t.category ?? "exploitation") === "exploration");
+        exploration.sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
+        task = exploration[0] ?? null;
+      }
+      if (!task) task = await this.nextPending(exclude, now);
       if (!task) return null;
+
+      // Reset only on an actual exploration claim. If the floor triggered
+      // above but nothing exploration was pending, `claimsSinceExploration`
+      // (already incremented for this claim) is written back as-is — it
+      // must keep climbing, not fall back to 0, so the moment an exploration
+      // task finally arrives it is promoted immediately rather than waiting
+      // out another full interval.
+      await this.writeClaimsSinceExploration((task.category ?? "exploitation") === "exploration" ? 0 : claimsSinceExploration);
       return this.update(task.id, { status: "running", startedAt });
     });
   }

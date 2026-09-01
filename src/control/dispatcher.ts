@@ -6,6 +6,7 @@ import { proposeSuccessors, type SuccessorSuggester } from "../memory/successor.
 import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
+import type { WorldModel } from "../world/world-model.js";
 import type { Router, Specialist } from "./router.js";
 import type { Task, TaskStore } from "./task-store.js";
 
@@ -27,6 +28,14 @@ export interface DispatcherDeps {
    */
   notify: (text: string) => Promise<void>;
   dataDir: string;
+  /**
+   * Required, not optional: an optional dep here would degrade to "the world
+   * model is silently never injected" — invisible in exactly the way an
+   * earlier optional dep in this codebase shipped dead code, because the
+   * tests pass and the runs succeed while the feature does nothing. Making
+   * it required means `npm run typecheck` names every uninjected call site.
+   */
+  world: WorldModel;
   now?: () => Date;
   /** Optional: without it the dispatcher behaves exactly as before, writing no memory records. */
   memory?: MemoryStore;
@@ -250,7 +259,15 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
         console.error("[dispatcher] memory retrieval skipped", error);
       }
     }
-    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${memoryContext}`;
+    let worldContext = "";
+    try {
+      worldContext = `\n\n## World model\n${await deps.world.summaryForPrompt()}`;
+    } catch (error) {
+      // Same posture as memory retrieval above: enriching a prompt is a
+      // bonus, never a reason to stop the task from running.
+      console.error("[dispatcher] world model summary skipped", error);
+    }
+    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${memoryContext}${worldContext}`;
     const result = await deps.orchestrator.executeRun(agent, now(), promptContext);
 
     if (!result) {

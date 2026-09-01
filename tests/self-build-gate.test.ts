@@ -42,9 +42,20 @@ outbox:
 `;
 
 const EMPTY_GRANTS = "grants: []\n";
+const EMPTY_DEPLOYS = "deployments: []\n";
 
 function grantsYaml(entries: string): string {
   return `grants:\n${entries}`;
+}
+
+function base() {
+  return {
+    baseAgentFiles: [],
+    baseGrantsYaml: EMPTY_GRANTS,
+    changedAgentFiles: [],
+    agentNamesWithPromptMd: new Set<string>(),
+    env: {},
+  };
 }
 
 describe("isSelfBuildChange", () => {
@@ -83,6 +94,7 @@ describe("evaluateSelfBuildChange", () => {
       changedAgentFiles: [{ path: "agents/bad/agent.yaml", content: INVALID_AGENT }],
       agentNamesWithPromptMd: new Set(["bad"]),
       env: {},
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 1 });
   });
@@ -96,6 +108,7 @@ describe("evaluateSelfBuildChange", () => {
       headGrantsYaml: EMPTY_GRANTS,
       agentNamesWithPromptMd: new Set(["foo"]),
       env: {},
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 1 });
   });
@@ -105,7 +118,7 @@ describe("evaluateSelfBuildChange", () => {
     const head = grantsYaml('  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo", "owner/other"]\n    secret: GITHUB_PR_TOKEN\n');
     const verdict = evaluateSelfBuildChange({
       baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {},
+      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 2 });
   });
@@ -120,6 +133,7 @@ describe("evaluateSelfBuildChange", () => {
       baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
       agentNamesWithPromptMd: new Set<string>(),
       env: { GITHUB_PR_TOKEN: "provisioned" },
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toEqual({ allowed: true });
   });
@@ -132,7 +146,7 @@ describe("evaluateSelfBuildChange", () => {
     );
     const verdict = evaluateSelfBuildChange({
       baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {},
+      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 3 });
   });
@@ -145,7 +159,7 @@ describe("evaluateSelfBuildChange", () => {
     );
     const verdict = evaluateSelfBuildChange({
       baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {},
+      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toEqual({ allowed: true });
   });
@@ -158,7 +172,7 @@ describe("evaluateSelfBuildChange", () => {
     );
     const verdict = evaluateSelfBuildChange({
       baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {},
+      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 3 });
   });
@@ -170,6 +184,7 @@ describe("evaluateSelfBuildChange", () => {
       changedAgentFiles: [{ path: "agents/foo/agent.yaml", content: FOO_AGENT_V2 }],
       agentNamesWithPromptMd: new Set(["foo"]),
       env: {},
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toEqual({ allowed: true });
   });
@@ -181,6 +196,7 @@ describe("evaluateSelfBuildChange", () => {
       changedAgentFiles: [{ path: "agents/foo/agent.yaml", content: null }],
       agentNamesWithPromptMd: new Set(["foo"]),
       env: {},
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toEqual({ allowed: true });
   });
@@ -192,6 +208,7 @@ describe("evaluateSelfBuildChange", () => {
       changedAgentFiles: [{ path: "agents/foo/prompt.md", content: "New prompt text." }],
       agentNamesWithPromptMd: new Set(["foo"]),
       env: {},
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toEqual({ allowed: true });
   });
@@ -204,6 +221,7 @@ describe("evaluateSelfBuildChange", () => {
       changedAgentFiles: [{ path: "agents/foo/agent.yaml", content: mismatched }],
       agentNamesWithPromptMd: new Set(["foo"]),
       env: {},
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 1 });
   });
@@ -215,8 +233,64 @@ describe("evaluateSelfBuildChange", () => {
       changedAgentFiles: [{ path: "agents/foo/agent.yaml", content: FOO_AGENT_V1 }],
       agentNamesWithPromptMd: new Set<string>(), // no prompt.md anywhere
       env: {},
+      baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 1 });
+  });
+});
+
+describe("deploys.yaml as a self-build shape", () => {
+  const ENTRY = `deployments:
+  - slug: status-page
+    repo: Clanker-HQ/clanker-status-page
+    hostname: status.203-0-113-5.sslip.io
+    port: 8080
+`;
+
+  it("is a self-build change on its own", () => {
+    expect(isSelfBuildChange(["deploys.yaml"])).toBe(true);
+  });
+
+  it("is not a self-build change when mixed with an ordinary file", () => {
+    expect(isSelfBuildChange(["deploys.yaml", "src/orchestrator.ts"])).toBe(false);
+  });
+
+  it("admits a PR that adds an entry", () => {
+    const verdict = evaluateSelfBuildChange({ ...base(), baseDeploysYaml: "deployments: []\n", headDeploysYaml: ENTRY });
+    expect(verdict).toEqual({ allowed: true });
+  });
+
+  it("admits a PR that removes an entry", () => {
+    const verdict = evaluateSelfBuildChange({ ...base(), baseDeploysYaml: ENTRY, headDeploysYaml: "deployments: []\n" });
+    expect(verdict).toEqual({ allowed: true });
+  });
+
+  it("refuses a deploys.yaml that does not validate", () => {
+    const verdict = evaluateSelfBuildChange({ ...base(), baseDeploysYaml: "deployments: []\n", headDeploysYaml: "deployments:\n  - slug: x\n" });
+    expect(verdict).toMatchObject({ allowed: false, rule: 4 });
+  });
+
+  it("refuses an entry edited in place", () => {
+    const repointed = ENTRY.replace("Clanker-HQ/clanker-status-page", "AAS-Labs/something-else");
+    const verdict = evaluateSelfBuildChange({ ...base(), baseDeploysYaml: ENTRY, headDeploysYaml: repointed });
+    expect(verdict).toMatchObject({ allowed: false, rule: 4 });
+    expect((verdict as { reason: string }).reason).toMatch(/edited in place/);
+  });
+
+  it("refuses a new entry claiming a hostname an existing entry already has", () => {
+    // ENTRY carries its own "deployments:" header, so concatenating two full
+    // copies would produce two competing top-level keys — invalid YAML — not
+    // one list with two items. Strip the second copy's header so both
+    // entries land under ENTRY's single "deployments:" list.
+    const colliding = ENTRY + ENTRY.replace("deployments:\n", "").replace("status-page", "other-page");
+    const verdict = evaluateSelfBuildChange({ ...base(), baseDeploysYaml: ENTRY, headDeploysYaml: colliding });
+    expect(verdict).toMatchObject({ allowed: false, rule: 4 });
+    expect((verdict as { reason: string }).reason).toMatch(/hostname/);
+  });
+
+  it("leaves the existing rules reachable when deploys.yaml is untouched", () => {
+    const verdict = evaluateSelfBuildChange({ ...base(), baseDeploysYaml: ENTRY });
+    expect(verdict).toEqual({ allowed: true });
   });
 });
 

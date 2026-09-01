@@ -189,3 +189,19 @@ describe("loadConfig", () => {
     expect(loadConfig(path).governor.maxConcurrent).toBe(2);
   });
 });
+
+describe("revenue provider", () => {
+  it("defaults to lemonsqueezy — the merchant of record the operator set up", () => {
+    expect(parseConfig("config.yaml", "governor: {}\n").revenue.provider).toBe("lemonsqueezy");
+  });
+
+  it("accepts stripe", () => {
+    expect(parseConfig("config.yaml", "revenue:\n  provider: stripe\n").revenue.provider).toBe("stripe");
+  });
+
+  // A typo must not silently fall back to a provider whose API shape differs
+  // in every dimension — that mismatch is unreadable at runtime.
+  it("rejects a provider it has no transport for", () => {
+    expect(() => parseConfig("config.yaml", "revenue:\n  provider: gumroad\n")).toThrow(/provider/);
+  });
+});

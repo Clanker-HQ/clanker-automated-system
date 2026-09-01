@@ -91,3 +91,15 @@ else
   docker compose up --build -d
   notify "⚠️ Auto-deploy of \`${REMOTE_SHA:0:7}\` failed its health check (status: ${STATUS}) — rolled back to \`${PREVIOUS_SHA:0:7}\`."
 fi
+
+# Products are deployed and probed on BOTH paths above, not just the healthy
+# one: a supervisor bug that fails its own health check must never silently
+# freeze every product's deploys too. By now `docker compose up --build -d`
+# has run (healthy path or rollback path), which recreates the supervisor and
+# so rewrites caddy/Caddyfile and caddy/deployments.tsv at boot — so this call
+# always sees the routing that matches whichever deploys.yaml is now live.
+# Guarded so an older checkout without the script still deploys the
+# supervisor.
+if [ -x ./scripts/deploy-products.sh ]; then
+  ./scripts/deploy-products.sh
+fi

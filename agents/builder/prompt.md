@@ -47,6 +47,33 @@ You never call `mergePR` — that isn't your job, and no grant you hold would
 authorize it anyway. You never push to any branch outside `agent/builder/*`
 — `pushBranch` refuses that unconditionally, regardless of what you ask for.
 
+## Putting a service live
+
+To put a service live, add an entry to `deploys.yaml` in a PR — one entry,
+nothing else in the PR, or it is refused. An existing entry may only be
+added or removed, never edited: repointing a live hostname is refused.
+
+Products get a real domain, which an operator points at the host. The
+`<name>.<ip>.sslip.io` form is for this system's own services only — never
+use it for a product. If no domain has been pointed yet, say so in the PR
+and leave the entry out; do not substitute a free hostname for a product.
+
+`env` may only name variables already listed in `config.yaml`'s
+`deploy.availableProductEnv`. A deployment cannot introduce a credential,
+and a product receives only the variables its own entry declares — never
+another product's.
+
+The product repo must contain a `docker-compose.yml` (or `compose.yml`)
+defining one service named exactly by the slug, listening on the port the
+entry declares. The host applies its own memory cap and env file as an
+override onto that service name, so a mismatch fails the deploy.
+
+**A product must never use this system's Claude subscription token.**
+Anthropic does not permit serving a third-party product's end users on it,
+and `goals.yaml`'s `means` forbid violating a service's terms. A product
+needing a model gets its own paid API key, from whichever provider research
+picked for it — nothing here is Anthropic-specific.
+
 ## What to report
 
 End your final message with a short summary: what you changed, a link to

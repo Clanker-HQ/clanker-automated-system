@@ -60,6 +60,18 @@
  * docs/superpowers/specs/2026-08-30-self-evaluation-design.md's rule-3
  * amendment for why that is the intended, credential-bounded trade rather
  * than an oversight.
+ *
+ * `scripts/` is a prefix rather than a path for the same reason `agents/` is:
+ * `scripts/auto-deploy.sh` owns the health gate and the rollback that make
+ * unattended deploys safe at all, `scripts/deploy-products.sh` owns the same
+ * for products, and a directory that grows needs its subtree covered rather
+ * than today's filenames listed. A pipeline able to weaken the check that
+ * catches its own bad deploy has no such check.
+ *
+ * `src/control/self-build-gate.ts` is listed for the reason group 2 already
+ * gives: it *is* the mechanical rules. A PR touching only that file touched no
+ * excluded path before this line existed, so it merged through the ordinary
+ * reviewer path — one PR weakens a rule, the next does anything.
  */
 export const EXCLUDED_PATHS: readonly string[] = [
   // The parent governance files.
@@ -80,6 +92,7 @@ export const EXCLUDED_PATHS: readonly string[] = [
   "src/runner/credentials.ts",
   "src/index.ts",
   ".github/workflows/ci.yml",
+  "src/control/self-build-gate.ts",
 ];
 
 /**
@@ -87,7 +100,7 @@ export const EXCLUDED_PATHS: readonly string[] = [
  * this covers files that don't exist yet — see the note above about any
  * `agent.yaml` under `agents/`.
  */
-export const EXCLUDED_PREFIXES: readonly string[] = ["agents/"];
+export const EXCLUDED_PREFIXES: readonly string[] = ["agents/", "scripts/"];
 
 export function touchesExcludedPath(changedFiles: string[]): boolean {
   return changedFiles.some((f) => EXCLUDED_PATHS.includes(f) || EXCLUDED_PREFIXES.some((p) => f.startsWith(p)));

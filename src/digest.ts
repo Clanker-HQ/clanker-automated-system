@@ -1,8 +1,17 @@
 import type { MemoryConfig } from "./config.js";
 import type { TaskStore } from "./control/task-store.js";
+import type { ProbeStore } from "./deploy/probe-store.js";
+import { probeWarnings } from "./deploy/probe-warnings.js";
 import type { MemoryStore } from "./memory/memory-store.js";
 import type { RunStore } from "./run-store.js";
+import { stalePasses } from "./state/liveness.js";
 import type { Metrics, MetricsStore } from "./state/metrics-store.js";
+
+/** Twice the weekly metrics cadence, so one missed run is not an alarm. */
+const MAX_METRICS_AGE_DAYS = 14;
+
+/** Twice the 15-minute probe cadence, so one missed pass is not an alarm — the same rule MAX_METRICS_AGE_DAYS follows. */
+const MAX_PROBE_AGE_MINUTES = 30;
 
 /**
  * Pure text-building, deliberately separate from src/triggers/digest.ts's
@@ -22,6 +31,10 @@ export async function buildDigestText(opts: {
    */
   memoryConfig?: MemoryConfig;
   metricsStore?: MetricsStore;
+  /** Optional, mirroring metricsStore: existing fixtures that pass neither this nor declaredSlugs keep working. Production always passes both — see src/triggers/digest.ts. */
+  probeStore?: ProbeStore;
+  /** Slugs currently declared in deploys.yaml, for probeWarnings' "declared but never probed" check. Only consulted when probeStore is also present. */
+  declaredSlugs?: string[];
 }): Promise<string> {
   // listSince, not listRecent(10_000): the digest only ever looks at the last
   // 24h, so there's no reason to read/parse every result.json retention has
@@ -52,8 +65,29 @@ export async function buildDigestText(opts: {
 
   const freshMetrics = opts.metricsStore ? await opts.metricsStore.latestTwo() : null;
   const hasFreshMetrics = freshMetrics?.latest !== null && freshMetrics?.latest !== undefined && new Date(freshMetrics.latest.computedAt) >= opts.since;
+  // Derived from `since`, not `new Date()`: same reasoning as listSince's
+  // upper bound above — this must stay correct against whatever clock
+  // `since` was computed from, so the digest stays pure and its tests
+  // deterministic. Only checked when a metricsStore is actually configured;
+  // an absent one means the metrics feature isn't deployed here at all, not
+  // that it has gone stale.
+  const now = new Date(opts.since.getTime() + 24 * 60 * 60 * 1000);
+  const livenessWarnings = opts.metricsStore
+    ? stalePasses({ latestMetricsAt: freshMetrics?.latest?.computedAt ?? null, now, maxAgeDays: MAX_METRICS_AGE_DAYS })
+    : [];
+  const deployWarnings =
+    opts.probeStore && opts.declaredSlugs
+      ? probeWarnings({ probes: await opts.probeStore.read(), declaredSlugs: opts.declaredSlugs, now, maxAgeMinutes: MAX_PROBE_AGE_MINUTES })
+      : [];
 
-  if (recentRuns.length === 0 && finishedTasks.length === 0 && waitingTasks.length === 0 && !hasFreshMetrics) {
+  if (
+    recentRuns.length === 0 &&
+    finishedTasks.length === 0 &&
+    waitingTasks.length === 0 &&
+    !hasFreshMetrics &&
+    livenessWarnings.length === 0 &&
+    deployWarnings.length === 0
+  ) {
     return "📅 Daily digest: nothing happened in the last 24h.";
   }
 
@@ -86,6 +120,8 @@ export async function buildDigestText(opts: {
       lines.push(`🧠 Memory: ${kindSummary}${suppressed > 0 ? ` (${suppressed} duplicate proposal(s) suppressed)` : ""}`);
     }
   }
+  for (const warning of livenessWarnings) lines.push(warning);
+  for (const warning of deployWarnings) lines.push(warning);
   if (hasFreshMetrics && freshMetrics?.latest) {
     lines.push(formatMetricsLine(freshMetrics.latest, freshMetrics.previous));
   }
@@ -93,10 +129,18 @@ export async function buildDigestText(opts: {
 }
 
 function formatMetricsLine(latest: Metrics, previous: Metrics | null): string {
-  const revenueDelta = previous
-    ? ` (${latest.netIncomeUsd - previous.netIncomeUsd >= 0 ? "+" : ""}$${(latest.netIncomeUsd - previous.netIncomeUsd).toFixed(2)} vs prior snapshot)`
-    : "";
-  const parts = [`📊 **Weekly metrics** (${latest.windowDays}d window): $${latest.netIncomeUsd.toFixed(2)} net income${revenueDelta}`];
+  // A delta is only meaningful between two snapshots that both actually read
+  // the merchant of record. Against a data gap it invents a collapse (or a
+  // recovery) out of a number nobody measured.
+  const comparable = previous !== null && !previous.revenueUnavailable && !latest.revenueUnavailable;
+  const delta = comparable ? latest.netIncomeUsd - previous.netIncomeUsd : 0;
+  const revenueDelta = comparable ? ` (${delta >= 0 ? "+" : "-"}$${Math.abs(delta).toFixed(2)} vs prior snapshot)` : "";
+  // netIncomeUsd is 0 whether there were no sales or the transport failed;
+  // only the flag separates them, so the flag decides what gets rendered.
+  const revenue = latest.revenueUnavailable
+    ? "⚠️ revenue unavailable — could not read the merchant of record, so this is a data gap, not $0"
+    : `$${latest.netIncomeUsd.toFixed(2)} net income${revenueDelta}`;
+  const parts = [`📊 **Weekly metrics** (${latest.windowDays}d window): ${revenue}`];
   if (latest.notAchievedRate !== null) parts.push(`${(latest.notAchievedRate * 100).toFixed(0)}% not-achieved`);
   if (latest.costPerCompletedTaskUsd !== null) parts.push(`$${latest.costPerCompletedTaskUsd.toFixed(2)}/completed task`);
   if (latest.noveltySharePercent !== null) {

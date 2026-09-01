@@ -13,12 +13,16 @@ import { DiscordJsTransport } from "./control/discord-transport.js";
 import { RealGitPusher } from "./control/git-pusher.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
+import { LemonSqueezyRevenueTransport } from "./control/lemonsqueezy-revenue-transport.js";
 import { FakeRevenueTransport, type RevenueTransport } from "./control/revenue-transport.js";
 import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
 import { TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
+import { writeDeployArtifacts } from "./deploy/caddyfile.js";
+import { type Deployment, loadDeploys } from "./deploy/deploys-schema.js";
+import { ProbeStore } from "./deploy/probe-store.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
@@ -35,6 +39,8 @@ import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
 import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
+import { StrategyStore } from "./world/strategy.js";
+import { WorldModel } from "./world/world-model.js";
 
 const ROOT = process.env.APP_ROOT ?? process.cwd();
 const DATA_DIR = process.env.DATA_DIR ?? join(ROOT, "data");
@@ -60,9 +66,10 @@ function parsePort(name: string, raw: string | undefined, fallback: number): num
   return n;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   let config: Config;
   let agents: AgentDef[];
+  let deployments: Deployment[];
   let runner: Runner;
   let credentialMode: string | undefined;
   let botToken: string;
@@ -72,13 +79,27 @@ function main(): void {
   let webhookPort: number;
   let github: GithubApiTransport;
   let revenue: RevenueTransport;
+  let revenueMode: string;
   let dispatcher: Dispatcher | undefined;
+  // Constructed inside the try block, right after `config` loads (it needs
+  // nothing else) — hoisted out of its old spot further down so buildRunner,
+  // just below, can pass it to SdkRunner for the overseer's setAgentEnabled
+  // tool (Task C3) the same way installCrashHandlers/Orchestrator use it later.
+  let outbox: DiscordOutbox;
 
   const tasks = new TaskStore(DATA_DIR);
   const memory = new MemoryStore(DATA_DIR);
+  const world = new WorldModel(DATA_DIR);
+  const strategyStore = new StrategyStore(DATA_DIR);
+  // Hoisted out of their old spot further down (see `outbox` above): both
+  // are plain constructors with no I/O, and SdkRunner's setAgentEnabled tool
+  // (Task C3) needs them threaded through buildRunner below.
+  const overrides = new ConfigOverridesStore(DATA_DIR);
+  const breaker = new BreakerStore(DATA_DIR);
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
+    outbox = new DiscordOutbox({ config, dataDir: DATA_DIR });
     agents = loadRegistry({ agentsDir: join(ROOT, "agents"), dataDir: DATA_DIR, config });
     // Hoisted out of buildRunner's argument list so the same list can be
     // cross-checked against every agent's grantRefs: a typo there is otherwise
@@ -86,6 +107,20 @@ function main(): void {
     // silently denies every effect the agent was configured to be allowed.
     const grants: Grant[] = loadGrants(join(ROOT, "grants.yaml"));
     validateGrantRefs(agents, grants);
+    deployments = loadDeploys(join(ROOT, "deploys.yaml"), {
+      maxLiveDeployments: config.deploy.maxLiveDeployments,
+      availableProductEnv: new Set(config.deploy.availableProductEnv),
+    });
+    console.log(`[boot] ${deployments.length} deployment(s) declared`);
+    // A routing file that fails to write is a reason for the host to keep
+    // whatever Caddyfile is already there, not a reason to stop running every
+    // agent — so this is caught and logged here rather than left to the
+    // outer catch below. Same posture as WorldModel's own reads.
+    try {
+      await writeDeployArtifacts({ deployments, dir: join(ROOT, "caddy") });
+    } catch (error) {
+      console.error("[boot] failed to render caddy/Caddyfile from deploys.yaml — keeping the previous routing", error);
+    }
     // A fine-grained PAT for the dedicated bot GitHub account, and the shared
     // secret that lets WebhookReceiver tell a genuine GitHub event apart from
     // a forged one. Resolved here, with the same boot-failure formatting as
@@ -100,9 +135,22 @@ function main(): void {
     // does — the metrics job simply reports $0 net income via the fake
     // until the operator's merchant-of-record account exists.
     const revenueToken = process.env.REVENUE_API_TOKEN;
-    revenue = revenueToken
-      ? new StripeRevenueTransport({ token: revenueToken, apiBase: process.env.REVENUE_API_BASE })
-      : new FakeRevenueTransport();
+    if (revenueToken) {
+      // Which transport, from config, not from whichever one happened to be
+      // written first: Lemon Squeezy and Stripe agree on nothing (endpoint,
+      // auth headers, pagination, response shape), and runMetricsJob
+      // deliberately swallows a revenue failure so one outage can't take the
+      // whole snapshot down. Guessing wrong here therefore surfaces as $0
+      // income forever, not as an error.
+      revenue =
+        config.revenue.provider === "stripe"
+          ? new StripeRevenueTransport({ token: revenueToken, apiBase: process.env.REVENUE_API_BASE })
+          : new LemonSqueezyRevenueTransport({ token: revenueToken, apiBase: process.env.REVENUE_API_BASE });
+      revenueMode = config.revenue.provider;
+    } else {
+      revenue = new FakeRevenueTransport();
+      revenueMode = "fake (REVENUE_API_TOKEN unset — every snapshot reports $0)";
+    }
     // Optional, not mustEnv'd: an agent that can't Read files (research) just
     // loses the systemContext tool if this is missing, rather than boot
     // failing over a doc file. See docs/system-context.md itself, and the
@@ -116,6 +164,12 @@ function main(): void {
       memory,
       memoryConfig: config.memory,
       systemContext,
+      world,
+      strategyStore,
+      overrides,
+      breaker,
+      agents,
+      outbox,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound
       // too) — but this closure is only ever CALLED much later, once a real
@@ -153,11 +207,11 @@ function main(): void {
 
   console.log(`[boot] ${agents.length} agent(s) loaded: ${agents.map((a) => a.name).join(", ")}`);
   if (credentialMode) console.log(`[boot] credentials: ${credentialMode}`);
+  console.log(`[boot] revenue: ${revenueMode}`);
 
   const runStore = new RunStore(DATA_DIR);
   const metricsStore = new MetricsStore(DATA_DIR);
-  const overrides = new ConfigOverridesStore(DATA_DIR);
-  const breaker = new BreakerStore(DATA_DIR);
+  const probeStore = new ProbeStore(DATA_DIR);
   const approvedGrants = new ApprovedGrantsStore(DATA_DIR);
   const governor = new Governor({
     dataDir: DATA_DIR, config, store: runStore, overrides,
@@ -181,8 +235,6 @@ function main(): void {
   // constructed, so the `if (!bot)` guard is a formality rather than a real
   // window.
   let bot: DiscordBot | undefined;
-
-  const outbox = new DiscordOutbox({ config, dataDir: DATA_DIR });
 
   // Installed as early as an outbox exists to alert through, so it covers
   // everything from here on — the config/credential loading above is already
@@ -215,6 +267,7 @@ function main(): void {
     orchestrator,
     dataDir: DATA_DIR,
     memory,
+    world,
     memoryConfig: config.memory,
     suggestSuccessors: buildSuccessorSuggester(),
     // No agent has been chosen yet at this point (a routing failure, or no
@@ -288,6 +341,8 @@ function main(): void {
           memory,
           memoryConfig: config.memory,
           metricsStore,
+          probeStore,
+          declaredSlugs: deployments.map((d) => d.slug),
         });
       })
       .catch((error: unknown) => {
@@ -346,6 +401,9 @@ function main(): void {
           taskStore: tasks,
           memory,
           revenue,
+          // The same store `!disable` writes to, so an agent the metrics job
+          // puts on probation is cleared by `!enable` like any other.
+          overrides,
           metricsStore,
         });
       })
@@ -354,10 +412,57 @@ function main(): void {
       });
   }
 
-  // Imported lazily so a boot failure above never starts a schedule.
+  // Only when something is actually declared: a prober with nothing to probe
+  // would write an empty file every 15 minutes forever and log a line saying
+  // it probed nothing.
+  if (deployments.length > 0) {
+    void import("./triggers/probe.js")
+      .then(({ startProbe }) => {
+        startProbe({ schedule: "*/15 * * * *", timezone: config.digest.timezone, deployments, store: probeStore });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the deployment prober", error);
+      });
+  }
+
+  // Gated on the agent's own `enabled` field (agents/overseer/agent.yaml),
+  // the same flag startCron's generic loop already checks for every other
+  // cron agent — there is no separate config.overseer.enabled, since the
+  // agent definition already carries this switch.
+  const overseerAgent = agents.find((a) => a.name === "overseer");
+  if (overseerAgent?.enabled) {
+    void import("./triggers/overseer.js")
+      .then(({ startOverseer }) => {
+        startOverseer({
+          agent: overseerAgent,
+          orchestrator,
+          strategyStore,
+          world,
+          metricsStore,
+          revenue,
+          goalsPath: join(ROOT, "goals.yaml"),
+          deployments,
+          probeStore,
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the overseer schedule", error);
+      });
+  }
+
+  // Imported lazily so a boot failure above never starts a schedule. The
+  // overseer is excluded here even though its own agent.yaml also declares
+  // trigger.type: cron: it is scheduled separately just above, through a
+  // bespoke trigger that grades the previous cycle's expectations and reads
+  // goals.yaml before the run starts (Task C3). Scheduling it again here
+  // too would fire it a second time on the same tick — once with that rich
+  // context, once with only the generic world-model summary this loop
+  // passes to every other cron agent — silently writing two different
+  // Strategy documents for one cycle and corrupting the grading this whole
+  // plan is built on.
   void import("./triggers/cron.js")
     .then(({ startCron }) => {
-      startCron(agents, orchestrator);
+      startCron(agents.filter((a) => a.name !== "overseer"), orchestrator, world, strategyStore);
       console.log("[boot] supervisor running");
     })
     .catch((error: unknown) => {

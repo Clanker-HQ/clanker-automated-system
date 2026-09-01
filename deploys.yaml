@@ -1,0 +1,13 @@
+# What should be running. An agent puts something live by opening a PR that
+# adds an entry here; see docs/superpowers/specs/2026-09-01-deploy-path-design.md.
+#
+# slug      container and host directory name; lowercase, digits, hyphens
+# repo      owner/name on GitHub
+# hostname  bare hostname Caddy will serve and the host will probe over HTTPS
+# port      the port the container listens on inside the container
+# env       variable NAMES the container needs; must already be listed in
+#           config.yaml's deploy.availableProductEnv
+#
+# Products get a real domain. The free <name>.<ip-with-dashes>.sslip.io form is
+# for this system's own services only — see design §4.
+deployments: []

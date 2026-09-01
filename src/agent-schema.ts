@@ -10,6 +10,7 @@ export const TIERS = ["readonly", "sandboxed", "granted", "autonomous"] as const
 export const APPROVALS = ["auto", "notify", "approve"] as const;
 export const MODELS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] as const;
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export const CATEGORIES = ["research", "build", "maintain"] as const;
 
 /**
  * The only tools a `readonly` agent may be granted.
@@ -66,6 +67,11 @@ export const AgentSchema = z
     authoredBy: z.string().default("claude-local"),
     description: z.string().default(""),
     trigger: z.discriminatedUnion("type", [CronTrigger, WebhookTrigger, DispatchedTrigger]),
+    // Only meaningful on trigger.type: cron — startCron skips a firing whose
+    // category has zero allocation in the current strategy. Absent means
+    // "always runs", so no existing agent is silently paused by this field
+    // showing up in the schema.
+    category: z.enum(CATEGORIES).optional(),
     run: z
       .object({
         model: z.enum(MODELS),

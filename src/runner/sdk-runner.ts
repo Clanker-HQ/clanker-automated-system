@@ -1,6 +1,7 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { MemoryConfig } from "../config.js";
+import type { ConfigOverridesStore } from "../config-overrides.js";
 import { touchesExcludedPath } from "../control/excluded-paths.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
@@ -12,7 +13,11 @@ import type { MemoryStore } from "../memory/memory-store.js";
 import { assessNovelty } from "../memory/novelty-gate.js";
 import { retrieveContext } from "../memory/retrieval.js";
 import { priorityScore, toPriority } from "../memory/scoring.js";
+import type { DiscordOutbox } from "../outbox/discord.js";
 import type { AgentDef } from "../registry.js";
+import type { BreakerStore } from "../state/breaker.js";
+import type { StrategyStore } from "../world/strategy.js";
+import type { WorldModel } from "../world/world-model.js";
 import { resolveCredentials } from "./credentials.js";
 import type { RunContext, RunEvent, Runner } from "./types.js";
 
@@ -223,6 +228,22 @@ export class SdkRunner implements Runner {
       /** Optional, same shape as `tasks`: without it queueTask keeps its old flat-priority behaviour and writes no memory records. */
       memory?: MemoryStore;
       memoryConfig?: MemoryConfig;
+      /** Optional, same shape as `tasks`/`memory`: without it recordFinding/updatePortfolioEntry are simply not registered. */
+      world?: WorldModel;
+      /** Optional: without it, writeStrategy is simply not registered (see Task C3). */
+      strategyStore?: StrategyStore;
+      /**
+       * The three deps setAgentEnabled needs together — the same override
+       * `!disable`/`!enable` write, the breaker `!enable` resets, and the
+       * loaded agent list to validate a name against and to list on refusal.
+       * All three are required for the tool to appear at all (see Task C3);
+       * `outbox` is separately optional, since posting the change is
+       * best-effort, exactly like Task A1's auto-disable alert.
+       */
+      overrides?: ConfigOverridesStore;
+      breaker?: BreakerStore;
+      agents?: AgentDef[];
+      outbox?: DiscordOutbox;
     } = {
       grants: [],
       pending: new PendingStore(process.cwd()),
@@ -615,8 +636,13 @@ export class SdkRunner implements Runner {
                       key: z.string().max(200).optional(),
                       importance: z.number().int().min(1).max(10).default(5),
                       goalAlignment: z.number().min(0).max(1).default(0.5),
+                      // Matches TaskCategory in task-store.ts. Defaulted here too
+                      // (not just in TaskStore.create()) so the tool's own schema
+                      // documents the default to the model, the same as every
+                      // other optional field on this tool.
+                      category: z.enum(["exploration", "exploitation", "maintenance"]).default("exploitation"),
                     },
-                    async ({ text, priority, domain, subject, key, importance, goalAlignment }) => {
+                    async ({ text, priority, domain, subject, key, importance, goalAlignment, category }) => {
                       // A hard cap enforced here, not just in the prompt: the code is
                       // the boundary, the same posture detectOutwardEffect already
                       // uses for outward effects — an over-eager or confused model
@@ -693,6 +719,7 @@ export class SdkRunner implements Runner {
                         priority: computedPriority,
                         createdBy: `agent:${agent.name}`,
                         wantsDetail: true,
+                        category,
                       });
                       if (memory && cfg?.enabled) {
                         // Best-effort for the same reason as the suppressed
@@ -777,6 +804,203 @@ export class SdkRunner implements Runner {
         })
       : undefined;
 
+    const worldDep = this.deps.world;
+    /**
+     * The world model's write side — agents/research and the scouts read it
+     * via `world.summaryForPrompt()` baked into their prompt (see
+     * Dispatcher), but until now had no way to write back, so every run's
+     * conclusion terminated in a Discord message. Gated on `worldDep` alone,
+     * same pattern as `taskQueueServer` above: not registered at all when the
+     * dependency isn't wired in, rather than registered-but-erroring.
+     */
+    const worldModelServer = worldDep
+      ? createSdkMcpServer({
+          name: "worldModel",
+          tools: [
+            tool(
+              "recordFinding",
+              "Record what you concluded about a topic in the shared world model, so other agents see it before repeating the same research. Call this at the end of every run, INCLUDING when the conclusion is that something is not worth pursuing and why — a recorded dead end is what stops the same ground being covered again in three months.",
+              {
+                topic: z.string().min(1).max(200),
+                conclusion: z.string().min(1),
+                confidence: z.enum(["low", "medium", "high"]),
+                sources: z.array(z.string()).default([]),
+              },
+              async ({ topic, conclusion, confidence, sources }) => {
+                await worldDep.writeFinding(topic, {
+                  topic,
+                  conclusion,
+                  confidence,
+                  sources,
+                  updatedAt: new Date().toISOString(),
+                });
+                return { content: [{ type: "text" as const, text: `Recorded finding for "${topic}".` }] };
+              },
+            ),
+            tool(
+              "updatePortfolioEntry",
+              "Replace this product's entry in the shared portfolio — its status, next review date, the bar it must clear, running cost, and leading-indicator notes. Replaces the whole entry (not a merge), so pass every field even when only one changed.",
+              {
+                slug: z.string().min(1).max(200),
+                purpose: z.string().min(1),
+                status: z.enum(["building", "live", "paused", "killed"]),
+                nextReviewAt: z.string().min(1),
+                bar: z.string().min(1),
+                monthlyCostUsd: z.number().nonnegative(),
+                notes: z.array(z.string()).default([]),
+                extensionCount: z.number().int().nonnegative().default(0),
+              },
+              async (entry) => {
+                await worldDep.upsertPortfolioEntry(entry);
+                return { content: [{ type: "text" as const, text: `Updated portfolio entry "${entry.slug}".` }] };
+              },
+            ),
+          ],
+        })
+      : undefined;
+
+    const ExpectationCheckSchema = z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("netIncomeUsd"), atLeast: z.number() }).strict(),
+      z.object({ kind: z.literal("productRevenueUsd"), product: z.string().min(1), atLeast: z.number() }).strict(),
+      z.object({ kind: z.literal("portfolioStatus"), slug: z.string().min(1), is: z.literal("live") }).strict(),
+    ]);
+    const ExpectationSchema = z.object({
+      id: z.string().min(1),
+      dueAt: z.string().min(1),
+      check: ExpectationCheckSchema,
+    }).strict();
+
+    const strategyDep = this.deps.strategyStore;
+    const overridesDep = this.deps.overrides;
+    const breakerDep = this.deps.breaker;
+    const knownAgents = this.deps.agents;
+    const outboxDep = this.deps.outbox;
+    /**
+     * The overseer's own write tools (Task C3) — a separate MCP server from
+     * `worldModel` above because these two capabilities are unrelated
+     * (StrategyStore vs. the disabledAgents override + breaker) and each is
+     * gated on its own deps, exactly like `queueTask` is gated on `wakeDep`
+     * within the already-gated `taskQueueServer`.
+     *
+     * Also gated on `agent.name === "overseer"`, unlike every other MCP
+     * server in this file: those deps are wired once into this SdkRunner
+     * instance and then apply to every agent that runs through it (the same
+     * reason `recordFinding`/`queueTask` are already available to research
+     * and the scouts, not just one agent), but `writeStrategy` and
+     * `setAgentEnabled` are the two tools Design §3 of the
+     * autonomous-operation plan is built on the premise that only the
+     * overseer holds — a re-enable that bypasses probation, or a rewrite of
+     * the system's stated strategy, from `builder` or `research` would be
+     * exactly the "manager in the execution path" escalation that plan
+     * explicitly rejects. Neither tool has an outward effect `decide()`
+     * would otherwise gate, so this registration-time check is the only
+     * mechanical boundary available — refusing at registration (the tool
+     * simply does not exist for another agent) rather than inside the
+     * handler, so there is nothing to call in the first place.
+     */
+    const overseerServer =
+      agent.name === "overseer" && (strategyDep || (overridesDep && breakerDep && knownAgents))
+        ? createSdkMcpServer({
+            name: "overseer",
+            tools: [
+              ...(strategyDep
+                ? [
+                    tool(
+                      "writeStrategy",
+                      "Write this cycle's strategy — the only way to record what the system is trying to do and why. StrategyStore rejects an allocation that does not sum to 100 with a tool error rather than renormalising it, so correct and retry rather than guessing. Call this once, near the end of your run.",
+                      {
+                        intent: z.string().min(1),
+                        allocation: z
+                          .object({
+                            research: z.number().min(0).max(100),
+                            build: z.number().min(0).max(100),
+                            maintain: z.number().min(0).max(100),
+                          })
+                          .strict(),
+                        expectations: z.array(ExpectationSchema),
+                        changeReason: z.string(),
+                      },
+                      async ({ intent, allocation, expectations, changeReason }) => {
+                        try {
+                          await strategyDep.write({
+                            writtenAt: new Date().toISOString(),
+                            intent,
+                            allocation,
+                            expectations,
+                            changeReason,
+                          });
+                        } catch (error) {
+                          return {
+                            content: [
+                              { type: "text" as const, text: `Refused: ${error instanceof Error ? error.message : String(error)}` },
+                            ],
+                          };
+                        }
+                        return { content: [{ type: "text" as const, text: "Strategy written for this cycle." }] };
+                      },
+                    ),
+                  ]
+                : []),
+              ...(overridesDep && breakerDep && knownAgents
+                ? [
+                    tool(
+                      "setAgentEnabled",
+                      'Enable or disable an agent, writing the same override `!disable`/`!enable` use. Use this ONLY to undo an automatic probation disable (Task A1) on an agent other than yourself, with a reason. Refuses to disable "overseer" — it is the only thing that writes strategy, so disabling it would be unrecoverable without the operator. Re-enabling also resets that agent\'s circuit breaker, since either mechanism alone can halt an agent.',
+                      {
+                        agent: z.string().min(1),
+                        enabled: z.boolean(),
+                        reason: z.string().min(1),
+                      },
+                      async ({ agent: targetName, enabled, reason }) => {
+                        if (!knownAgents.some((a) => a.name === targetName)) {
+                          const known = knownAgents.map((a) => a.name).join(", ") || "(none loaded)";
+                          return {
+                            content: [
+                              { type: "text" as const, text: `Refused: no agent named "${targetName}" is loaded. Known agents: ${known}` },
+                            ],
+                          };
+                        }
+                        if (targetName === "overseer" && !enabled) {
+                          return {
+                            content: [
+                              {
+                                type: "text" as const,
+                                text: "Refused: the overseer cannot disable itself — it is the only thing that writes strategy, and disabling it would be unrecoverable without the operator.",
+                              },
+                            ],
+                          };
+                        }
+
+                        const current = await overridesDep.read();
+                        const disabled = new Set(current.disabledAgents ?? []);
+                        if (enabled) disabled.delete(targetName);
+                        else disabled.add(targetName);
+                        await overridesDep.set("disabledAgents", [...disabled], `agent:${agent.name}`);
+                        if (enabled) await breakerDep.reset(targetName);
+
+                        // Best-effort, same posture as Task A1's auto-disable
+                        // alert: a silent change here is the exact
+                        // silent-failure class this whole mechanism exists to
+                        // close, but a failed post must never fail the tool
+                        // call — the override is already durably written.
+                        await outboxDep
+                          ?.postAlert(
+                            "ops",
+                            `${enabled ? "▶️" : "⏸️"} ${targetName} ${enabled ? "enabled" : "disabled"} by the overseer: ${reason}`,
+                          )
+                          .catch((error: unknown) => {
+                            console.error(`[setAgentEnabled] failed to post alert for ${targetName}`, error);
+                          });
+
+                        return { content: [{ type: "text" as const, text: `${targetName} ${enabled ? "enabled" : "disabled"}.` }] };
+                      },
+                    ),
+                  ]
+                : []),
+            ],
+          })
+        : undefined;
+
     const stream = query({
       prompt: ctx.prompt,
       options: {
@@ -811,6 +1035,8 @@ export class SdkRunner implements Runner {
           ...(githubPrServer ? { githubPr: githubPrServer } : {}),
           ...(taskQueueServer ? { taskQueue: taskQueueServer } : {}),
           ...(systemContextServer ? { systemContext: systemContextServer } : {}),
+          ...(worldModelServer ? { worldModel: worldModelServer } : {}),
+          ...(overseerServer ? { overseer: overseerServer } : {}),
         },
         ...(ctx.resume ? { resume: ctx.resume } : {}),
       },

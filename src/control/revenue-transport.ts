@@ -17,14 +17,22 @@ export interface Sale {
  * shape before the account exists would have risked shipping code nothing
  * could verify.
  *
- * A real implementation now exists: StripeRevenueTransport
- * (src/control/stripe-revenue-transport.ts), reading Stripe's Charges API.
- * It's wired into the weekly metrics job (src/metrics.ts, scheduled by
- * src/triggers/metrics.ts) via src/index.ts, which constructs it from
- * REVENUE_API_TOKEN / REVENUE_API_BASE when REVENUE_API_TOKEN is set, and
- * falls back to FakeRevenueTransport when it's absent. Nothing that
- * depends on this interface needed to change when the real transport
- * landed.
+ * Two real implementations now exist: LemonSqueezyRevenueTransport
+ * (src/control/lemonsqueezy-revenue-transport.ts), reading the Orders API of
+ * the merchant of record the operator actually set up, and
+ * StripeRevenueTransport (src/control/stripe-revenue-transport.ts), reading
+ * Stripe's Charges API. Both are wired into the weekly metrics job
+ * (src/metrics.ts, scheduled by src/triggers/metrics.ts) via src/index.ts,
+ * which picks between them on `revenue.provider` in config.yaml when
+ * REVENUE_API_TOKEN is set, and falls back to FakeRevenueTransport when it's
+ * absent. Nothing that depends on this interface needed to change when
+ * either real transport landed.
+ *
+ * The provider is configured rather than inferred because runMetricsJob
+ * deliberately catches a revenue failure (one outage must not lose the whole
+ * snapshot) — so a transport pointed at the wrong API does not raise, it
+ * reports $0 income indefinitely. `Metrics.revenueUnavailable` exists to keep
+ * that case distinguishable from a genuine $0 in the digest.
  */
 export interface RevenueTransport {
   /** Every completed sale at or after sinceIso (inclusive), oldest first. */

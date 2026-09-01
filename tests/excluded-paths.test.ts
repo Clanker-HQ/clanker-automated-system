@@ -42,11 +42,25 @@ describe("touchesExcludedPath", () => {
       "src/runner/credentials.ts",
       "src/index.ts",
       ".github/workflows/ci.yml",
+      "src/control/self-build-gate.ts",
     ]);
   });
 
   it("the excluded prefix set names exactly the subtrees this plan specifies", () => {
-    expect(EXCLUDED_PREFIXES).toEqual(["agents/"]);
+    expect(EXCLUDED_PREFIXES).toEqual(["agents/", "scripts/"]);
+  });
+
+  it("refuses a PR touching the deploy script — it owns the health gate and the rollback", () => {
+    expect(touchesExcludedPath(["scripts/auto-deploy.sh"])).toBe(true);
+    expect(touchesExcludedPath(["scripts/deploy-products.sh"])).toBe(true);
+  });
+
+  it("refuses a PR touching the self-build gate itself", () => {
+    expect(touchesExcludedPath(["src/control/self-build-gate.ts"])).toBe(true);
+  });
+
+  it("still permits deploys.yaml — the whole point is that agents write it", () => {
+    expect(touchesExcludedPath(["deploys.yaml"])).toBe(false);
   });
 
   // Regression test for the final review's Critical #2: exact-path membership

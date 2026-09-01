@@ -1,6 +1,6 @@
 governor:
   maxConcurrent: 2
-  dailyBudgetUsd: 10
+  dailyBudgetUsd: 40
   pendingTimeoutHours: 24
   # Local development: agents run at almost any hour; the window is nominal.
   quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
@@ -27,11 +27,30 @@ retention:
   timezone: Europe/Berlin
   channel: ops
 
+# Which merchant-of-record API REVENUE_API_TOKEN belongs to. Written out
+# explicitly rather than left to the schema default: picking the wrong one
+# does not error, it reports $0 income forever (see src/index.ts).
+#
+# "stripe", not "lemonsqueezy": Stripe acquired Lemon Squeezy, and new
+# signups now land on Stripe Managed Payments — Stripe's own dashboard and
+# API (a normal Stripe secret key, the ordinary Charges API), not Lemon
+# Squeezy's separate JSON:API. Managed Payments explicitly does not support
+# the Connect-style setup that would route through Lemon Squeezy's surface.
+revenue:
+  provider: stripe   # lemonsqueezy | stripe
+
 metrics:
   enabled: true
   schedule: "0 4 * * 1"   # weekly (Monday 04:00) — one hour after memory.reflectionSchedule
   timezone: Europe/Berlin
   windowDays: 7
+
+deploy:
+  maxLiveDeployments: 5
+  # Names only — values live in the host's product env file and never enter
+  # the supervisor's container. Extending this list is an operator edit by
+  # construction: config.yaml is on EXCLUDED_PATHS.
+  availableProductEnv: []
 
 # github:
 #   prToken: GITHUB_PR_TOKEN   # (documented here for discoverability; the

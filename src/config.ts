@@ -203,9 +203,44 @@ export const GovernorSchema = z
   })
   .strict();
 
+/**
+ * Which merchant-of-record API `REVENUE_API_TOKEN` belongs to. An enum rather
+ * than a free string because the two transports share nothing — endpoint,
+ * auth headers, pagination and response shape all differ — so pointing one at
+ * the other's account fails as an opaque HTTP error inside a job that
+ * deliberately swallows revenue failures. A provider with no transport must
+ * therefore be a boot failure, not a runtime surprise.
+ */
+export const RevenueSchema = z
+  .object({
+    provider: z.enum(["lemonsqueezy", "stripe"]).default("lemonsqueezy"),
+  })
+  .strict();
+
+export const DeploySchema = z
+  .object({
+    /**
+     * Products share the VPS with the supervisor, so this is a memory guard
+     * rather than a policy: sized for the planned 8 GB host (design §8). A
+     * file over the cap fails at boot and in CI instead of exhausting the box
+     * at 3am.
+     */
+    maxLiveDeployments: z.number().int().min(0).default(5),
+    /**
+     * Environment variable NAMES a deployment may list in its `env`. The
+     * values live only in the host's product environment file. This lives in
+     * config.yaml — which is on EXCLUDED_PATHS — specifically so an agent
+     * cannot extend it through the self-build pipeline.
+     */
+    availableProductEnv: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).default([]),
+  })
+  .strict();
+
 export const ConfigSchema = z
   .object({
     governor: GovernorSchema.prefault({}),
+    revenue: RevenueSchema.prefault({}),
+    deploy: DeploySchema.prefault({}),
     discord: z
       .object({
         channels: z.record(z.string(), z.string()).default({}),
@@ -227,6 +262,8 @@ export type DigestConfig = z.infer<typeof DigestSchema>;
 export type RetentionConfig = z.infer<typeof RetentionSchema>;
 export type MetricsConfig = z.infer<typeof MetricsSchema>;
 export type MemoryConfig = z.infer<typeof MemorySchema>;
+export type RevenueConfig = z.infer<typeof RevenueSchema>;
+export type DeployConfig = z.infer<typeof DeploySchema>;
 
 export function parseConfig(source: string, yamlText: string): Config {
   const result = ConfigSchema.safeParse(parseYaml(yamlText) ?? {});
