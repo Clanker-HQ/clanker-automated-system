@@ -51,8 +51,9 @@ The alternative — an agent tool that deploys — would require putting Docker 
 
 - the resulting file must validate against the schema;
 - an existing entry may not be edited in place, only added or removed (mirroring rule 2 for grants) — an in-place edit could repoint a live hostname at a different repo;
-- `hostname` must not collide with an existing entry's, and must not be a hostname the supervisor itself serves;
-- every name in `env` must already exist in the host's product environment. A deployment may not introduce a credential; that is D1b's job.
+- `hostname` must not collide with an existing entry's, and must not be a hostname the supervisor itself serves.
+
+One rule deliberately does **not** live in the gate: that every name in an entry's `env` is one the host actually provides. `evaluateSelfBuildChange` is a pure function that is not given `config.yaml`, and it already documents that exact limitation for `outbox.discord` — a self-build PR that gets such a value wrong "still fails `loadRegistry` at deploy and rolls back the same bounded way". The permitted names are declared in `config.yaml` as `deploy.availableProductEnv`, which is on `EXCLUDED_PATHS` and so cannot be extended by an agent, and they are enforced in two places instead: the boot loader, and a test that validates the repo's committed `deploys.yaml` against its committed `config.yaml` — which is what makes it a CI failure rather than a 3am surprise.
 
 `deploys.yaml` is **not** added to `EXCLUDED_PATHS` — the whole point is that agents write it. Its safety comes from the schema plus these rules, per the standing preference that safety lives in scoping and algorithmic checks rather than a human approval click.
 
@@ -111,11 +112,15 @@ The overseer therefore cannot review a portfolio without seeing that something i
 
 A product that needs a model gets **its own paid API key, from whichever provider is right for that product.** Nothing in the product path hardcodes Anthropic. Which provider — Anthropic, OpenAI, Google, an open-weight host — is a per-product question about cost, capability, and whether that provider's terms permit the use, and it belongs to the `research` agent, recorded as a `Finding` in the world model like any other researched conclusion.
 
-Concretely, this design contributes only the seam: an entry's `env` names the variables its container needs, and the host passes them through from a product environment file the operator owns. D1a supports names that already exist there. D1b is what makes obtaining a new one automatic, and §3.1's fourth rule is what stops a deployment from claiming a credential that does not exist yet.
+Concretely, this design contributes only the seam: an entry's `env` names the variables its container needs, and the host passes them through from a product environment file the operator owns. Which names are permitted is declared in `config.yaml` as `deploy.availableProductEnv`; the **values** live only on the host and never enter the supervisor's container at all, so no agent can read a product's key even by accident. D1a supports names already on that list. D1b is what makes obtaining a new one automatic, and §3.1's env check is what stops a deployment from claiming a credential that does not exist yet.
 
 ## 8. Resource limits
 
-Products share the VPS with the supervisor. `config.yaml` gains `deploy.maxLiveDeployments` (default 5, sized for the planned 8 GB host), enforced by the same loader that validates the schema (§3.1) so a sixth entry fails at boot and in CI rather than exhausting memory at 3am. Each product container gets a memory cap in the rendered compose configuration, so one leaking product cannot take the supervisor down with it.
+Products share the VPS with the supervisor. `config.yaml` gains `deploy.maxLiveDeployments` (default 5, sized for the planned 8 GB host), enforced by the same loader that validates the schema (§3.1) so a sixth entry fails at boot and in CI rather than exhausting memory at 3am.
+
+Each product container also gets a memory cap, so one leaking product cannot take the supervisor down with it. That cap is applied in a Compose **override file the host script writes**, not in the product's own compose file — for exactly the reason §5 gives about healthchecks. A product's compose file is written by the same agent that wrote the product; a limit declared there constrains nothing, because the next commit can raise it. The override is owned by this repo, and `scripts/` is protected by §9.
+
+The same override carries the product's environment, assembled from only the variable names its own `deploys.yaml` entry declared. One product therefore never receives another product's key, even though all the values live in one host-side file.
 
 No second host until something actually outgrows this one. Splitting hosts before there is a product worth splitting for would be building for a problem the system has not got.
 
@@ -166,6 +171,7 @@ Create:
   src/deploy/deploys-schema.ts          Zod schema + loader
   src/deploy/caddyfile.ts               render Caddy config from entries
   src/deploy/probe-store.ts             read/write data/state/probes.json
+  src/deploy/probe.ts                   the external probe and one probe pass
   src/deploy/probe-warnings.ts          pure, mirrors state/liveness.ts
   src/triggers/probe.ts                 periodic prober cron trigger
   scripts/deploy-products.sh            host-side: clone, build, route, probe, roll back
