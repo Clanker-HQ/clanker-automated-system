@@ -996,6 +996,9 @@ git commit -m "feat: reserve queue capacity for exploration work"
 **Files:**
 - Create: `src/world/reviews.ts`
 - Create: `tests/reviews.test.ts`
+- Modify: `src/world/world-model.ts` and `tests/world-model.test.ts` (the `extensionCount` field)
+- Modify: `src/triggers/overseer.ts` and `tests/overseer-trigger.test.ts` (Step 3b — render due reviews into the prompt)
+- Modify: `src/runner/sdk-runner.ts` (Step 3b — `extensionCount` on the portfolio tool's schema) — **human-run, see Global Constraints**
 - Modify: `agents/overseer/prompt.md`
 
 **Interfaces:**
@@ -1012,6 +1015,14 @@ Cover: an entry past `nextReviewAt` is returned; a future one is not; a `killed`
 
 Add `extensionCount: number` to `PortfolioEntry` (default `0`) and a `canExtend(entry)` helper returning `entry.extensionCount < MAX_EXTENSIONS`. Update `tests/world-model.test.ts` for the new field.
 
+- [ ] **Step 3b: Make both of them reachable — added after C3 shipped**
+
+As originally written this task would have produced the fifth "computed by something, consumed by nothing" instance in this codebase. Two separate breaks, both must be closed here:
+
+**The overseer cannot see what is due.** `src/triggers/overseer.ts`'s `buildPromptContext` already calls `world.readPortfolio()` (for grading), but renders only `world.summaryForPrompt()`, which prints each entry as `- <slug> (<status>)` and nothing else — no `nextReviewAt`, no `bar`, no `extensionCount`. So `dueReviews()` would sit in `src/world/reviews.ts` uncalled while the agent it exists to bind never learns a review is overdue. Add a `## Due reviews` section to that prompt context, built from `dueReviews(portfolio, now)` on the portfolio it already read. Render each one with its slug, its `bar`, how overdue it is, its `extensionCount`, and whether `canExtend` is still true. When none are due, say so explicitly — an empty section reads as a rendering bug. Test it in `tests/overseer-trigger.test.ts` against a seeded overdue entry.
+
+**The overseer cannot write the field.** The portfolio MCP tool's Zod schema in `src/runner/sdk-runner.ts` (near line 847, alongside `nextReviewAt`) has no `extensionCount`, so an entry written through the tool would silently lose it and `canExtend` would be permanently true — the cap would never bind. Add it to that schema, optional and defaulting to `0` so existing callers and the existing tool tests keep working. Add a test that an entry written with `extensionCount: 2` reads back with it.
+
 - [ ] **Step 4: Update the overseer prompt**
 
 Every due review ends in exactly one of: mark `killed` (and queue a deprovision task naming the product), or extend with a *new* bar, a *new* date, and an incremented `extensionCount` — and extending is refused once `canExtend` is false. State plainly that "give it more time" without a new bar is not an available answer.
@@ -1020,7 +1031,9 @@ Every due review ends in exactly one of: mark `killed` (and queue a deprovision 
 
 ```bash
 npm run typecheck && npx vitest run
-git add src/world/reviews.ts tests/reviews.test.ts src/world/world-model.ts tests/world-model.test.ts agents/overseer/prompt.md
+git add src/world/reviews.ts tests/reviews.test.ts src/world/world-model.ts tests/world-model.test.ts \
+        src/triggers/overseer.ts tests/overseer-trigger.test.ts src/runner/sdk-runner.ts \
+        tests/sdk-runner-world-tools.test.ts agents/overseer/prompt.md
 git commit -m "feat: force a kill-or-justify decision on every portfolio review"
 ```
 
