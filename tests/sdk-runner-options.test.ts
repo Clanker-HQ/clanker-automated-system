@@ -229,6 +229,49 @@ describe("SdkRunner query options", () => {
     expect(verdict.behavior).toBe("allow");
   });
 
+  // A run whose tools have stopped working otherwise retries until it runs
+  // out of turns. The 2026-09-01 research run made 62 tool calls, essentially
+  // all failing with the same transport error, and narrated each one — 84k
+  // output tokens for no research at all.
+  const toolFailure = {
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: "1", is_error: true }] },
+  };
+  const toolSuccess = {
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: "1" }] },
+  };
+
+  it("stops a run once its tools fail repeatedly with nothing succeeding in between", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+
+    const { events } = await run([toolFailure, toolFailure, toolFailure, toolFailure, toolFailure, RESULT_MESSAGE]);
+
+    const stopped = events.find((e) => e.type === "error");
+    expect(stopped).toBeDefined();
+    expect((stopped as { message: string }).message).toMatch(/consecutive tool failures/i);
+  });
+
+  // The reason the counter resets on ANY success rather than tracking one tool:
+  // `builder` fails Bash on purpose all day (red, then green), and killing that
+  // loop would be far worse than the cost this check exists to avoid.
+  it("leaves a red-green loop alone, where failures are interleaved with successes", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+
+    const { events } = await run([
+      toolFailure,
+      toolFailure,
+      toolSuccess,
+      toolFailure,
+      toolFailure,
+      toolSuccess,
+      toolFailure,
+      RESULT_MESSAGE,
+    ]);
+
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
   it("maps the SDK's yielded messages into RunEvents", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
 

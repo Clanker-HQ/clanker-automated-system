@@ -121,6 +121,14 @@ const RESEARCH_SOURCE_SUBAGENT: {
  */
 const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGENT_TYPE, RESEARCH_SOURCE_SUBAGENT_TYPE]);
 
+/**
+ * Consecutive failing tool calls — with nothing succeeding in between — after
+ * which a run is stopped rather than left to retry until it exhausts its
+ * turns. Five, because four is still plausibly a stubborn-but-recoverable
+ * sequence while five with zero successes is a broken dependency.
+ */
+const MAX_CONSECUTIVE_TOOL_FAILURES = 5;
+
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -1197,6 +1205,14 @@ export class SdkRunner implements Runner {
 
     let partial: PartialUsage = { inputTokens: 0, outputTokens: 0 };
     let sawTerminalUsage = false;
+    // Counted across ALL tools, with any success resetting it, rather than
+    // per-tool: the run this exists because of alternated WebFetch and
+    // WebSearch failures, so a per-tool counter would never have tripped.
+    // The reset is also what keeps this away from `builder`, whose red-green
+    // loop fails Bash on purpose — an Edit or Read between two failing test
+    // runs clears the count, so tripping it takes five consecutive failures
+    // with no tool succeeding at all, which is not a working loop by then.
+    let consecutiveToolFailures = 0;
 
     // Invariant: a message already pulled off the stream is NEVER discarded,
     // aborted or not — it may be the only place a run's token usage shows up.
@@ -1239,6 +1255,21 @@ export class SdkRunner implements Runner {
         const events = toRunEvents(message);
         if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
         yield* events;
+
+        for (const event of events) {
+          if (event.type !== "tool_result") continue;
+          consecutiveToolFailures = event.ok ? 0 : consecutiveToolFailures + 1;
+        }
+        if (consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+          terminalEvent = {
+            type: "error",
+            message:
+              `Stopped after ${consecutiveToolFailures} consecutive tool failures with nothing succeeding in between. ` +
+              `The tools this run depends on are not working, and retrying a broken tool costs the same as using a working one.`,
+          };
+          controller.abort();
+          break;
+        }
 
         if (controller.signal.aborted) break;
       }
