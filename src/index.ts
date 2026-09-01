@@ -20,6 +20,7 @@ import { TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
+import { type Deployment, loadDeploys } from "./deploy/deploys-schema.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
@@ -66,6 +67,7 @@ function parsePort(name: string, raw: string | undefined, fallback: number): num
 function main(): void {
   let config: Config;
   let agents: AgentDef[];
+  let deployments: Deployment[];
   let runner: Runner;
   let credentialMode: string | undefined;
   let botToken: string;
@@ -103,6 +105,11 @@ function main(): void {
     // silently denies every effect the agent was configured to be allowed.
     const grants: Grant[] = loadGrants(join(ROOT, "grants.yaml"));
     validateGrantRefs(agents, grants);
+    deployments = loadDeploys(join(ROOT, "deploys.yaml"), {
+      maxLiveDeployments: config.deploy.maxLiveDeployments,
+      availableProductEnv: new Set(config.deploy.availableProductEnv),
+    });
+    console.log(`[boot] ${deployments.length} deployment(s) declared`);
     // A fine-grained PAT for the dedicated bot GitHub account, and the shared
     // secret that lets WebhookReceiver tell a genuine GitHub event apart from
     // a forged one. Resolved here, with the same boot-failure formatting as

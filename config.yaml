@@ -45,6 +45,13 @@ metrics:
   timezone: Europe/Berlin
   windowDays: 7
 
+deploy:
+  maxLiveDeployments: 5
+  # Names only — values live in the host's product env file and never enter
+  # the supervisor's container. Extending this list is an operator edit by
+  # construction: config.yaml is on EXCLUDED_PATHS.
+  availableProductEnv: []
+
 # github:
 #   prToken: GITHUB_PR_TOKEN   # (documented here for discoverability; the
 #                               # env var itself is read directly, not via
