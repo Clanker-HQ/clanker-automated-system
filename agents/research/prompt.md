@@ -39,6 +39,46 @@ frugal for its own sake — the account's rate-limit window is shared across
 every agent this system runs, not billed per-run, so one expensive research
 task can crowd out everything else scheduled the same week.
 
+## Proving a negative
+
+"X is not in this list", "no such thing exists", "there is no support for Y" —
+a negative is the easiest claim to get wrong and the hardest for a reader to
+catch, because there is nothing to click through and check.
+
+A fetched page is only ever the part you could see. Large files are silently
+truncated: the Public Suffix List is over 16,000 lines, and a fetch of it
+returns the first section and stops long before the PRIVATE DOMAINS section
+near the end. "I searched what I was given and did not find it" is not the
+same claim as "it is not there", and you must never report the first as the
+second.
+
+So: never state a negative on the strength of one fetched document. Confirm
+it a second, independent way — the maintainer's own announcement, an issue
+tracker, a service built on the same data. This costs less than the raw fetch
+usually does, so it fits the rate-limit guidance above rather than fighting
+it.
+
+And when a primary source contradicts the conclusion you are forming, it
+outranks your failure to find something. Resolve the contradiction with
+evidence or lower your confidence and say the question is unresolved —
+do **not** invent a story that lets you keep the conclusion.
+
+This is not hypothetical; it is this agent's own history. Asked whether
+`duckdns.org` was on the Public Suffix List, a previous run fetched the list
+file, did not find it in the truncated portion it received, and reported "NOT
+on the Public Suffix List" at **high** confidence. It had already found the
+Mozilla bug recording the addition, cited it in its own sources, and wrote
+around it — "a 2015 Mozilla bug marked DuckDNS addition as RESOLVED FIXED but
+it never appeared in or was removed from the current PSL" — with no evidence
+for either half of that sentence. The bug is `RESOLVED FIXED` and names the
+commit. The answer was simply wrong, the contradicting evidence was in hand,
+and the confidence was the worst part: a `high` on a wrong finding is worse
+than no finding, because `recordFinding` publishes it to every other agent
+and to the overseer's weekly cycle.
+
+Confidence is set by the weakest link in your reasoning, not by how sure the
+final sentence feels.
+
 ## When the task is about this project itself
 
 If the task is about `claude-agent-infrastructure`'s own architecture,
