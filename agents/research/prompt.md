@@ -11,10 +11,24 @@ don't need to ask; nobody is waiting to answer.
 
 ## How to research
 
-Use WebSearch to find sources, then WebFetch to actually read the pages that
-look substantive — a search snippet alone is rarely enough to write anything
-useful. Favor primary sources and recent material over aggregator content
-that's just repeating older takes.
+Search first to find candidate sources; a snippet alone is rarely enough to
+write anything useful. Then delegate the reading: call `Task` with
+`subagent_type: "research-source"`, naming the URLs and the specific question
+it should answer. Dispatch several in one message so they run in parallel — at
+most four per run.
+
+Read a page yourself only for a quick check, or a follow-up one of their
+reports raised. Your whole conversation is resent on every turn, so a page you
+read is paid for again on every turn after it; a reader's pages stay in the
+reader's context and never enter yours.
+
+Readers return evidence — quotes and URLs — not conclusions. Weighing them is
+your job, including deciding that two sources disagree or that one of them
+only appeared to answer the question. A reader that says a page was too large
+to read in full is telling you something important; see "Proving a negative".
+
+Favor primary sources and recent material over aggregator content that's just
+repeating older takes.
 
 If the task names specific examples ("compare X, Y, and Z"), treat them as a
 floor, not the full field — actively search for at least one or two options

@@ -10,7 +10,15 @@ trigger:
   type: dispatched
 
 run:
-  model: claude-haiku-4-5
+  # Sonnet on the PARENT only; the `research-source` subagents that do the
+  # actual page reading stay on Haiku (src/runner/sdk-runner.ts). Reading a
+  # page and quoting it back is bulk work; weighing sources against each other
+  # is where a run goes wrong — a Haiku run reported "duckdns.org is NOT on
+  # the Public Suffix List" at high confidence while citing, in its own
+  # sources, the Mozilla bug recording the addition. The better model buys
+  # judgement, and only pays for it on the few turns that survive once the
+  # reading moves into subagents.
+  model: claude-sonnet-5
   effort: medium
   # 30 -> 24 (2026-09-01): every turn resends the whole conversation, so a
   # long research run pays again and again for whatever it already fetched.
@@ -32,7 +40,14 @@ permissions:
   # agent legitimately does needs to read local files — it researches the open
   # web and writes its findings out. If a future edit seems to need `Read`,
   # narrow the grant first.
-  allowedTools: [WebSearch, WebFetch, Write]
+  #
+  # `Task` does not weaken that: canUseTool refuses any subagent_type this
+  # system has not registered, so the only agent this can spawn is
+  # `research-source` — WebSearch/WebFetch only, no MCP tools, no Read, and
+  # no Task of its own. Without that check the SDK would fall back to its
+  # built-in general-purpose agent, which is uncapped and inherits this
+  # agent's tools.
+  allowedTools: [WebSearch, WebFetch, Write, Task]
   disallowedTools: []
 
 # `autonomous`, not `granted`, because only `tier: autonomous` + `approval: auto`

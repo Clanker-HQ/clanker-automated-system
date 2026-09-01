@@ -66,6 +66,61 @@ const PR_REVIEW_SUBAGENT: {
   maxTurns: 20,
 };
 
+/**
+ * Keeps the pages `research` reads out of `research`'s own context.
+ *
+ * A run's cost is round trips multiplied by the context each one carries, and
+ * that context grows with every page read — so reading five sources inline
+ * means the fifth turn re-sends the first four pages, and so does every turn
+ * after it. A Task-spawned subagent runs in its OWN context window and returns
+ * only its final report, so the parent pays for the report and never for the
+ * reading. That is the same "summarise before continuing" the SDK's built-in
+ * compaction would do, except compaction only fires near the model's context
+ * limit — around 200k tokens — which a research run never approaches.
+ *
+ * `model` is the cheap one deliberately: reading a page and quoting it back is
+ * bulk work, while weighing sources against each other is where a research run
+ * actually goes wrong (see agents/research/prompt.md's "Proving a negative").
+ * The parent keeps the better model for that judgement.
+ *
+ * Bounded and tool-restricted for the reasons the PR sub-review above already
+ * documents: an unregistered Task type falls back to the SDK's uncapped
+ * "general-purpose" agent, and an AgentDefinition with `tools` omitted
+ * inherits the parent's entire toolset. `disallowedTools` strips every MCP
+ * tool — a reader must not record findings or queue tasks, and carrying
+ * schemas it can never call is exactly the per-turn weight this exists to
+ * avoid.
+ */
+const RESEARCH_SOURCE_SUBAGENT_TYPE = "research-source";
+const RESEARCH_SOURCE_SUBAGENT: {
+  description: string;
+  prompt: string;
+  tools: string[];
+  disallowedTools: string[];
+  model: string;
+  maxTurns: number;
+} = {
+  description:
+    "Reads a named set of web sources for one specific question and reports what they say, with direct quotes and URLs — used by research to keep page-reading out of its own context.",
+  prompt:
+    "You are reading sources for one specific question on behalf of a research run already underway. Read what the task names, plus anything it points you to, and report what each source actually says — a direct quote and the URL it came from, for every claim you pass back. Say plainly when a source does not answer the question, and say so too when a page was too large to read in full, naming what you did see: the run that spawned you cannot tell the difference between 'not there' and 'not visible to you' unless you tell it. Do not conclude and do not recommend. The run that spawned you weighs the evidence and decides; it needs your evidence, not your verdict.",
+  tools: ["WebSearch", "WebFetch"],
+  // Server-level spec: removes every tool from every MCP server at once, so
+  // this stays correct as servers are added.
+  disallowedTools: ["mcp__*"],
+  model: "haiku",
+  // Well under the parent's own budget: a reader that needs more than this is
+  // reading too much for one question, and four of these can run at once.
+  maxTurns: 8,
+};
+
+/**
+ * The only subagent types a `Task` call may name. Enforced in `canUseTool`,
+ * because an unregistered type silently becomes the SDK's uncapped
+ * general-purpose agent with the parent's own tools.
+ */
+const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGENT_TYPE, RESEARCH_SOURCE_SUBAGENT_TYPE]);
+
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -348,6 +403,32 @@ export class SdkRunner implements Runner {
       toolName: string,
       input: Record<string, unknown>,
     ): Promise<{ behavior: "allow" } | { behavior: "deny"; message: string; interrupt?: boolean }> => {
+      // `Task` carries no outward effect, so decide() below allows it — but
+      // the SDK falls back to its built-in "general-purpose" agent for any
+      // subagent_type it does not recognise, and that agent is uncapped and
+      // INHERITS THE PARENT'S TOOLS. Every bound the subagent definitions
+      // above place on a spawned agent — turns, tool list, model, no MCP
+      // access — is therefore only as strong as the type name being one this
+      // system actually registered. For `research`, whose missing `Read` is
+      // the only thing standing between a wildcard web grant and an
+      // exfiltration path, an unregistered type would hand back exactly the
+      // tool it was denied.
+      //
+      // Denied softly rather than aborting the run: naming the wrong type is
+      // a correctable mistake, and the message names the right ones.
+      if (toolName === "Task") {
+        const requested = typeof input.subagent_type === "string" ? input.subagent_type : "";
+        if (!REGISTERED_SUBAGENT_TYPES.has(requested)) {
+          return {
+            behavior: "deny",
+            message:
+              `subagent_type "${requested || "(none given)"}" is not available here. Use one of: ` +
+              `${[...REGISTERED_SUBAGENT_TYPES].join(", ")}. The built-in general-purpose agent is ` +
+              `uncapped and inherits this agent's own tools, so it is never available.`,
+          };
+        }
+      }
+
       const decision = decide(agent, this.deps.grants, toolName, input);
       if (decision.kind === "allow") return { behavior: "allow" };
 
@@ -1076,7 +1157,10 @@ export class SdkRunner implements Runner {
         effort: agent.run.effort,
         maxTurns: agent.run.maxTurns,
         maxBudgetUsd: agent.run.maxBudgetUsd,
-        agents: { [PR_REVIEW_SUBAGENT_TYPE]: PR_REVIEW_SUBAGENT },
+        agents: {
+          [PR_REVIEW_SUBAGENT_TYPE]: PR_REVIEW_SUBAGENT,
+          [RESEARCH_SOURCE_SUBAGENT_TYPE]: RESEARCH_SOURCE_SUBAGENT,
+        },
         cwd: ctx.workspace,
         // Deliberately NOT passing `allowedTools`: the SDK auto-approves any
         // tool named there without ever consulting `canUseTool` (it only
