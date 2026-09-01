@@ -1,6 +1,16 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "../atomic-write.js";
+import { truncateForPrompt } from "../truncate.js";
+
+/**
+ * Findings carry free prose, and this digest is injected into every dispatched
+ * task and every cron run. `summaryForPrompt`'s "bounded by construction"
+ * property bounds how MANY findings there are, not how long each one is — see
+ * truncateForPrompt. The overseer holds `Read` and can open the full file when
+ * a conclusion actually matters.
+ */
+const MAX_CONCLUSION_CHARS = 200;
 
 export interface PortfolioEntry {
   slug: string;
@@ -207,11 +217,18 @@ export class WorldModel {
 
     lines.push("");
     lines.push("## Findings");
-    lines.push(
-      findings.length > 0
-        ? findings.map((f) => `- ${f.topic} (confidence: ${f.confidence}): ${f.conclusion}`).join("\n")
-        : "- (none)",
-    );
+    if (findings.length > 0) {
+      // One note for the whole section rather than a marker per line: this
+      // text is itself paid for on every turn of every run.
+      lines.push("(conclusions abbreviated — full text in data/world/findings/)");
+      lines.push(
+        findings
+          .map((f) => `- ${f.topic} (confidence: ${f.confidence}): ${truncateForPrompt(f.conclusion, MAX_CONCLUSION_CHARS)}`)
+          .join("\n"),
+      );
+    } else {
+      lines.push("- (none)");
+    }
 
     return lines.join("\n");
   }
