@@ -30,7 +30,7 @@ Tasks within a Part are ordered and may depend on earlier tasks in the same Part
 - **Node 22, TypeScript ESM.** Every relative import ends in `.js`, even when the source file is `.ts`. Match the surrounding file.
 - **TDD is mandatory.** Write the failing test, run it, watch it fail for the right reason, then implement. A test that passes the first time you run it is testing nothing — fix the test.
 - **Verification before completion.** `npm run typecheck` and `npx vitest run` must both pass before any commit. There is no lint script.
-- **Never edit these files** — they are on `EXCLUDED_PATHS` (`src/control/excluded-paths.ts`) and are the system's own safety rails: `governor.ts`, `grants.ts`, `grants.yaml`, `goals.yaml`, `config.yaml`'s governor caps, `sdk-runner.ts`, `git-pusher.ts`, `webhook-*.ts`, `credentials.ts`, `index.ts`, `excluded-paths.ts`, `agent-schema.ts`, `.github/workflows/ci.yml`, `bot.ts`. **Exception:** Tasks A2, B2, C3 and C4 below legitimately modify `src/index.ts` (boot wiring) — that file is excluded from *the agent self-build pipeline*, not from human-directed work. If you are an agent executing this plan through that pipeline, stop and report; a human runs those tasks.
+- **`EXCLUDED_PATHS` (`src/control/excluded-paths.ts`) blocks the *self-build PR pipeline*, not this plan.** Those files — `governor.ts`, `grants.ts`, `grants.yaml`, `goals.yaml`, `config.yaml`'s governor caps, `sdk-runner.ts`, `git-pusher.ts`, `webhook-*.ts`, `credentials.ts`, `index.ts`, `excluded-paths.ts`, `agent-schema.ts`, `.github/workflows/ci.yml`, `bot.ts` — are the system's own safety rails, and the system may never edit them *autonomously through builder → pr-reviewer → mergePR*. **A local interactive session executing this plan at the operator's direction is not that pipeline and should edit them normally where a task calls for it** (B2, B3, C3 and C4 all legitimately touch `src/index.ts` or `src/sdk-runner.ts` — wiring a feature into boot is the whole point of those steps). Only stop and report if you are running unattended as part of the self-build flow. What nobody changes, in any context: the *substance* of the caps themselves — do not widen a budget, a concurrency limit, or a grant while wiring something up.
 - **Comments explain why, not what.** This codebase's convention is a doc comment on anything non-obvious, explaining the reasoning and what would break otherwise. Match that density — read a neighbouring file first.
 - **Cost discipline.** Any new LLM call states its model, `effort`, and `maxBudgetUsd`. Default to `claude-haiku-4-5` / `effort: low` unless the task says otherwise.
 - **Never commit secrets.** `.env` is gitignored. `.env.example` carries documentation only, never values.
@@ -563,7 +563,9 @@ Expected: FAIL — the slug is absent.
 
 - [ ] **Step 4: Implement**
 
-Add an optional `world?: WorldModel` dep to the dispatcher. Optional so every existing test keeps compiling and a deployment without a world model degrades to today's behaviour rather than crashing.
+Add a **required** `world: WorldModel` dep to the dispatcher.
+
+Required for the reason Task A1 had to be fixed after the fact: an optional dep here degrades to "the world model is silently never injected", which is invisible in exactly the same way A1's `if (deps.overrides)` was — the tests pass, the runs succeed, and the feature does nothing. Making it required means `npm run typecheck` names every call site that has not been wired, including `src/index.ts`. Yes, this means updating existing dispatcher tests to construct a `WorldModel` over their temp dir; that is the point, and it is mechanical.
 
 - [ ] **Step 5: Wire it in `src/index.ts`**
 
@@ -594,7 +596,9 @@ git commit -m "feat: give dispatched tasks the world model as context"
 
 - [ ] **Step 1: Read the existing `queueTask` tool**
 
-In `src/runner/sdk-runner.ts`. Note how its Zod schema is declared, how it returns `{ content: [{ type: "text", text: ... }] }`, and how the dependency is threaded in optionally so runners without it keep working.
+In `src/runner/sdk-runner.ts`. Note how its Zod schema is declared, how it returns `{ content: [{ type: "text", text: ... }] }`, and how its dependency is threaded through `buildRunner`.
+
+Thread `world` the same way, then **trace it from boot and confirm a real run gets the tools**. If the dep never arrives the tools are simply not registered, and the only symptom is an agent reporting a tool it cannot find — which looks like a prompt problem, not a wiring one. Task A1 shipped dead for the same reason.
 
 - [ ] **Step 2: Write the failing test**
 
