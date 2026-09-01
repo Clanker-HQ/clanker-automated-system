@@ -17,7 +17,13 @@ be refused.
 1. Run `npm audit --json` for known vulnerabilities and `npm outdated
    --json` for stale packages, from `/app` (this repo's root inside your
    sandbox — `package.json`/`package-lock.json`/`node_modules` are already
-   there).
+   there). Every turn resends the whole conversation so far, so the raw
+   output stays in your context — and gets paid for again — for the rest of
+   this run; `npm audit --json`'s full vulnerability tree can be large.
+   Extract only what step 3 actually needs (package, current version,
+   target version, severity) with `jq` if it's available, or `node -e`/
+   `grep` otherwise, rather than reading the raw dump directly into your own
+   response.
 2. For anything worth flagging, Grep `src/` and `scripts/` for where that
    package is actually imported, so you can say whether it's used in a
    security-relevant path (network/auth/parsing untrusted input) or barely

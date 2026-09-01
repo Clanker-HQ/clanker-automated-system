@@ -41,6 +41,7 @@ interface QueryParams {
     settingSources: unknown[];
     env: Record<string, string>;
     abortController: AbortController;
+    agents?: Record<string, { description: string; prompt: string; tools?: string[]; maxTurns?: number }>;
   };
 }
 
@@ -130,6 +131,38 @@ describe("SdkRunner query options", () => {
     expect(params.options.disallowedTools).toEqual(["Bash"]);
     expect(params.options.settingSources).toEqual([]);
     expect(params.options.permissionMode).toBe("default");
+  });
+
+  // pr-reviewer is the only agent holding `Task`, and its prompt spawns up
+  // to four parallel sub-reviews. Nothing bounded them: agent.run.maxTurns
+  // is passed as the TOP-level query() option only (per the SDK's own
+  // AgentDefinition type), so a Task-spawned subagent with no matching entry
+  // in `agents` falls back to the SDK's built-in "general-purpose" type,
+  // uncapped. Registering a named type here with its own maxTurns is what
+  // closes that — and since AgentDefinition.tools "inherits all tools from
+  // parent" when omitted, leaving it unset would also hand every sub-review
+  // the parent's mergePR/postReviewComment/Task tools, letting a spawned
+  // sub-review merge or re-spawn on its own. Both are closed by the same object.
+  it("registers a bounded, tool-restricted subagent type so a Task-spawned sub-review can't run unbounded or inherit mergePR", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+
+    const { params } = await run([RESULT_MESSAGE]);
+
+    expect(params.options.agents).toBeDefined();
+    const agents = params.options.agents!;
+    const keys = Object.keys(agents);
+    expect(keys).toHaveLength(1);
+    const def = agents[keys[0]!]!;
+    expect(def.maxTurns).toBeGreaterThan(0);
+    expect(def.maxTurns).toBeLessThan(60);
+    expect(def.tools).toBeDefined();
+    expect(def.tools).not.toContain("Task");
+    expect(def.tools).not.toContain("Write");
+    expect(def.tools).not.toContain("Edit");
+    expect(typeof def.description).toBe("string");
+    expect(def.description.length).toBeGreaterThan(0);
+    expect(typeof def.prompt).toBe("string");
+    expect(def.prompt.length).toBeGreaterThan(0);
   });
 
   it("maps the SDK's yielded messages into RunEvents", async () => {

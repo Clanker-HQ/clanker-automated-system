@@ -21,6 +21,51 @@ import type { WorldModel } from "../world/world-model.js";
 import { resolveCredentials } from "./credentials.js";
 import type { RunContext, RunEvent, Runner } from "./types.js";
 
+/**
+ * A named subagent type registered on every query() call, for one reason:
+ * pr-reviewer is the only agent holding `Task`, and its prompt spawns up to
+ * four parallel sub-reviews (correctness, security, quality, claim-check).
+ * `agent.run.maxTurns` (below) is passed as the query()-level `maxTurns`
+ * option only — the SDK's own AgentDefinition type shows a subagent can
+ * carry its own separate `maxTurns`, and a Task call whose subagent_type
+ * matches nothing registered here falls back to the SDK's built-in
+ * "general-purpose" type, which this codebase does not bound at all. A
+ * review's real turn/token cost was therefore the top-level cap PLUS up to
+ * four uncapped sub-conversations. This registers a type pr-reviewer's
+ * prompt is told to name explicitly, capping each sub-review well below the
+ * top-level ceiling so the worst case (all four running) is a real number,
+ * not unbounded.
+ *
+ * `tools` is set for a second, independent reason: AgentDefinition.tools
+ * "inherits all tools from parent" when omitted, which would hand every
+ * sub-review the parent's mergePR/postReviewComment/Task tools too — a
+ * sub-review could merge the PR itself, or spawn further sub-reviews,
+ * bypassing the very "wait for every angle, then decide" flow the top-level
+ * prompt describes. Restricted to read/inspect tools only, matching what a
+ * focused review angle actually needs.
+ *
+ * Registered unconditionally rather than only for pr-reviewer: it is inert
+ * for any agent whose prompt never calls Task with this subagent_type, and
+ * conditioning it on the calling agent would be one more thing to keep in
+ * sync with allowedTools for no real benefit.
+ */
+const PR_REVIEW_SUBAGENT_TYPE = "pr-review-angle";
+const PR_REVIEW_SUBAGENT: {
+  description: string;
+  prompt: string;
+  tools: string[];
+  maxTurns: number;
+} = {
+  description:
+    "One bounded angle of review on a pull request already checked out in the workspace (correctness, security, code quality, or whether the diff does what it claims) — used by pr-reviewer to parallelize its own review.",
+  prompt:
+    "You are one focused sub-review of a larger pull-request review already underway. The task you were given names the specific angle to check. Investigate only that angle using the code already checked out in this workspace, and report concrete findings — or their deliberate absence — clearly back to the review that spawned you. You do not decide whether to merge and you have no way to: you never call mergePR or postReviewComment, and you cannot spawn further sub-reviews.",
+  tools: ["Read", "Grep", "Glob", "Bash"],
+  // Four of these can run in parallel; capped well below the top-level
+  // review's own maxTurns so the worst case stays bounded rather than open.
+  maxTurns: 20,
+};
+
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -1031,6 +1076,7 @@ export class SdkRunner implements Runner {
         effort: agent.run.effort,
         maxTurns: agent.run.maxTurns,
         maxBudgetUsd: agent.run.maxBudgetUsd,
+        agents: { [PR_REVIEW_SUBAGENT_TYPE]: PR_REVIEW_SUBAGENT },
         cwd: ctx.workspace,
         // Deliberately NOT passing `allowedTools`: the SDK auto-approves any
         // tool named there without ever consulting `canUseTool` (it only
