@@ -1,0 +1,33 @@
+name: repair
+enabled: true
+authoredBy: claude-local
+description: >-
+  Diagnoses and fixes the system's OWN broken agents and infrastructure —
+  a prompt or code bug that is stopping another dispatched agent (most
+  often builder) from completing its runs, after simply re-enabling or
+  un-tripping that agent hasn't fixed it. Not for ordinary feature work,
+  new products, or anything a healthy builder could already do — route
+  those to builder instead. Opens a PR the same way builder does; never
+  merges.
+
+trigger:
+  type: dispatched
+
+run:
+  model: claude-sonnet-5
+  effort: medium
+  maxTurns: 60
+  timeoutMinutes: 30
+  maxBudgetUsd: 3.00
+
+permissions:
+  allowedTools: [Read, Write, Edit, Glob, Grep, Bash]
+  disallowedTools: []
+
+tier: autonomous
+approval: auto
+grantRefs: [builder-push]
+
+outbox:
+  discord: ops
+  notifyOn: [success, failure]

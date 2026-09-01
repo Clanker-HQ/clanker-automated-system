@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryConfig } from "../src/config.js";
+import { loadConfig } from "../src/config.js";
 import { Dispatcher, runDispatchTick } from "../src/control/dispatcher.js";
 import { FakeRouter } from "../src/control/router.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
+import { loadRegistry } from "../src/registry.js";
 import type { AgentDef } from "../src/registry.js";
 import type { RunResult } from "../src/run-store.js";
 import { WorldModel } from "../src/world/world-model.js";
@@ -897,5 +899,81 @@ describe("Dispatcher.wake", () => {
     resolveRun(successResult());
     await Promise.all([firstWake, secondWake]);
     expect(executeRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("repair agent routing (Task C6)", () => {
+  // End-to-end against the REAL registry (see builder-agent-registration.test.ts
+  // for the same pattern): this is the test that actually proves routing
+  // reaches agents/repair, not just that dispatcher.ts's existing generic
+  // routing *would* work for some in-memory fixture. Before agents/repair
+  // exists this fails the same way "fails the task when the router names an
+  // agent that isn't a registered dispatched specialist" (above) does — the
+  // router choosing a name nothing has registered.
+  it("dispatches a repair-shaped task to the real repair agent, end to end", async () => {
+    const { tasks, dataDir, world } = taskStore();
+    const config = loadConfig(join(process.cwd(), "config.yaml"));
+    const agents = loadRegistry({
+      agentsDir: join(process.cwd(), "agents"),
+      dataDir,
+      config,
+      env: { ...process.env, DISCORD_WEBHOOK_OPS: "https://discord.com/api/webhooks/stub/stub" },
+    });
+    const task = await tasks.create({
+      text: "builder's last three runs all failed the same way; diagnose and fix it",
+      createdBy: "discord:owner",
+    });
+    const executeRun = vi.fn().mockResolvedValue(successResult({ agent: "repair", runId: "repair-1", summary: "Fixed it." }));
+    const result = await runDispatchTick({
+      tasks, router: new FakeRouter("repair"), agents,
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+    });
+    expect(result).toEqual({ ran: true, taskId: task.id });
+    expect(executeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "repair" }),
+      expect.any(Date),
+      expect.stringContaining("diagnose and fix it"),
+    );
+    const updated = await tasks.get(task.id);
+    expect(updated?.status).toBe("done");
+    expect(updated?.specialistAgent).toBe("repair");
+  });
+
+  // specialistsOf (dispatcher.ts) filters candidates on AgentDef.enabled — the
+  // static agent.yaml flag, the only lever it has. A disabled agent is
+  // therefore never even offered to the router, so it structurally cannot be
+  // chosen, regardless of what the router itself might have picked.
+  it("never offers a disabled agent to the router, so a repair task cannot land back on a disabled builder", async () => {
+    const { tasks, dataDir, world } = taskStore();
+    await tasks.create({ text: "builder is broken, fix it", createdBy: "discord:owner" });
+    const router = new FakeRouter("repair");
+    const executeRun = vi.fn().mockResolvedValue(successResult({ agent: "repair", runId: "repair-1" }));
+    const builder = specialist({ name: "builder", enabled: false, description: "implements features" });
+    const repair = specialist({ name: "repair", description: "repairs the system's own broken agents and infrastructure" });
+    await runDispatchTick({
+      tasks, router, agents: [builder, repair],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+    });
+    expect(router.calls[0]?.specialists).toEqual([{ name: "repair", description: repair.description }]);
+    expect(executeRun).toHaveBeenCalledWith(repair, expect.any(Date), expect.any(String));
+  });
+
+  // Symmetric check: repair's mere presence in the registry must not hijack
+  // ordinary feature work toward it — dispatcher.ts has no special-casing by
+  // agent name, so whichever name the router returns is what runs.
+  it("still routes an ordinary feature request to builder when repair is also registered", async () => {
+    const { tasks, dataDir, world } = taskStore();
+    const task = await tasks.create({ text: "add a rate-limit header to the widget API", createdBy: "discord:owner" });
+    const router = new FakeRouter("builder");
+    const executeRun = vi.fn().mockResolvedValue(successResult({ agent: "builder", runId: "builder-1" }));
+    const builder = specialist({ name: "builder", description: "implements features" });
+    const repair = specialist({ name: "repair", description: "repairs the system's own broken agents and infrastructure" });
+    await runDispatchTick({
+      tasks, router, agents: [builder, repair],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+    });
+    expect(executeRun).toHaveBeenCalledWith(builder, expect.any(Date), expect.any(String));
+    const updated = await tasks.get(task.id);
+    expect(updated?.specialistAgent).toBe("builder");
   });
 });
