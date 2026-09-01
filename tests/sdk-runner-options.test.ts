@@ -729,6 +729,65 @@ describe("SdkRunner GitHub PR tools", () => {
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("posted") }] });
   });
 
+  it("merges a self-build grants.yaml-only PR that passes the self-build gate", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    vi.stubEnv("GITHUB_PR_TOKEN", "provisioned");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    const baseGrants = 'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n';
+    const headGrants =
+      'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n' +
+      '  - id: new-thing\n    kind: github-pr\n    repos: ["owner/other-repo"]\n    secret: GITHUB_PR_TOKEN\n';
+    github.seedFile("owner/repo", "main", "grants.yaml", baseGrants);
+    github.seedFile("owner/repo", "sha-1", "grants.yaml", headGrants);
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", base: "main", changedFiles: ["grants.yaml"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(github.merged).toEqual([{ repo: "owner/repo", number: 1 }]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("merged") }] });
+  });
+
+  it("refuses a self-build grants.yaml PR that edits an existing grant in place, citing the failing rule", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    const baseGrants = 'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n';
+    const headGrants = 'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo", "owner/other-repo"]\n    secret: GITHUB_PR_TOKEN\n';
+    github.seedFile("owner/repo", "main", "grants.yaml", baseGrants);
+    github.seedFile("owner/repo", "sha-1", "grants.yaml", headGrants);
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", base: "main", changedFiles: ["grants.yaml"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/self-build rule 2/) }] });
+  });
+
+  it("still refuses a PR that mixes grants.yaml with an ordinary code file, exactly as touchesExcludedPath does today", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["grants.yaml", "src/orchestrator.ts"], diff: "", title: "t", body: "b" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    await collect(runner.execute(granted(), CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(github.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
+  });
+
   describe("pushBranch", () => {
     const GIT_PUSH_GRANT: Grant = { id: "builder-push", kind: "git-push", remote: "owner/repo", branches: ["agent/builder/*"], secret: "BUILDER_PUSH_TOKEN" };
 

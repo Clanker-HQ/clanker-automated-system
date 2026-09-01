@@ -11,7 +11,7 @@
  *
  * 1. The parent governance files (`src/governor.ts`, `src/grants.ts`,
  *    `src/agent-schema.ts`, `src/control/bot.ts`, `grants.yaml`,
- *    `config.yaml`) — the rules every agent runs under.
+ *    `config.yaml`, `goals.yaml`) — the rules every agent runs under.
  * 2. This pipeline's own implementation — the merge gates
  *    (`src/runner/sdk-runner.ts`), this file itself (deleting one line here
  *    would remove the whole mechanism), the webhook trust boundary
@@ -30,12 +30,36 @@
  * nothing else in config.yaml is sensitive enough to be worth that risk for
  * the rare case an automated PR would want to touch it at all.
  *
+ * `goals.yaml` is excluded for a different reason than the others: it is not
+ * a safety rail this pipeline enforces on itself, but the fixed reference
+ * point subsystem 2 measures the system against. A system that could revise
+ * its own goal does not grow, it drifts — see
+ * docs/superpowers/specs/2026-08-30-self-evaluation-design.md ("What is
+ * fixed, and what that costs"). The system may propose a revision with
+ * evidence; it may never author one, which is exactly what this exclusion
+ * enforces mechanically.
+ *
  * `EXCLUDED_PREFIXES` covers what exact-path membership structurally cannot:
  * `agents/` is a directory that grows over time, and ANY `agent.yaml` in it
  * is a capability grant — a PR adding `tier: autonomous, approval: auto,
  * grantRefs: [infra-repo]` to some unrelated agent hands that agent merge
  * capability without ever touching the excluded `grants.yaml`. Listing today's
  * agent files by name would silently stop protecting tomorrow's.
+ *
+ * As of the self-build merge gate (`src/control/self-build-gate.ts`), a PR
+ * whose changed files are EXACTLY `grants.yaml`, or EXACTLY
+ * `agents/<name>/{agent.yaml,prompt.md}` for one agent, is no longer
+ * refused outright — it is instead checked against four mechanical rules
+ * (schema-valid, no in-place grant edit, credential scope, CI green)
+ * before `mergePR`'s other gates run. Everything else — including any PR
+ * that mixes a self-build file with anything outside that exact shape —
+ * is still refused here, unconditionally, exactly as before. The scenario
+ * this comment originally warned about (a `grants.yaml`-free path to
+ * `tier: autonomous, approval: auto`) is now possible in principle, but
+ * only through a PR the four rules above admit — see
+ * docs/superpowers/specs/2026-08-30-self-evaluation-design.md's rule-3
+ * amendment for why that is the intended, credential-bounded trade rather
+ * than an oversight.
  */
 export const EXCLUDED_PATHS: readonly string[] = [
   // The parent governance files.
@@ -45,6 +69,7 @@ export const EXCLUDED_PATHS: readonly string[] = [
   "src/control/bot.ts",
   "grants.yaml",
   "config.yaml",
+  "goals.yaml",
   // This pipeline's own safety rails.
   "src/control/excluded-paths.ts",
   "src/runner/sdk-runner.ts",

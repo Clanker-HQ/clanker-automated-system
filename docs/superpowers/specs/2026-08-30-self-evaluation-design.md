@@ -4,6 +4,30 @@ Subsystem 2 of 2. Depends on the memory log from
 `2026-08-30-agent-loop-design.md` and on the merge gate from
 `2026-08-30-self-build-design.md` (whose rule 3 this spec amends).
 
+Status: partially shipped. The goal-file schema/loader, its `EXCLUDED_PATHS`
+entry, spend accounting, and the `RevenueTransport` interface (with its fake)
+landed in `docs/superpowers/plans/2026-08-31-goal-file-and-spend-accounting.md`.
+`goals.yaml` itself is now committed (operator bootstrap, done), and
+`StripeRevenueTransport` (`src/control/stripe-revenue-transport.ts`) is the
+real, read-only-scoped `RevenueTransport` implementation against Stripe's
+Charges API, now wired into the weekly metrics job. Still needed: a separate
+write-scoped commerce capability so the system can create what it sells (a
+Stripe Product/Price/Payment Link) — nothing in this codebase can list
+anything for sale yet, `RevenueTransport` only ever reads completed sales, so
+this needs its own grant and its own restricted key once a product proposal
+actually needs it, not bundled into the read-only revenue key. The weekly
+metrics job (`docs/superpowers/plans/2026-08-31-weekly-metrics-job.md`) now
+ships, computing net income, not-achieved rate per agent, cost per completed
+task, novelty share/suppression rate, and queue starvation, with the delta
+posted in the digest — but three named metrics are deliberately deferred (see
+that plan's Global Constraints): revenue per external spend (spend events
+aren't logged with amount+timestamp), funnel counts / time-to-first-revenue
+(no funnel-stage tracking exists), and PR-review rework rate (no `pr-reviewer`
+verdict is persisted). Also still needed: instrumental subordination and the
+means-constraint classifier in the proposal/queue path; quota-aware shedding
+in the Governor; `architecture-scout`, which the spec's own build order places
+last.
+
 Supersedes an earlier draft of this file that proposed a human-curated
 scorecard of eight process metrics. That draft was wrong in a specific way:
 it put the operator in the loop three separate times (attaching grants for
@@ -110,8 +134,9 @@ system-originated work; revenue per euro of external spend; time from
 prospect to first revenue; funnel counts (prospect → validated → built →
 shipped → earning) and the stage where threads die.
 
-Income is read from the spend pot's transaction feed (see below) — the one
-metric grounded outside the system's own reporting.
+Income is read from the merchant-of-record's per-sale records via
+`RevenueTransport` (see below) — the one metric grounded outside the
+system's own reporting.
 
 **Instrumental (capability), only meaningful as they move the above:**
 `not-achieved` rate per agent and trend; cost per completed task; rework rate
@@ -477,9 +502,14 @@ Stated rather than papered over:
   and confirm no system-held credential has `Administration` here.
 - Issue the broad `Clanker-HQ` credential and swap it in.
 - Open the virtual prepaid card with auto-topup disabled, and add its
-  credentials plus read access to its transaction feed. Funding it can wait
-  until a proposal actually needs a purchase — the account matters from day
-  one for the *receive* side, since revenue is unobservable without it.
+  credentials. Funding it can wait until a proposal actually needs a
+  purchase — this account is a **spend instrument only** (see "The revenue
+  instrument is the payment processor, not the bank"); it needs no read API
+  of its own.
+- Open a merchant-of-record account (Lemon Squeezy / Gumroad / Stripe) and
+  add its API credentials. This one matters from day one for the *receive*
+  side — revenue is unobservable without it, since it is what
+  `RevenueTransport` reads per-sale records from.
 - Create a **dedicated email account** for the system, structured like the
   card: the operator holds the password and 2FA, the system gets a revocable
   app password for IMAP/SMTP. Without an email identity the system cannot
@@ -492,7 +522,7 @@ Stated rather than papered over:
 1. Subsystem 1 ships; the log accumulates real data.
 2. Self-build merge gate ships, with the amended rule 3.
 3. `goals.yaml` excluded; metric job ships seeded with the set above; spend
-   accounting and the transaction-feed reader land with it, since revenue is
-   the primary metric and is unobservable without them.
+   accounting and the `RevenueTransport` reader land with it, since revenue
+   is the primary metric and is unobservable without them.
 4. `architecture-scout` last — it is useless before metrics exist, since
    every proposal must cite one.

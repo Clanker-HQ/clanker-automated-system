@@ -30,6 +30,7 @@ describe("touchesExcludedPath", () => {
       "src/control/bot.ts",
       "grants.yaml",
       "config.yaml",
+      "goals.yaml",
       // This pipeline's own safety rails — a pipeline able to merge changes
       // to its own gates is a pipeline with no gates.
       "src/control/excluded-paths.ts",
@@ -74,6 +75,10 @@ describe("touchesExcludedPath", () => {
     expect(touchesExcludedPath(["src/runner/credentials.ts"])).toBe(true);
     expect(touchesExcludedPath(["src/index.ts"])).toBe(true);
     expect(touchesExcludedPath([".github/workflows/ci.yml"])).toBe(true);
+  });
+
+  it("flags a change to goals.yaml, the same as grants.yaml and config.yaml", () => {
+    expect(touchesExcludedPath(["goals.yaml"])).toBe(true);
   });
 
   it("does not flag a file whose path merely resembles an excluded prefix", () => {

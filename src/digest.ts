@@ -2,6 +2,7 @@ import type { MemoryConfig } from "./config.js";
 import type { TaskStore } from "./control/task-store.js";
 import type { MemoryStore } from "./memory/memory-store.js";
 import type { RunStore } from "./run-store.js";
+import type { Metrics, MetricsStore } from "./state/metrics-store.js";
 
 /**
  * Pure text-building, deliberately separate from src/triggers/digest.ts's
@@ -20,6 +21,7 @@ export async function buildDigestText(opts: {
    * always passes both.
    */
   memoryConfig?: MemoryConfig;
+  metricsStore?: MetricsStore;
 }): Promise<string> {
   // listSince, not listRecent(10_000): the digest only ever looks at the last
   // 24h, so there's no reason to read/parse every result.json retention has
@@ -48,7 +50,10 @@ export async function buildDigestText(opts: {
   // digest exists to make sure never gets missed.
   const waitingTasks = allTasks.filter((t) => t.status === "waiting");
 
-  if (recentRuns.length === 0 && finishedTasks.length === 0 && waitingTasks.length === 0) {
+  const freshMetrics = opts.metricsStore ? await opts.metricsStore.latestTwo() : null;
+  const hasFreshMetrics = freshMetrics?.latest !== null && freshMetrics?.latest !== undefined && new Date(freshMetrics.latest.computedAt) >= opts.since;
+
+  if (recentRuns.length === 0 && finishedTasks.length === 0 && waitingTasks.length === 0 && !hasFreshMetrics) {
     return "📅 Daily digest: nothing happened in the last 24h.";
   }
 
@@ -81,5 +86,22 @@ export async function buildDigestText(opts: {
       lines.push(`🧠 Memory: ${kindSummary}${suppressed > 0 ? ` (${suppressed} duplicate proposal(s) suppressed)` : ""}`);
     }
   }
+  if (hasFreshMetrics && freshMetrics?.latest) {
+    lines.push(formatMetricsLine(freshMetrics.latest, freshMetrics.previous));
+  }
   return lines.join("\n");
+}
+
+function formatMetricsLine(latest: Metrics, previous: Metrics | null): string {
+  const revenueDelta = previous
+    ? ` (${latest.netIncomeUsd - previous.netIncomeUsd >= 0 ? "+" : ""}$${(latest.netIncomeUsd - previous.netIncomeUsd).toFixed(2)} vs prior snapshot)`
+    : "";
+  const parts = [`📊 **Weekly metrics** (${latest.windowDays}d window): $${latest.netIncomeUsd.toFixed(2)} net income${revenueDelta}`];
+  if (latest.notAchievedRate !== null) parts.push(`${(latest.notAchievedRate * 100).toFixed(0)}% not-achieved`);
+  if (latest.costPerCompletedTaskUsd !== null) parts.push(`$${latest.costPerCompletedTaskUsd.toFixed(2)}/completed task`);
+  if (latest.noveltySharePercent !== null) {
+    parts.push(`${latest.noveltySharePercent.toFixed(0)}% novel${latest.suppressedProposalCount > 0 ? ` (${latest.suppressedProposalCount} suppressed)` : ""}`);
+  }
+  if (latest.queueStarvationHours !== null) parts.push(`queue starvation ${latest.queueStarvationHours.toFixed(1)}h`);
+  return parts.join(" — ");
 }

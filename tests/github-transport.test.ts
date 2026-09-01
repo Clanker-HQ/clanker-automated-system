@@ -64,3 +64,50 @@ describe("FakeGithubTransport", () => {
     expect(second).toEqual({ number: 2, url: "https://github.com/owner/repo/pull/2" });
   });
 });
+
+describe("FakeGithubTransport.seedPullRequest base ref", () => {
+  it('defaults base to "main" when not given', async () => {
+    const t = new FakeGithubTransport();
+    t.seedPullRequest(pr());
+    const info = await t.getPullRequest("owner/repo", 1);
+    expect(info.base).toBe("main");
+  });
+
+  it("keeps an explicitly seeded base", async () => {
+    const t = new FakeGithubTransport();
+    t.seedPullRequest(pr({ base: "develop" }));
+    const info = await t.getPullRequest("owner/repo", 1);
+    expect(info.base).toBe("develop");
+  });
+});
+
+describe("FakeGithubTransport.getFileContent / listRepoFiles", () => {
+  it("returns seeded file content at a given ref", async () => {
+    const t = new FakeGithubTransport();
+    t.seedFile("owner/repo", "main", "grants.yaml", "grants: []\n");
+    expect(await t.getFileContent("owner/repo", "main", "grants.yaml")).toBe("grants: []\n");
+  });
+
+  it("returns null for a file that was never seeded at that ref", async () => {
+    const t = new FakeGithubTransport();
+    expect(await t.getFileContent("owner/repo", "main", "grants.yaml")).toBeNull();
+  });
+
+  it("keeps content at different refs independent", async () => {
+    const t = new FakeGithubTransport();
+    t.seedFile("owner/repo", "main", "grants.yaml", "grants: []\n");
+    t.seedFile("owner/repo", "sha-2", "grants.yaml", "grants: [{id: x}]\n");
+    expect(await t.getFileContent("owner/repo", "main", "grants.yaml")).toBe("grants: []\n");
+    expect(await t.getFileContent("owner/repo", "sha-2", "grants.yaml")).toBe("grants: [{id: x}]\n");
+  });
+
+  it("lists only seeded files under the given prefix, at the given ref", async () => {
+    const t = new FakeGithubTransport();
+    t.seedFile("owner/repo", "main", "agents/foo/agent.yaml", "name: foo\n");
+    t.seedFile("owner/repo", "main", "agents/bar/agent.yaml", "name: bar\n");
+    t.seedFile("owner/repo", "main", "grants.yaml", "grants: []\n");
+    t.seedFile("owner/repo", "sha-2", "agents/baz/agent.yaml", "name: baz\n");
+    const files = await t.listRepoFiles("owner/repo", "main", "agents/");
+    expect(files.sort()).toEqual(["agents/bar/agent.yaml", "agents/foo/agent.yaml"]);
+  });
+});

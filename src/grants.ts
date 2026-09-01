@@ -27,7 +27,11 @@ const ProvisionGrant = z
   .object({
     id: z.string().min(1),
     kind: z.literal("provision"),
-    resource: z.enum(["github-repo", "host-site", "dns-subdomain"]),
+    // "spend-card" backs the prepaid-card grant described in
+    // docs/superpowers/specs/2026-08-30-self-evaluation-design.md ("The
+    // spend pot") — the system holds card-spend credentials behind this
+    // resource, never the account's own login.
+    resource: z.enum(["github-repo", "host-site", "dns-subdomain", "spend-card"]),
     scope: z.string().min(1),
     limit: z.object({ perDay: z.number().int().positive() }).strict(),
     secret: z.string().min(1),
@@ -211,7 +215,7 @@ function grantTargetPattern(grant: Grant): string {
   }
 }
 
-function globMatch(pattern: string, value: string): boolean {
+export function globMatch(pattern: string, value: string): boolean {
   const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === "*" ? "\\uFFFF" : `\\${c}`));
   const regex = new RegExp(`^${escaped.replace(/\\uFFFF/g, ".*")}$`);
   return regex.test(value);

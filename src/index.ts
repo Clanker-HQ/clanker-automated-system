@@ -13,6 +13,8 @@ import { DiscordJsTransport } from "./control/discord-transport.js";
 import { RealGitPusher } from "./control/git-pusher.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
+import { FakeRevenueTransport, type RevenueTransport } from "./control/revenue-transport.js";
+import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
 import { TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { makeWebhookHandler } from "./control/webhook-wiring.js";
@@ -31,6 +33,7 @@ import { SdkRunner } from "./runner/sdk-runner.js";
 import type { Runner } from "./runner/types.js";
 import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
+import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
 
 const ROOT = process.env.APP_ROOT ?? process.cwd();
@@ -68,6 +71,7 @@ function main(): void {
   let webhookSecret: string;
   let webhookPort: number;
   let github: GithubApiTransport;
+  let revenue: RevenueTransport;
   let dispatcher: Dispatcher | undefined;
 
   const tasks = new TaskStore(DATA_DIR);
@@ -91,6 +95,14 @@ function main(): void {
     webhookSecret = mustEnv("GITHUB_WEBHOOK_SECRET");
     webhookPort = parsePort("WEBHOOK_PORT", process.env.WEBHOOK_PORT, 8787);
     github = new GithubApiTransport({ token: githubToken });
+    // Optional, not mustEnv'd: revenue is unobservable without it, but a
+    // missing key must not fail boot the same way a missing GITHUB_PR_TOKEN
+    // does — the metrics job simply reports $0 net income via the fake
+    // until the operator's merchant-of-record account exists.
+    const revenueToken = process.env.REVENUE_API_TOKEN;
+    revenue = revenueToken
+      ? new StripeRevenueTransport({ token: revenueToken, apiBase: process.env.REVENUE_API_BASE })
+      : new FakeRevenueTransport();
     // Optional, not mustEnv'd: an agent that can't Read files (research) just
     // loses the systemContext tool if this is missing, rather than boot
     // failing over a doc file. See docs/system-context.md itself, and the
@@ -143,6 +155,7 @@ function main(): void {
   if (credentialMode) console.log(`[boot] credentials: ${credentialMode}`);
 
   const runStore = new RunStore(DATA_DIR);
+  const metricsStore = new MetricsStore(DATA_DIR);
   const overrides = new ConfigOverridesStore(DATA_DIR);
   const breaker = new BreakerStore(DATA_DIR);
   const approvedGrants = new ApprovedGrantsStore(DATA_DIR);
@@ -274,6 +287,7 @@ function main(): void {
           outbox,
           memory,
           memoryConfig: config.memory,
+          metricsStore,
         });
       })
       .catch((error: unknown) => {
@@ -318,6 +332,25 @@ function main(): void {
       })
       .catch((error: unknown) => {
         console.error("[boot] failed to start the reflection schedule", error);
+      });
+  }
+
+  if (config.metrics.enabled) {
+    void import("./triggers/metrics.js")
+      .then(({ startMetrics }) => {
+        startMetrics({
+          schedule: config.metrics.schedule,
+          timezone: config.metrics.timezone,
+          windowDays: config.metrics.windowDays,
+          runStore,
+          taskStore: tasks,
+          memory,
+          revenue,
+          metricsStore,
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the metrics schedule", error);
       });
   }
 

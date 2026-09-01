@@ -39,6 +39,16 @@ periodic reflection pass synthesises recent entries into higher-level
 conclusions. None of this changes what an agent is allowed to reach; it only
 changes what gets proposed and what a run starts already knowing.
 
+A `goals.yaml` at the repo root (`src/goals.ts`), once the operator commits
+it, is the fixed reference point subsystem 2 measures the system against —
+excluded from the merge pipeline the same as `grants.yaml`, since the
+system may propose a revision but must never author one. A weekly metrics
+job (`src/metrics.ts`, scheduled by `src/triggers/metrics.ts`) computes
+revenue and instrumental metrics — net income, not-achieved rate per agent,
+cost per completed task, novelty share, queue starvation — into
+`data/state/metrics-<date>.json`, with the delta appended to the daily
+digest the day a fresh snapshot lands.
+
 A run's `status: "success"` only ever means the SDK finished without
 erroring — it says nothing about whether the agent's actual objective was
 met. An `OutcomeVerifier` grades every successful run against its own
@@ -88,8 +98,3 @@ exists right now.
   one agent would run a real headless browser process during its own
   turn, which needs meaningfully more RAM/CPU than anything this system
   runs today.
-- **A self-build flow.** An agent proposing a change to this system's own
-  configuration (a new `agent.yaml`, a `grants.yaml` edit), with the
-  supervisor validating it and asking to merge it. Would need its own
-  deploy/approval path — `builder`'s current PR flow is deliberately
-  barred from touching those files.

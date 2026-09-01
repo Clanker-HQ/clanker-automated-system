@@ -129,6 +129,23 @@ export const RetentionSchema = z
   .strict()
   .superRefine(validateCronSchedule);
 
+export const MetricsSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    // Weekly, Monday 04:00 by default — one hour after reflection's Monday
+    // 03:00 (MemorySchema.reflectionSchedule below), so the two weekly
+    // passes never tick at the same instant. Cron syntax is validated
+    // below, but cadence is not: MetricsStore keys snapshots by calendar
+    // date, so a sub-daily schedule silently collapses to at most one
+    // snapshot per day rather than one per tick.
+    schedule: z.string().default("0 4 * * 1"),
+    timezone: IanaTimezone.default("UTC"),
+    /** How far back each snapshot's window reaches. */
+    windowDays: z.number().int().positive().default(7),
+  })
+  .strict()
+  .superRefine(validateCronSchedule);
+
 export const MemorySchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -198,6 +215,7 @@ export const ConfigSchema = z
       .prefault({}),
     digest: DigestSchema.prefault({}),
     retention: RetentionSchema.prefault({}),
+    metrics: MetricsSchema.prefault({}),
     memory: MemorySchema.prefault({}),
   })
   .strict();
@@ -207,6 +225,7 @@ export type GovernorConfig = z.infer<typeof GovernorSchema>;
 export type QuietHours = z.infer<typeof QuietHoursSchema>;
 export type DigestConfig = z.infer<typeof DigestSchema>;
 export type RetentionConfig = z.infer<typeof RetentionSchema>;
+export type MetricsConfig = z.infer<typeof MetricsSchema>;
 export type MemoryConfig = z.infer<typeof MemorySchema>;
 
 export function parseConfig(source: string, yamlText: string): Config {

@@ -39,6 +39,26 @@ describe("parseGrants", () => {
     expect(grants[0]).toMatchObject({ kind: "provision", resource: "github-repo", limit: { perDay: 3 } });
   });
 
+  it("parses a provision grant for a spend card", () => {
+    const grants = parseGrants(
+      "grants.yaml",
+      "grants:\n  - id: spend-pot\n    kind: provision\n    resource: spend-card\n    scope: spend-pot\n    limit: { perDay: 1 }\n    secret: SPEND_CARD_NUMBER\n",
+    );
+    expect(grants[0]).toMatchObject({ kind: "provision", resource: "spend-card" });
+  });
+
+  it("rejects an unknown provision resource, naming spend-card as a legal value", () => {
+    const yaml =
+      "grants:\n  - id: spend-pot\n    kind: provision\n    resource: bank-account\n    scope: spend-pot\n    limit: { perDay: 1 }\n    secret: X\n";
+    try {
+      parseGrants("grants.yaml", yaml);
+      expect.fail("expected parseGrants to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as ValidationError).lines.join(" ")).toMatch(/spend-card/);
+    }
+  });
+
   it("defaults to an empty list when the grants key is absent", () => {
     expect(parseGrants("grants.yaml", "")).toEqual([]);
   });

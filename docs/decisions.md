@@ -105,7 +105,12 @@ inside the agent trust boundary at all.
 deploy:** `EXCLUDED_PATHS` already keeps every merge through the automated
 pipeline from touching the governance/safety code itself, regardless of
 deploy automation — the worst a bad auto-deployed change can do is break a
-*feature*, never the safety mechanisms. CI already gates every PR on
+*feature*, never the safety mechanisms. As of the self-build merge gate,
+this is narrower than it reads: safety **code** (everything actually listed
+in `EXCLUDED_PATHS`/`EXCLUDED_PREFIXES`) still can never change through the
+pipeline, but governance **data** (`grants.yaml`, `agents/*/agent.yaml`) now
+can, bounded by `src/control/self-build-gate.ts`'s four mechanical rules
+rather than by an outright refusal. CI already gates every PR on
 typecheck + tests before merge is even possible. The one genuinely new
 failure mode — a change that passes CI but breaks at runtime — is what the
 health-check-and-rollback exists to catch algorithmically, the same

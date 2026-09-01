@@ -180,15 +180,17 @@ dispatcher tick rather than firing immediately, so a genuinely broken task
 doesn't burn two attempts back-to-back. `!retry` on an already-failed task
 resets this, so a manual retry always gets its own fresh silent attempt too.
 
-**Daily digest and data retention.** Two scheduled jobs, both configured under
-`digest:`/`retention:` in `config.yaml`, neither needing a command:
+**Daily digest, retention, and metrics.** Scheduled jobs, configured under
+`digest:`/`retention:`/`metrics:` in `config.yaml`, none needing a command:
 - `digest` posts once a day (08:00 by default): runs and spend in the last
   24h, tasks done/failed, anything still `waiting` on you regardless of
   how old, and — when there was any memory activity in the window — a count
   of findings/proposals/outcomes/reflections recorded and duplicate
   proposals the novelty gate suppressed at queue time. So a day away doesn't mean piecing
   state back together from `!status`/`!tasks`/memory of what you last
-  checked.
+  checked. On the day a fresh weekly metrics snapshot lands, the digest
+  also posts its delta: net income, not-achieved rate, cost per completed
+  task, novelty share, and queue starvation.
 - `retention` runs weekly and deletes run transcripts/results and specialist
   workspace files (e.g. research findings) older than `retention.days`
   (30 by default). A run still in progress (no `result.json` yet) is never
@@ -197,6 +199,11 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
   with no result ever recorded — that's not a run still in progress (every
   agent's timeout caps at 3 hours), it's one the process crashed mid-way
   through.
+- `metrics` runs weekly (Monday 04:00 by default) and computes a snapshot —
+  net income, not-achieved rate, cost per completed task, novelty share,
+  and queue starvation — over a trailing `metrics.windowDays`-day window
+  (7 by default), then persists it under `data/state/`. Posts nothing on
+  its own; the next `digest` run is what surfaces the delta above.
 
 **The system can queue its own tasks, not just yours.** Four cron-triggered
 agents each propose up to 3 tasks via a `queueTask` tool — no human approval
@@ -405,15 +412,35 @@ prompt, and give the agent `Glob` so it can locate itself.
 ## Not built yet
 
 The governor, capability tiers and grants, park/resume, and the Discord control
-bot (approvals, questions, admin commands) are all built and live.
+bot (approvals, questions, admin commands) are all built and live. A PR
+touching only `grants.yaml` or `agents/*/{agent.yaml,prompt.md}` can merge
+through the normal `pr-reviewer` → `mergePR` pipeline under four mechanical
+rules (`src/control/self-build-gate.ts`) instead of being refused outright —
+see `docs/superpowers/specs/2026-08-30-self-build-design.md`. Everything
+outside that exact shape is refused exactly as before.
+
+Subsystem 2's foundation pieces are in place: `src/goals.ts` (a `goals.yaml`
+schema and loader — the file itself is never authored by the system, only
+by the operator, and is excluded from the merge pipeline the same as
+`grants.yaml`; `goals.yaml` is now committed at the repo root),
+`src/spend/spend-accounting.ts` + `src/state/spend-store.ts` (spend-pot
+bookkeeping for a `provision`-kind grant), and `src/control/revenue-transport.ts`
+plus `src/control/stripe-revenue-transport.ts` (the real, read-only Stripe
+implementation). The weekly metrics job (`src/metrics.ts`/
+`src/triggers/metrics.ts`) computes net income, not-achieved rate per agent,
+cost per completed task, novelty share/suppression rate, and queue
+starvation into `data/state/metrics-<date>.json`, with the delta posted in
+the daily digest. No spend-card grant exists in `grants.yaml` yet, and
+three metrics named in the spec are deliberately deferred because nothing
+in this codebase yet produces the data they'd need: revenue per external
+spend (spend events aren't logged with amount+timestamp, only current
+balance), funnel counts / time-to-first-revenue (no funnel-stage tracking
+exists), and PR-review rework rate (no `pr-reviewer` verdict is persisted
+anywhere) — see `docs/superpowers/plans/2026-08-31-weekly-metrics-job.md`.
+See also `docs/superpowers/specs/2026-08-30-self-evaluation-design.md`.
+
 Still genuinely deferred:
 
-- **Git-based deploy and the "proposal approval" Discord flow** — an agent
-  writing a new `agent.yaml`, the supervisor pulling and validating it, and
-  asking to merge it. The `builder` agent (`agents/builder/`) can now write
-  and open a PR for an ordinary code change, but nothing yet produces a
-  proposal branch that changes this system's own agent configuration, so
-  there's still nothing for the deploy/approval machinery to act on.
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
 - **A dashboard.** Wanted eventually, but out of scope so far — the Discord
   `!command` interface (`!status`, `!tasks`, `!runs`, etc.) covers everything

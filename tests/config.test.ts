@@ -136,6 +136,34 @@ describe("parseConfig", () => {
     const yaml = VALID + "\nretention:\n  timezone: PST\n";
     expect(() => parseConfig("config.yaml", yaml)).toThrow(/retention\.timezone.*IANA/s);
   });
+
+  it("defaults metrics to enabled, Monday 04:00 UTC, a 7-day window, when absent", () => {
+    const config = parseConfig("config.yaml", VALID);
+    expect(config.metrics).toEqual({ enabled: true, schedule: "0 4 * * 1", timezone: "UTC", windowDays: 7 });
+  });
+
+  it("honours an explicit metrics block", () => {
+    const yaml = VALID + '\nmetrics:\n  enabled: false\n  schedule: "0 5 * * 1"\n  timezone: Europe/Berlin\n  windowDays: 14\n';
+    const config = parseConfig("config.yaml", yaml);
+    expect(config.metrics).toEqual({ enabled: false, schedule: "0 5 * * 1", timezone: "Europe/Berlin", windowDays: 14 });
+  });
+
+  it("rejects a non-canonical metrics timezone the same way digest does", () => {
+    const yaml = VALID + "\nmetrics:\n  timezone: PST\n";
+    expect(() => parseConfig("config.yaml", yaml)).toThrow(/metrics\.timezone.*IANA/s);
+  });
+
+  it("rejects an invalid metrics.schedule cron expression, naming the field and the value", () => {
+    const yaml = VALID + '\nmetrics:\n  schedule: "not a cron expression"\n';
+    try {
+      parseConfig("config.yaml", yaml);
+      expect.fail("expected parseConfig to throw");
+    } catch (err) {
+      const message = (err as ValidationError).message;
+      expect(message).toContain("metrics.schedule");
+      expect(message).toContain("not a cron expression");
+    }
+  });
 });
 
 describe("loadConfig", () => {

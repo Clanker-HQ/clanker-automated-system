@@ -27,6 +27,12 @@ retention:
   timezone: Europe/Berlin
   channel: ops
 
+metrics:
+  enabled: true
+  schedule: "0 4 * * 1"   # weekly (Monday 04:00) — one hour after memory.reflectionSchedule
+  timezone: Europe/Berlin
+  windowDays: 7
+
 # github:
 #   prToken: GITHUB_PR_TOKEN   # (documented here for discoverability; the
 #                               # env var itself is read directly, not via
