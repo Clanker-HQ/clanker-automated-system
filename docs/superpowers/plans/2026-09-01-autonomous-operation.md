@@ -581,6 +581,52 @@ git commit -m "feat: give dispatched tasks the world model as context"
 
 ---
 
+### Task B2b: Give cron agents the world model too
+
+**Why:** Task B2 injects the world model into *dispatched* tasks only — `src/triggers/cron.ts` calls `orchestrator.executeRun(agent)` with no `promptContext`, so every cron agent gets nothing. That is the wrong half. The motivating example for this whole subsystem is that `improvement-scout` reads only `src/` and will never see what `research` concluded, and `improvement-scout` is cron-fired. The scouts are the system's proposers; they are precisely the agents that need to know what has already been found, tried, and shelved.
+
+This task was added on 2026-09-01 after B2 landed and the gap was found by tracing the wire. It is small.
+
+**Files:**
+- Modify: `src/triggers/cron.ts`
+- Create: `tests/cron-trigger.test.ts`
+- Modify: `src/index.ts` (pass the `WorldModel` it already constructs)
+
+**Interfaces:**
+- Consumes: `WorldModel.summaryForPrompt()` from Task B1; `Orchestrator.executeRun(agent, now?, promptContext?)`.
+- Produces: `startCron(agents: AgentDef[], orchestrator: Orchestrator, world: WorldModel): Cron[]` — `world` **required**, same reasoning as B2.
+
+- [ ] **Step 1: Write the failing test**
+
+There is no test file for this trigger at all, which is how the gap survived. Create one. Use a cron expression that never fires naturally (`"0 0 29 2 *"`, Feb 29 on a non-leap year) and drive the job with `await job.trigger()`, exactly as `tests/metrics-trigger.test.ts` does — read that file first, it solved this same problem in Task A2.
+
+The test: seed a `WorldModel` with one live portfolio entry, call `startCron` with a stub orchestrator that records the `promptContext` it receives, trigger the job, and assert the recorded context contains that entry's slug.
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `npx vitest run tests/cron-trigger.test.ts`
+Expected: FAIL — the orchestrator received `undefined` for `promptContext`.
+
+- [ ] **Step 3: Implement**
+
+Add the required `world` parameter, make the croner callback `async`, and pass `await world.summaryForPrompt()` as `promptContext`. Wrap the summary read in its own `try`/`catch` that logs and falls back to no context — a world-model read failure must never stop a scheduled run, which is the same posture `dispatcher.ts` already takes.
+
+- [ ] **Step 4: Run it and watch it pass**
+
+- [ ] **Step 5: Wire it at boot**
+
+`src/index.ts` already constructs `const world = new WorldModel(DATA_DIR)` for the dispatcher. Pass it to `startCron`. Typecheck will point at the call site.
+
+- [ ] **Step 6: Verify and commit**
+
+```bash
+npm run typecheck && npx vitest run
+git add src/triggers/cron.ts tests/cron-trigger.test.ts src/index.ts
+git commit -m "feat: give cron agents the world model as context"
+```
+
+---
+
 ### Task B3: Let agents write findings back
 
 **Why:** Reading is half of it. Until `research` can record a conclusion where `improvement-scout` will find it, every research run still terminates.
