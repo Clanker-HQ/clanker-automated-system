@@ -362,6 +362,9 @@ function main(): void {
           taskStore: tasks,
           memory,
           revenue,
+          // The same store `!disable` writes to, so an agent the metrics job
+          // puts on probation is cleared by `!enable` like any other.
+          overrides,
           metricsStore,
         });
       })

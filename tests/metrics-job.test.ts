@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runMetricsJob } from "../src/metrics.js";
+import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { FakeRevenueTransport } from "../src/control/revenue-transport.js";
 import type { RevenueTransport } from "../src/control/revenue-transport.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import { RunStore, newRunId } from "../src/run-store.js";
 import { MetricsStore } from "../src/state/metrics-store.js";
+import type { VerifiedOutcome } from "../src/control/outcome-verifier.js";
 
 function fixtures() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-metrics-job-"));
@@ -20,6 +22,7 @@ function fixtures() {
     memory: new MemoryStore(dataDir),
     revenue: new FakeRevenueTransport(),
     metricsStore: new MetricsStore(dataDir),
+    overrides: new ConfigOverridesStore(dataDir),
   };
 }
 
@@ -29,13 +32,14 @@ function fixtures() {
  * a run's RunResult.startedAt at a chosen time. Mirrors tests/digest.test.ts's
  * own recordRun helper exactly, for the same reason.
  */
-async function recordRun(store: RunStore, at: Date, agent: string, costUsd: number) {
+async function recordRun(store: RunStore, at: Date, agent: string, costUsd: number, verifiedOutcome?: VerifiedOutcome) {
   vi.useFakeTimers();
   vi.setSystemTime(at);
   try {
     const writer = await store.open(newRunId(agent, at), agent);
     await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd, durationMs: 1 });
-    await writer.close({ status: "success", summary: "" });
+    const result = await writer.close({ status: "success", summary: "" });
+    if (verifiedOutcome) await store.recordVerification(result.runId, verifiedOutcome);
   } finally {
     vi.useRealTimers();
   }
@@ -62,7 +66,7 @@ describe("runMetricsJob", () => {
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: f.revenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: f.revenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     expect(metrics.netIncomeUsd).toBe(20);
@@ -92,7 +96,7 @@ describe("runMetricsJob", () => {
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: f.revenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: f.revenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     // Only the in-window run's $1 counts toward cost — but there's no done
@@ -119,7 +123,7 @@ describe("runMetricsJob", () => {
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: failingRevenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: failingRevenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     expect(metrics.netIncomeUsd).toBe(0);
@@ -137,13 +141,13 @@ describe("runMetricsJob", () => {
     const f = fixtures();
     const failingRevenue: RevenueTransport = {
       listSales: async () => {
-        throw new Error("lemon squeezy unavailable");
+        throw new Error("revenue source unavailable");
       },
     };
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: failingRevenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: failingRevenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     expect(metrics.revenueUnavailable).toBe(true);
@@ -157,11 +161,32 @@ describe("runMetricsJob", () => {
 
     const metrics = await runMetricsJob({
       runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
-      revenue: f.revenue, metricsStore: f.metricsStore, windowDays: 7, now: NOW,
+      revenue: f.revenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
     });
 
     expect(metrics.revenueUnavailable).toBe(false);
     expect(metrics.netIncomeUsd).toBe(5);
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  // The breaker only counts consecutive hard failures, so an agent whose
+  // every run closes "success" while the verifier grades it "not-achieved"
+  // never trips it — this is the only place that catches that case.
+  it("auto-disables an agent whose successful runs mostly achieve nothing", async () => {
+    const f = fixtures();
+    for (let i = 0; i < 6; i++) {
+      await recordRun(f.runStore, new Date(WITHIN_WINDOW.getTime() + i * 60_000), "cleanup-scout", 1, {
+        verdict: "not-achieved", reason: "nothing changed",
+      });
+    }
+
+    await runMetricsJob({
+      runStore: f.runStore, taskStore: f.taskStore, memory: f.memory,
+      revenue: f.revenue, metricsStore: f.metricsStore, overrides: f.overrides, windowDays: 7, now: NOW,
+    });
+
+    const overrides = await f.overrides.read();
+    expect(overrides.disabledAgents).toEqual(["cleanup-scout"]);
     rmSync(f.dataDir, { recursive: true, force: true });
   });
 });

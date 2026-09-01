@@ -1,3 +1,5 @@
+import { evaluateProbation } from "./state/agent-probation.js";
+import type { ConfigOverridesStore } from "./config-overrides.js";
 import type { RevenueTransport, Sale } from "./control/revenue-transport.js";
 import type { Task, TaskStore } from "./control/task-store.js";
 import type { MemoryStore } from "./memory/memory-store.js";
@@ -26,6 +28,13 @@ export interface ComputeMetricsInput {
 
 const HOUR_MS = 60 * 60 * 1000;
 const SUPPRESSED_PREFIX = "suppressed as a duplicate";
+
+/** Same bar as evaluateProbation's doc comment: below 5 runs the rate is noise, and 60%+ not-achieved means the agent isn't doing its job. */
+const PROBATION_OPTIONS = { minRuns: 5, maxNotAchievedRate: 0.6 };
+
+interface MetricsOutbox {
+  postAlert(channelKey: string, text: string): Promise<"delivered" | "undelivered">;
+}
 
 /**
  * Pure arithmetic over already-gathered data — no I/O, no LLM. See
@@ -85,6 +94,18 @@ export interface MetricsJobDeps {
   metricsStore: MetricsStore;
   windowDays: number;
   now?: Date;
+  /**
+   * Required. It was optional at first, so that existing callers kept
+   * compiling — and the scheduled path in src/triggers/metrics.ts then never
+   * passed it, leaving the probation check fully implemented, fully tested,
+   * and never once executed in production. That is the same "computed by
+   * something, consumed by nothing" failure this check exists to catch, so
+   * the type now refuses it: a caller that forgets fails `npm run typecheck`
+   * rather than silently doing half the job.
+   */
+  overrides: ConfigOverridesStore;
+  /** Only consulted when an agent is actually disabled; absent means the disable still happens but nothing is posted. */
+  outbox?: MetricsOutbox;
 }
 
 /**
@@ -138,5 +159,34 @@ export async function runMetricsJob(deps: MetricsJobDeps): Promise<Metrics> {
   };
 
   await deps.metricsStore.write(metrics);
+
+  {
+    const toDisable = evaluateProbation(metrics, PROBATION_OPTIONS);
+    if (toDisable.length > 0) {
+      const current = await deps.overrides.read();
+      const disabled = new Set(current.disabledAgents ?? []);
+      for (const name of toDisable) disabled.add(name);
+      await deps.overrides.set("disabledAgents", [...disabled], "metrics-job");
+
+      // A silent disable is the same silent-failure class this whole
+      // mechanism exists to close — the operator must hear about it the same
+      // way they hear about `!disable`.
+      const detail = toDisable
+        .map((name) => {
+          const agentMetrics = metrics.notAchievedByAgent.find((a) => a.agent === name);
+          const rate = agentMetrics ? `${Math.round(agentMetrics.rate * 100)}%` : "?";
+          const runs = agentMetrics?.successRunCount ?? "?";
+          return `${name} (${rate} not-achieved over ${runs} runs)`;
+        })
+        .join(", ");
+      await deps.outbox?.postAlert(
+        "ops",
+        `⏸️ Auto-disabled for succeeding without achieving anything: ${detail}. Undo with \`!enable <agent-name>\`.`,
+      ).catch((error: unknown) => {
+        console.error("[metrics] failed to post probation alert", error);
+      });
+    }
+  }
+
   return metrics;
 }
