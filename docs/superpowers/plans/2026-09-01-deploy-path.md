@@ -909,14 +909,23 @@ Add the service:
       - "80:80"
       - "443:443"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The DIRECTORY, not ./caddy/Caddyfile itself. A bind mount whose host
+      # path does not exist yet makes Docker create a DIRECTORY at that path,
+      # and a directory named Caddyfile fails in a way that reads as a Caddy
+      # bug rather than a missing file. caddy/ always exists (.gitkeep); the
+      # Caddyfile inside it does not, until the supervisor writes it.
+      - ./caddy:/etc/caddy:ro
       - caddy-data:/data
       - caddy-config:/config
 ```
 
 and `caddy-data:` / `caddy-config:` to `volumes:`. `caddy-data` holds the certificates and **must** persist, or every restart re-requests them and walks into Let's Encrypt's rate limit.
 
-Create `caddy/.gitkeep` so the directory exists in a fresh clone, and add `caddy/Caddyfile` and `caddy/deployments.tsv` to `.gitignore` — they are generated, and committing them would let a stale copy contradict `deploys.yaml`.
+Create `caddy/.gitkeep`, and add `caddy/Caddyfile` and `caddy/deployments.tsv` to `.gitignore`.
+
+**Both generated files must stay gitignored, and this is not a style preference.** `./caddy` is bind-mounted into the supervisor read-write, so the supervisor rewrites those two files *inside the repo's own working tree on the VPS*. If either were tracked, every boot would leave the working tree dirty, and `scripts/auto-deploy.sh`'s `git merge --ff-only` would fail against a dirty tree — freezing all deploys, including the supervisor's own, until a human intervened. Do not commit a seed Caddyfile "so Caddy has something to start with".
+
+The consequence to accept instead: on a **fresh** host, `caddy` starts before any Caddyfile exists, fails to load a config, and is restarted by `restart: unless-stopped` until the supervisor's first boot writes one — seconds later, and self-healing. That short crash loop on first boot is the correct trade for a deploy pipeline that cannot wedge itself.
 
 - [ ] **Step 7: Verify and commit**
 
