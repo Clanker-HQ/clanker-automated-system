@@ -13,6 +13,7 @@ import { assessNovelty } from "../memory/novelty-gate.js";
 import { retrieveContext } from "../memory/retrieval.js";
 import { priorityScore, toPriority } from "../memory/scoring.js";
 import type { AgentDef } from "../registry.js";
+import type { WorldModel } from "../world/world-model.js";
 import { resolveCredentials } from "./credentials.js";
 import type { RunContext, RunEvent, Runner } from "./types.js";
 
@@ -223,6 +224,8 @@ export class SdkRunner implements Runner {
       /** Optional, same shape as `tasks`: without it queueTask keeps its old flat-priority behaviour and writes no memory records. */
       memory?: MemoryStore;
       memoryConfig?: MemoryConfig;
+      /** Optional, same shape as `tasks`/`memory`: without it recordFinding/updatePortfolioEntry are simply not registered. */
+      world?: WorldModel;
     } = {
       grants: [],
       pending: new PendingStore(process.cwd()),
@@ -777,6 +780,60 @@ export class SdkRunner implements Runner {
         })
       : undefined;
 
+    const worldDep = this.deps.world;
+    /**
+     * The world model's write side — agents/research and the scouts read it
+     * via `world.summaryForPrompt()` baked into their prompt (see
+     * Dispatcher), but until now had no way to write back, so every run's
+     * conclusion terminated in a Discord message. Gated on `worldDep` alone,
+     * same pattern as `taskQueueServer` above: not registered at all when the
+     * dependency isn't wired in, rather than registered-but-erroring.
+     */
+    const worldModelServer = worldDep
+      ? createSdkMcpServer({
+          name: "worldModel",
+          tools: [
+            tool(
+              "recordFinding",
+              "Record what you concluded about a topic in the shared world model, so other agents see it before repeating the same research. Call this at the end of every run, INCLUDING when the conclusion is that something is not worth pursuing and why — a recorded dead end is what stops the same ground being covered again in three months.",
+              {
+                topic: z.string().min(1).max(200),
+                conclusion: z.string().min(1),
+                confidence: z.enum(["low", "medium", "high"]),
+                sources: z.array(z.string()).default([]),
+              },
+              async ({ topic, conclusion, confidence, sources }) => {
+                await worldDep.writeFinding(topic, {
+                  topic,
+                  conclusion,
+                  confidence,
+                  sources,
+                  updatedAt: new Date().toISOString(),
+                });
+                return { content: [{ type: "text" as const, text: `Recorded finding for "${topic}".` }] };
+              },
+            ),
+            tool(
+              "updatePortfolioEntry",
+              "Replace this product's entry in the shared portfolio — its status, next review date, the bar it must clear, running cost, and leading-indicator notes. Replaces the whole entry (not a merge), so pass every field even when only one changed.",
+              {
+                slug: z.string().min(1).max(200),
+                purpose: z.string().min(1),
+                status: z.enum(["building", "live", "paused", "killed"]),
+                nextReviewAt: z.string().min(1),
+                bar: z.string().min(1),
+                monthlyCostUsd: z.number().nonnegative(),
+                notes: z.array(z.string()).default([]),
+              },
+              async (entry) => {
+                await worldDep.upsertPortfolioEntry(entry);
+                return { content: [{ type: "text" as const, text: `Updated portfolio entry "${entry.slug}".` }] };
+              },
+            ),
+          ],
+        })
+      : undefined;
+
     const stream = query({
       prompt: ctx.prompt,
       options: {
@@ -811,6 +868,7 @@ export class SdkRunner implements Runner {
           ...(githubPrServer ? { githubPr: githubPrServer } : {}),
           ...(taskQueueServer ? { taskQueue: taskQueueServer } : {}),
           ...(systemContextServer ? { systemContext: systemContextServer } : {}),
+          ...(worldModelServer ? { worldModel: worldModelServer } : {}),
         },
         ...(ctx.resume ? { resume: ctx.resume } : {}),
       },

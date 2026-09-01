@@ -5,6 +5,7 @@ import type { PendingStore } from "../control/pending.js";
 import type { TaskStore } from "../control/task-store.js";
 import type { Grant } from "../grants.js";
 import type { MemoryStore } from "../memory/memory-store.js";
+import type { WorldModel } from "../world/world-model.js";
 import { FakeRunner } from "./fake-runner.js";
 import { SdkRunner } from "./sdk-runner.js";
 import type { Runner } from "./types.js";
@@ -31,6 +32,7 @@ export function buildRunner(
     systemContext?: string;
     memory?: MemoryStore;
     memoryConfig?: MemoryConfig;
+    world?: WorldModel;
   },
   env: NodeJS.ProcessEnv = process.env,
 ): Runner {

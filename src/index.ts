@@ -133,6 +133,7 @@ function main(): void {
       memory,
       memoryConfig: config.memory,
       systemContext,
+      world,
       // Late-bound: `dispatcher` isn't constructed until after boot's config/
       // credential validation completes (same reason `bot` below is late-bound
       // too) — but this closure is only ever CALLED much later, once a real
