@@ -198,9 +198,16 @@ Add to `tests/metrics-job.test.ts`. Read the existing `fixtures()` helper at the
 Run: `npx vitest run tests/metrics-job.test.ts`
 Expected: FAIL — the agent is not disabled.
 
-- [ ] **Step 7: Wire it into the metrics job**
+- [ ] **Step 7: Wire it into the metrics job — all the way to boot**
 
-In `src/metrics.ts`, add an optional `overrides` dep to `MetricsJobDeps` and, after `await deps.metricsStore.write(metrics)`, call `evaluateProbation` and disable each returned agent. Optional so every existing caller and test keeps compiling. Post a Discord alert naming each disabled agent and its rate — a silent disable is the same silent-failure class this whole plan exists to remove. Thresholds: `minRuns: 5`, `maxNotAchievedRate: 0.6`.
+In `src/metrics.ts`, add a **required** `overrides: ConfigOverridesStore` dep to `MetricsJobDeps` and, after `await deps.metricsStore.write(metrics)`, call `evaluateProbation` and disable each returned agent. Post a Discord alert naming each disabled agent and its rate — a silent disable is the same silent-failure class this whole plan exists to remove. Thresholds: `minRuns: 5`, `maxNotAchievedRate: 0.6`.
+
+**Required, not optional.** An optional dep is what makes this task fail silently: the guard reads `if (deps.overrides)`, the scheduled path never passes one, and the check ends up fully implemented, fully tested, and never executed — the exact "computed by something, consumed by nothing" shape the task exists to fix. Making it required turns the omission into a `npm run typecheck` error, which is what points you at the two call sites below. Yes, this means updating the existing `runMetricsJob` calls in `tests/metrics-job.test.ts` to pass `f.overrides`; that is the point.
+
+Then follow the compiler to the end of the wire:
+1. `src/triggers/metrics.ts` — add `overrides` to `startMetrics`'s options and forward it. Also convert its callback from `void runMetricsJob(...).then().catch()` to `async`/`await` with a `try`/`catch`: croner awaits an async callback, so `protect: true` then genuinely prevents an overlapping run, and `job.trigger()` becomes awaitable, which is the only way to test this path.
+2. `src/index.ts` — pass the `overrides` it already constructs for the Governor. **This file is an excluded path; a human runs this step** (see Global Constraints).
+3. Add `tests/metrics-trigger.test.ts` covering the scheduled path end to end: seed six `success` runs carrying a `not-achieved` verdict, call `startMetrics` with a cron that never fires naturally (`"0 0 29 2 *"`), `await job.trigger()`, and assert the agent appears in `overrides.read()`'s `disabledAgents`. There was no test for this trigger before, which is how the gap survived.
 
 - [ ] **Step 8: Verify everything passes**
 
