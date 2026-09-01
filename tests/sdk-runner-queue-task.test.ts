@@ -70,6 +70,7 @@ async function collect(iterable: AsyncIterable<RunEvent>): Promise<RunEvent[]> {
 afterEach(() => {
   queryMock.mockReset();
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 describe("SdkRunner queueTask tool", () => {
@@ -377,8 +378,22 @@ describe("SdkRunner listMyTasks tool", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const tasks = new TaskStore(dir);
-    for (let i = 0; i < 25; i++) {
-      await tasks.create({ text: `mine ${i}`, createdBy: "agent:opportunity-scout" });
+    // TaskStore.create() stamps createdAt from the real system clock with
+    // only millisecond resolution — on a fast machine, several of these 25
+    // sequential creates can land in the same millisecond, and listMyTasks'
+    // sort (a stable sort on createdAt) then breaks that tie by whatever
+    // order readdir() happens to return, not creation order. Faking the
+    // clock and advancing it a full second between creates guarantees each
+    // task gets a distinct, correctly-ordered createdAt.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
+    try {
+      for (let i = 0; i < 25; i++) {
+        await tasks.create({ text: `mine ${i}`, createdBy: "agent:opportunity-scout" });
+        vi.advanceTimersByTime(1000);
+      }
+    } finally {
+      vi.useRealTimers();
     }
     await tasks.create({ text: "not mine", createdBy: "agent:improvement-scout" });
     await tasks.create({ text: "human", createdBy: "discord:owner" });

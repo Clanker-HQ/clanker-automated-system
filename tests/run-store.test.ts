@@ -84,10 +84,12 @@ describe("RunStore", () => {
 
   it("lists recent runs newest first", async () => {
     const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
-    for (const t of ["2026-08-26T01:00:00.000Z", "2026-08-26T02:00:00.000Z"]) {
-      const writer = await store.open(newRunId("a", new Date(t)), "a");
-      await writer.close({ status: "success", summary: "" });
-    }
+    // recordRunAt fakes the clock so startedAt actually lands at the given
+    // time — without it, both opens/closes stamp startedAt from the real
+    // (near-identical) wall-clock time and the "newest first" sort becomes
+    // a coin flip on a fast machine.
+    await recordRunAt(store, "a", new Date("2026-08-26T01:00:00.000Z"));
+    await recordRunAt(store, "a", new Date("2026-08-26T02:00:00.000Z"));
     const recent = await store.listRecent(10);
     expect(recent).toHaveLength(2);
     expect(recent[0]!.runId).toContain("02-00-00");
@@ -95,12 +97,10 @@ describe("RunStore", () => {
 
   it("lists recent runs across agents, ordered by time not name", async () => {
     const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
-    // Create runs in opposite alphabetical order to their timestamps
-    const zebra1 = await store.open(newRunId("zebra", new Date("2026-08-26T01:00:00.000Z")), "zebra");
-    await zebra1.close({ status: "success", summary: "" });
-
-    const apple5 = await store.open(newRunId("apple", new Date("2026-08-26T05:00:00.000Z")), "apple");
-    await apple5.close({ status: "success", summary: "" });
+    // Create runs in opposite alphabetical order to their timestamps.
+    // recordRunAt fakes the clock so each startedAt lands at the given time.
+    await recordRunAt(store, "zebra", new Date("2026-08-26T01:00:00.000Z"));
+    await recordRunAt(store, "apple", new Date("2026-08-26T05:00:00.000Z"));
 
     // Recent(1) must return the most recent by time (apple at 05:00), not by name
     const recent = await store.listRecent(1);
