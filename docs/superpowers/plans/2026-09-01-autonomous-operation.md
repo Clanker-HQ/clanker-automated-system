@@ -1112,7 +1112,9 @@ In `src/triggers/cron.ts`, read `StrategyStore.latest()` inside the callback —
 
 The overseer must never be skippable by this mechanism: it is the only thing that writes the allocation, so an allocation that paused it would be unrecoverable without operator intervention, forever. Give `agents/overseer/agent.yaml` no `category` (Step 1 makes that mean "always runs") **and** add an explicit test that the overseer runs under an all-zero allocation. Belt and braces, because the failure is permanent.
 
-The same reasoning applies to `setAgentEnabled` from Task C3 — if that tool has not already been written to refuse `agent: "overseer"` when `enabled: false`, add that refusal here with a test.
+**Amended after C3 shipped:** C3 gave the overseer a bespoke trigger, `startOverseer` in `src/triggers/overseer.ts`, and `src/index.ts:429` filters it out of `startCron` entirely, so it is already structurally unreachable by this skip. That makes the guard stronger than planned, not weaker — but it moves where the test belongs. Put the all-zero-allocation test on `startOverseer`, asserting it fires regardless of what the strategy says, since that is the code path the overseer actually runs on. Do **not** add allocation-reading to `startOverseer` in order to then test skipping it. Keeping `agents/overseer/agent.yaml` uncategorised is still worth doing as the second belt.
+
+The same reasoning applies to `setAgentEnabled` from Task C3 — **already done there**: `src/runner/sdk-runner.ts:956` refuses `agent: "overseer"` when `enabled: false`, and `tests/sdk-runner-world-tools.test.ts` covers both that refusal and the breaker reset on re-enable. Verify both still hold; add nothing if they do.
 
 - [ ] **Step 5: Categorise the existing cron agents**
 
