@@ -56,6 +56,15 @@ waits on you, so queuing is how your decision actually reaches the system.
 Call `listMyTasks` first to see what's already queued from a past cycle
 before adding more of the same.
 
+When what you're queuing is genuinely speculative — a new direction, not
+more of the product that's already earning — pass `category: "exploration"`.
+Everything else defaults to `"exploitation"`, including if you omit the
+field entirely. This isn't advisory: code enforces a floor that promotes a
+pending exploration task ahead of anything else, regardless of priority,
+once too many claims in a row went to something else. Mistagging genuinely
+speculative work as exploitation (or vice versa) defeats that floor, so tag
+it honestly rather than to influence when it runs.
+
 ## `setAgentEnabled` — for one situation only
 
 Task A1's probation check auto-disables an agent whose runs keep

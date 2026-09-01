@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { TaskStore } from "../src/control/task-store.js";
+import { EXPLORATION_INTERVAL, TaskStore, type Task } from "../src/control/task-store.js";
 
 function store(): TaskStore {
   return new TaskStore(mkdtempSync(join(tmpdir(), "cai-tasks-")));
@@ -61,6 +61,14 @@ describe("TaskStore", () => {
     expect(detailed.wantsDetail).toBe(true);
     const plain = await s.create({ text: "y", createdBy: "discord:owner" });
     expect(plain.wantsDetail).toBeUndefined();
+  });
+
+  it("defaults category to exploitation, and honours an explicit one", async () => {
+    const s = store();
+    const defaulted = await s.create({ text: "x", createdBy: "discord:owner" });
+    expect(defaulted.category).toBe("exploitation");
+    const tagged = await s.create({ text: "y", createdBy: "discord:owner", category: "exploration" });
+    expect(tagged.category).toBe("exploration");
   });
 
   it("findByPrefix matches on id prefix, and returns all matches when ambiguous", async () => {
@@ -216,5 +224,69 @@ describe("TaskStore", () => {
     const task = await first.create({ text: "x", createdBy: "discord:owner" });
     const second = new TaskStore(dir);
     expect(await second.get(task.id)).toEqual(task);
+  });
+
+  describe("exploration floor", () => {
+    function iso(i: number): string {
+      return `2026-08-28T00:00:${String(i).padStart(2, "0")}.000Z`;
+    }
+
+    it("claims a pending exploration task once the interval has elapsed without one", async () => {
+      const s = store();
+      const exploration = await s.create({ text: "explore", createdBy: "discord:owner", category: "exploration", priority: 1 });
+      for (let i = 0; i < EXPLORATION_INTERVAL; i++) {
+        await s.create({ text: `exploit ${i}`, createdBy: "discord:owner", priority: 90 });
+      }
+      const claimed: (Task | null)[] = [];
+      for (let i = 0; i < EXPLORATION_INTERVAL; i++) {
+        claimed.push(await s.claimNextPending(new Set(), iso(i)));
+      }
+      // The exploration task is always the lowest priority in the pool, so
+      // priority order alone would never surface it — only the floor does.
+      expect(claimed[EXPLORATION_INTERVAL - 1]?.id).toBe(exploration.id);
+    });
+
+    it("does not starve the queue when no exploration task is pending", async () => {
+      const s = store();
+      for (let i = 0; i < EXPLORATION_INTERVAL + 3; i++) {
+        await s.create({ text: `exploit ${i}`, createdBy: "discord:owner", priority: 90 });
+      }
+      for (let i = 0; i < EXPLORATION_INTERVAL + 3; i++) {
+        expect(await s.claimNextPending(new Set(), iso(i))).not.toBeNull();
+      }
+    });
+
+    it("does not reset the counter when the interval elapses with no exploration pending, so a later one is promoted immediately", async () => {
+      const s = store();
+      for (let i = 0; i < EXPLORATION_INTERVAL + 2; i++) {
+        await s.create({ text: `exploit ${i}`, createdBy: "discord:owner", priority: 90 });
+      }
+      // Run well past the interval with nothing to promote — if this wrongly
+      // reset the counter, the exploration task below would have to wait
+      // another EXPLORATION_INTERVAL claims instead of being promoted at once.
+      for (let i = 0; i < EXPLORATION_INTERVAL + 2; i++) {
+        await s.claimNextPending(new Set(), iso(i));
+      }
+      const exploration = await s.create({ text: "explore", createdBy: "discord:owner", category: "exploration", priority: 1 });
+      await s.create({ text: "urgent exploit", createdBy: "discord:owner", priority: 99 });
+      const claimed = await s.claimNextPending(new Set(), "2026-08-28T00:01:00.000Z");
+      expect(claimed?.id).toBe(exploration.id);
+    });
+
+    it("persists the claim count across a new TaskStore instance over the same directory", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "cai-tasks-"));
+      const first = new TaskStore(dir);
+      for (let i = 0; i < EXPLORATION_INTERVAL - 1; i++) {
+        await first.create({ text: `exploit ${i}`, createdBy: "discord:owner", priority: 90 });
+      }
+      for (let i = 0; i < EXPLORATION_INTERVAL - 1; i++) {
+        await first.claimNextPending(new Set(), iso(i));
+      }
+      const second = new TaskStore(dir);
+      const exploration = await second.create({ text: "explore", createdBy: "discord:owner", category: "exploration", priority: 1 });
+      await second.create({ text: "urgent exploit", createdBy: "discord:owner", priority: 99 });
+      const claimed = await second.claimNextPending(new Set(), "2026-08-28T00:01:00.000Z");
+      expect(claimed?.id).toBe(exploration.id);
+    });
   });
 });

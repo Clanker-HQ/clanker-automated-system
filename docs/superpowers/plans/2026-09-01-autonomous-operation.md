@@ -955,7 +955,7 @@ git commit -m "feat: add the overseer agent"
 - Consumes: the existing `Task` type and claim path in `src/control/task-store.ts` — read `claimNext`/`nextPending` (around line 144, "Highest priority first, ties broken by creation order") before changing anything.
 - Produces: `Task.category: "exploration" | "exploitation" | "maintenance"`, defaulting to `"exploitation"` for every task that does not set one, including human `!task` requests.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // The floor: if the last EXPLORATION_INTERVAL claims contained no exploration
@@ -971,15 +971,15 @@ it("does not starve the queue when no exploration task is pending", async () => 
 });
 ```
 
-- [ ] **Step 2: Run it, watch it fail, implement**
+- [x] **Step 2: Run it, watch it fail, implement**
 
 `EXPLORATION_INTERVAL = 5`. Persist the count of claims since the last exploration claim next to the other durable state, so a restart does not reset the floor.
 
-- [ ] **Step 3: Thread `category` through `queueTask`**
+- [x] **Step 3: Thread `category` through `queueTask`**
 
 Add it to the Zod schema as an optional field defaulting to `"exploitation"`, and document in the overseer's prompt that exploration work must be tagged as such.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 npm run typecheck && npx vitest run

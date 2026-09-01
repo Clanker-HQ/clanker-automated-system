@@ -110,6 +110,25 @@ describe("SdkRunner queueTask tool", () => {
     expect(wake).toHaveBeenCalledTimes(1);
   });
 
+  it("defaults category to exploitation, and honors an explicit exploration tag", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    await handler({ text: "Default-category idea." });
+    await handler({ text: "Explore something new.", category: "exploration" });
+
+    const created = await tasks.list();
+    expect(created.find((t) => t.text === "Default-category idea.")?.category).toBe("exploitation");
+    expect(created.find((t) => t.text === "Explore something new.")?.category).toBe("exploration");
+  });
+
   it("honors an explicit priority below the self-queued default", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));

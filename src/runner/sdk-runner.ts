@@ -636,8 +636,13 @@ export class SdkRunner implements Runner {
                       key: z.string().max(200).optional(),
                       importance: z.number().int().min(1).max(10).default(5),
                       goalAlignment: z.number().min(0).max(1).default(0.5),
+                      // Matches TaskCategory in task-store.ts. Defaulted here too
+                      // (not just in TaskStore.create()) so the tool's own schema
+                      // documents the default to the model, the same as every
+                      // other optional field on this tool.
+                      category: z.enum(["exploration", "exploitation", "maintenance"]).default("exploitation"),
                     },
-                    async ({ text, priority, domain, subject, key, importance, goalAlignment }) => {
+                    async ({ text, priority, domain, subject, key, importance, goalAlignment, category }) => {
                       // A hard cap enforced here, not just in the prompt: the code is
                       // the boundary, the same posture detectOutwardEffect already
                       // uses for outward effects — an over-eager or confused model
@@ -714,6 +719,7 @@ export class SdkRunner implements Runner {
                         priority: computedPriority,
                         createdBy: `agent:${agent.name}`,
                         wantsDetail: true,
+                        category,
                       });
                       if (memory && cfg?.enabled) {
                         // Best-effort for the same reason as the suppressed
