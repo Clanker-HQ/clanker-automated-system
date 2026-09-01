@@ -843,31 +843,87 @@ git commit -m "feat: grade the overseer's expectations mechanically"
 - Consumes: `StrategyStore` (C1), `gradeExpectations` (C2), `WorldModel` (B1), `loadGoals` from `src/goals.js` — **this is the first code in the system to actually call `loadGoals`**, closing audit finding #1.
 - Produces: a weekly run that writes one `Strategy` and queues tasks.
 
-- [ ] **Step 1: Read the schema before writing the agent config**
+- [ ] **Step 1: Write `agents/overseer/agent.yaml`**
 
-`schema/capabilities.json` lists every legal value for `tier`, `approval`, and `permissions`. `src/registry.ts` rejects at boot any field the code cannot enforce. Confirm which `tier` permits `Write` with no grants before you write `agent.yaml` — do not assume.
+```yaml
+name: overseer
+enabled: true
+authoredBy: claude-local
+description: >-
+  Reads goals.yaml, the world model, and the previous cycle's graded
+  expectations, then writes the next strategy and queues the work it implies.
+  Decides only — never implements, merges, or spends.
 
-- [ ] **Step 2: Write `agents/overseer/agent.yaml`**
+trigger:
+  type: cron
+  schedule: "0 5 * * 1"   # Monday 05:00 — after reflection (03:00) and metrics (04:00), so both are fresh
+  timezone: Europe/Berlin
 
-`trigger.type: cron`, `schedule: "0 5 * * 1"` (Monday 05:00, one hour after the metrics pass at 04:00 so it reads a fresh snapshot), `timezone: Europe/Berlin`. `model: claude-sonnet-5`, `effort: high` — this is the one consequential judgment in the system and the one place not to economise. `maxTurns: 40`, `timeoutMinutes: 30`, `maxBudgetUsd: 3.00`. `grantRefs: []` — no outward reach at all. `outbox: { discord: ops, notifyOn: [success, failure] }`.
+run:
+  model: claude-opus-5
+  effort: high
+  maxTurns: 40
+  timeoutMinutes: 30
+  maxBudgetUsd: 5.00
 
-- [ ] **Step 3: Write `agents/overseer/prompt.md`**
+permissions:
+  allowedTools: [Read, Glob, Grep]
+  disallowedTools: []
 
-It must state: what it reads (goals, world model, last strategy, verdicts, metrics); that its output is a strategy plus queued tasks and that it must **never** implement anything itself; that every expectation it records must be checkable by one of the three `Expectation.check` kinds in `src/world/strategy.ts`; that it must explain in `changeReason` why this cycle differs from the last; and that when a `means` constraint in `goals.yaml` blocks every available path, it must say so explicitly, because that is the one thing only the operator can resolve.
+tier: readonly
+approval: notify
+grantRefs: []
 
-- [ ] **Step 4: Write the failing trigger test**
+outbox:
+  discord: ops
+  notifyOn: [success, failure]
+```
 
-In `tests/overseer-trigger.test.ts`: assert `startOverseer` schedules on the configured cron and that a fire grades the previous cycle's expectations before the run starts, passing the verdicts into the prompt. Model the test on `tests/metrics-job.test.ts` and the existing trigger tests.
+Three of these are settled, not defaults to reconsider:
 
-- [ ] **Step 5: Run it, watch it fail, implement `src/triggers/overseer.ts`**
+**`tier: readonly` is correct and sufficient.** `decide()` (`src/grants.ts`) returns `allow` immediately when `detectOutwardEffect` finds nothing, and that function only fires on Bash (`git push`, `curl`/`wget`, `npm publish`, `gh`), `WebFetch`, and the git/GitHub MCP tools. Local file access and MCP tools like `queueTask` are never outward effects, so they work at every tier. `readonly` therefore denies everything outward with a clear reason while leaving this agent everything it actually needs. `approval: notify`, not `auto` — the schema rejects `auto` on a non-autonomous tier, and the other three scouts already pair `readonly` with `notify`.
 
-Follow `src/triggers/metrics.ts` exactly — same croner options (`protect: true`), same boot log line, same `.catch` posture.
+**`model: claude-opus-5`.** This is the one decision in the system that every other decision inherits from, it runs 52 times a year, and its job is cross-cutting synthesis — noticing that flat revenue, a tripping breaker, and three dead ends are one problem. Its output also *commissions* research directions rather than only ranking existing ones, so a better model raises the system's idea-supply ceiling instead of being capped by it. The cost difference at this cadence is rounding error against the primary goal.
 
-- [ ] **Step 6: Wire into `src/index.ts`**
+**`maxBudgetUsd: 5.00`, not 3.00.** A cycle truncated at the ceiling produces no strategy at all, which is strictly worse than a more expensive one. **Check `governor.dailyBudgetUsd` in `config.yaml` before deploying** — it is `10`, and Monday already runs reflection, metrics, `improvement-scout` and `opportunity-scout`. If the overseer gets refused on budget it surfaces only as a Governor refusal alert. Raising the daily budget is a `config.yaml` change and therefore an operator decision, not one to make inside this task.
 
-Lazily imported and gated on a config flag, exactly like the metrics and reflection triggers.
+- [ ] **Step 2: Add the `writeStrategy` tool**
 
-- [ ] **Step 7: Verify and commit**
+**Files:** `src/runner/sdk-runner.ts`, `tests/` (extend the world-tools test file from Task B3).
+
+The agent must not hand-author strategy JSON with the `Write` tool. `StrategyStore.write` rejects an allocation that does not sum to 100 (Task C1), so a hand-written file that is off by three produces *no strategy for that cycle* — and the next cycle then has nothing to grade, silently. Expose a `writeStrategy` MCP tool instead, built exactly like `recordFinding` from Task B3: Zod-validated input, `StrategyStore.write` behind it, and a tool error returned to the agent when validation fails, so it can correct itself mid-run.
+
+Same for clearing a disable — see Step 3.
+
+- [ ] **Step 3: Add the `setAgentEnabled` tool**
+
+**Files:** `src/runner/sdk-runner.ts`, tests alongside `writeStrategy`.
+
+Task A1 auto-disables an agent whose successful runs mostly achieve nothing. Nothing in the system can undo that except the operator typing `!enable`, so one bad week for `builder` halts every build task indefinitely, and the overseer can see the resulting queue starvation while being unable to act on it.
+
+Give the overseer a Zod-validated `setAgentEnabled({ agent, enabled, reason })` tool that writes the same `disabledAgents` override `!disable`/`!enable` use (`src/config-overrides.ts`). Post the change and its reason to Discord, exactly as A1's auto-disable does.
+
+**Re-enabling must also reset the circuit breaker**, the way `!enable` does — see how `src/control/bot.ts` handles `!enable` and follow it. An agent can be halted by *two* independent mechanisms (the `disabledAgents` override and a tripped breaker in `src/state/breaker.ts`), and clearing only one leaves it just as stuck while looking fixed. Refuse an unknown agent name, naming the agents that do exist, as `!disable` already does.
+
+This is deliberately a **configuration** capability, not a code one. Config changes are bounded, reversible, and still capped by the Governor; the overseer is the one agent whose reasoning nobody reviews, so it must not also be the one making unreviewed code changes. What to do when an agent is broken rather than merely disabled is Task C6, not this.
+
+- [ ] **Step 4: Write `agents/overseer/prompt.md`**
+
+It must state: what it reads (goals, world model, last strategy, verdicts, metrics); that its output is a strategy plus queued tasks, written with the `writeStrategy` tool — never by hand-editing a file; that it must **never** implement anything itself; that every expectation it records must be checkable by one of the three `Expectation.check` kinds in `src/world/strategy.ts`; that it must explain in `changeReason` why this cycle differs from the last; that `setAgentEnabled` exists for re-enabling an agent auto-disabled by the probation check, and is for that case only, with a stated reason; and that when a `means` constraint in `goals.yaml` blocks every available path, it must say so explicitly, because that is the one thing only the operator can resolve.
+
+- [ ] **Step 5: Write the failing trigger test**
+
+In `tests/overseer-trigger.test.ts`: assert `startOverseer` schedules on the configured cron and that a fire grades the previous cycle's expectations before the run starts, passing the verdicts into the prompt. Model the test on `tests/metrics-trigger.test.ts` (Task A1's fix) — it solved driving a cron job deterministically with a never-firing schedule and `await job.trigger()`.
+
+- [ ] **Step 6: Run it, watch it fail, implement `src/triggers/overseer.ts`**
+
+Follow `src/triggers/metrics.ts` exactly — same croner options (`protect: true`), same async callback, same boot log line, same catch posture.
+
+- [ ] **Step 7: Wire into `src/index.ts`**
+
+Lazily imported and gated on a config flag, exactly like the metrics and reflection triggers. Then **trace it from boot and confirm the overseer actually receives `StrategyStore`, `WorldModel` and the new tools** — three tasks in this plan have shipped or nearly shipped features that nothing reachable ever called.
+
+- [ ] **Step 8: Verify and commit**
 
 ```bash
 npm run typecheck && npx vitest run
@@ -957,6 +1013,53 @@ Every due review ends in exactly one of: mark `killed` (and queue a deprovision 
 npm run typecheck && npx vitest run
 git add src/world/reviews.ts tests/reviews.test.ts src/world/world-model.ts tests/world-model.test.ts agents/overseer/prompt.md
 git commit -m "feat: force a kill-or-justify decision on every portfolio review"
+```
+
+---
+
+### Task C6: Break the single-builder deadlock
+
+**Why:** `builder` is the only agent that can originate a code change. If it stops working, nothing can fix it — including itself. Three distinct ways it stops:
+
+1. **Auto-disabled** by Task A1's probation check after a bad week. Closed by C3's `setAgentEnabled`.
+2. **Breaker tripped** by three consecutive hard failures. Also closed by C3, *provided* `setAgentEnabled` resets the breaker the way `!enable` does.
+3. **Genuinely broken** — its prompt or the code it depends on is wrong. Nothing closes this. The overseer can queue "fix builder", the router sends it to `builder`, and the task fails or sits forever while queue starvation climbs.
+
+Case 3 is the real hole, and it is the reason not to solve this by giving the overseer code access: the fix is a second pair of hands, not fewer checks on the one agent nobody reviews.
+
+**Files:**
+- Create: `agents/repair/agent.yaml`, `agents/repair/prompt.md`
+- Modify: `src/control/dispatcher.ts` and its tests, if the investigation in Step 1 shows routing needs it
+
+**Interfaces:**
+- Consumes: the existing `builder-push` and `infra-repo` grants — **reuse them, do not add a grant or a credential.** A second agent holding the same narrowly-scoped push grant adds no reach the system did not already have.
+
+- [ ] **Step 1: Investigate before designing**
+
+Answer these against the code and write the answers into the commit message:
+- Does the LLM router (`src/control/llm-router.ts`) see disabled agents in its specialist menu, and does `src/control/dispatcher.ts` skip an agent that is disabled or breaker-tripped when claiming a task? Read `Dispatcher.claimAndStart` and `Governor.admit`.
+- What happens today to a dispatched task whose routed agent is disabled — does it fail, retry, or sit `pending` forever? This decides whether C6 needs a routing change or only a second agent.
+
+- [ ] **Step 2: Write `agents/repair/agent.yaml`**
+
+`trigger.type: dispatched`. Same `permissions.allowedTools` and `grantRefs` as `agents/builder/agent.yaml` — read that file and mirror it. A `description` that makes the router pick it *only* for repairing the system's own agents and infrastructure, never for ordinary feature work, so it does not simply become a second builder competing for every task.
+
+`tier: autonomous`, `approval: auto`, per this project's standing preference in `CLAUDE.md` — its containment is the branch-scoped push grant and `pr-reviewer` gating the merge, exactly as `builder`'s is.
+
+- [ ] **Step 3: Write `agents/repair/prompt.md`**
+
+Narrow: diagnose why a named agent is failing, make the smallest change that fixes it, open a PR. It must never widen a grant, a budget, or an `EXCLUDED_PATHS` entry — and it cannot, since `mergePR` refuses those paths regardless, but the prompt should say so rather than letting it waste a run discovering it.
+
+- [ ] **Step 4: Make the routing actually reach it**
+
+Whatever Step 1 established. At minimum, add a test proving a repair task routes to `repair` and not to a disabled `builder`.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+npm run typecheck && npx vitest run
+git add agents/repair src/control/dispatcher.ts tests/
+git commit -m "feat: add a repair agent so a broken builder is not a dead end"
 ```
 
 ---
