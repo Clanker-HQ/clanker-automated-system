@@ -1054,7 +1054,9 @@ Case 3 is the real hole, and it is the reason not to solve this by giving the ov
 - Modify: `src/control/dispatcher.ts` and its tests, if the investigation in Step 1 shows routing needs it
 
 **Interfaces:**
-- Consumes: the existing `builder-push` and `infra-repo` grants — **reuse them, do not add a grant or a credential.** A second agent holding the same narrowly-scoped push grant adds no reach the system did not already have.
+- Consumes: the existing `builder-push` grant — **reuse it, do not add a grant or a credential.** A second agent holding the same narrowly-scoped push grant adds no reach the system did not already have. (`infra-repo`, named here in an earlier draft, is `pr-reviewer`'s read grant; `builder` holds `builder-push` alone. `grantRefs: [builder-push]` is what Step 2 mirrors.)
+
+**The branch namespace is not negotiable, and that is the point.** `builder-push` is scoped to `branches: ["agent/builder/*"]`, and `pushBranch`/`openPR` in `src/runner/sdk-runner.ts` additionally enforce that same `agent/builder/` prefix with a hardcoded regex the comment there describes as one "no grant or tier can override". So `repair` pushes into `agent/builder/*` like everything else. Do **not** widen `builder-push`'s `branches`, add an `agent/repair/*` pattern, or touch that regex to make the branch name read nicer — the namespace is really "the one namespace agent-authored branches live in", and a cosmetic rename would trade the system's only enforced push boundary for a tidier branch name. `pushBranch` is registered for any agent whose runner has a `gitPusher` (wired once at `src/index.ts:144`), so the grant check is the actual gate and no wiring change is needed.
 
 - [ ] **Step 1: Investigate before designing**
 
