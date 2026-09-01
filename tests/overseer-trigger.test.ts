@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -115,6 +115,51 @@ describe("startOverseer", () => {
       expect(promptContext).toContain("netIncomeUsd 10 < 50");
       expect(promptContext).toContain("Earn enough to cover its own hosting costs");
       expect(promptContext).toContain("Push the CLI product toward its first paying customer.");
+    } finally {
+      job.stop();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs regardless of the allocation in the latest strategy, even an all-zero one", async () => {
+    // The overseer is the only thing that writes strategy, so an allocation
+    // that paused it would be unrecoverable without operator intervention.
+    // startOverseer is a bespoke trigger (src/index.ts filters "overseer"
+    // out of startCron entirely) that never reads allocation at all — this
+    // proves that structurally, rather than adding allocation-reading here
+    // just to then test skipping it. StrategyStore.write() itself refuses an
+    // allocation that doesn't sum to 100, so a genuinely all-zero one is
+    // written straight to disk here rather than through the store.
+    const f = fixtures();
+    const strategyDir = join(f.dataDir, "world", "strategy");
+    mkdirSync(strategyDir, { recursive: true });
+    writeFileSync(
+      join(strategyDir, "strategy-2026-09-01T05-00-00-000Z.json"),
+      JSON.stringify({
+        writtenAt: "2026-09-01T05:00:00.000Z",
+        intent: "test",
+        allocation: { research: 0, build: 0, maintain: 0 },
+        expectations: [],
+        changeReason: "",
+      }),
+    );
+
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const job = startOverseer({
+      agent: agent(),
+      orchestrator,
+      strategyStore: f.strategyStore,
+      world: f.world,
+      metricsStore: f.metricsStore,
+      revenue: f.revenue,
+      goalsPath: f.goalsPath,
+      now: () => NOW,
+    });
+
+    try {
+      await job.trigger();
+      expect(executeRun).toHaveBeenCalledTimes(1);
     } finally {
       job.stop();
       rmSync(f.dataDir, { recursive: true, force: true });

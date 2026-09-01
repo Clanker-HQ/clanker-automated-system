@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import {
-  APPROVALS, EFFORTS, MODELS, TIERS, TOOLS, AgentSchema,
+  APPROVALS, CATEGORIES, EFFORTS, MODELS, TIERS, TOOLS, AgentSchema,
 } from "../src/agent-schema.js";
 
 mkdirSync("schema", { recursive: true });
@@ -22,6 +22,7 @@ writeFileSync(
       approvalModes: APPROVALS,
       models: MODELS,
       efforts: EFFORTS,
+      categories: CATEGORIES,
       triggerTypes: ["cron"],
       notYetAvailable: {
         "capabilities.browser.enabled": "Plan C (browser capability)",

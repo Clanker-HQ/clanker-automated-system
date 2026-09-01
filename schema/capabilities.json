@@ -35,6 +35,11 @@
     "xhigh",
     "max"
   ],
+  "categories": [
+    "research",
+    "build",
+    "maintain"
+  ],
   "triggerTypes": [
     "cron"
   ],

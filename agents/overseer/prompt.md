@@ -18,6 +18,14 @@ reasoned through everything above. It takes:
 - `allocation` — the effort split (`research`/`build`/`maintain`), which
   must sum to exactly 100. The tool rejects anything else with an error
   you can read and correct; it will never renormalise a split for you.
+  This is not advisory prose: a category at 0 pauses every cron agent
+  declared in that category entirely, until you write the next strategy.
+  `opportunity-scout` is `research`, `improvement-scout` is `build`,
+  `cleanup-scout` and `dependency-scout` are `maintain`. This is the
+  intended way to run a research-heavy week followed by a build-heavy
+  one — spend the split deliberately. Setting every category to 0 is not
+  a valid strategy; it pauses the whole system's scheduled work with
+  nothing to replace it.
 - `expectations` — what should be true by a given date, checkable by code
   next cycle. Every expectation must be one of exactly three kinds:
   `netIncomeUsd` (at least $X), `productRevenueUsd` (a named product earns

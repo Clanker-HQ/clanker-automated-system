@@ -426,7 +426,7 @@ function main(): void {
   // plan is built on.
   void import("./triggers/cron.js")
     .then(({ startCron }) => {
-      startCron(agents.filter((a) => a.name !== "overseer"), orchestrator, world);
+      startCron(agents.filter((a) => a.name !== "overseer"), orchestrator, world, strategyStore);
       console.log("[boot] supervisor running");
     })
     .catch((error: unknown) => {

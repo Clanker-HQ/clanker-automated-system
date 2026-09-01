@@ -11,6 +11,8 @@ trigger:
   schedule: "0 6 * * *"
   timezone: Europe/Berlin
 
+category: research
+
 run:
   model: claude-haiku-4-5
   effort: low
