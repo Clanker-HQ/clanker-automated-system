@@ -547,6 +547,8 @@ it("still permits deploys.yaml — the whole point is that agents write it", () 
 });
 ```
 
+**Two existing assertions in that file will go red, and both are meant to.** `tests/excluded-paths.test.ts:25` asserts `EXCLUDED_PATHS` equals an exact array, and `:49` asserts `EXCLUDED_PREFIXES` equals `["agents/"]`. They are change-detector guards: adding to either list is supposed to require editing the test, so nobody widens or narrows the set by accident. Update both to include the new entries **in the same commit**. Do not delete either assertion, do not relax it to `toContain`, and above all do not "fix" the red by dropping the exclusion — the exclusion is the deliverable and the test is the record of it.
+
 - [ ] **Step 3: Run both and watch them fail**
 
 Run: `npx vitest run tests/self-build-gate.test.ts tests/excluded-paths.test.ts`
