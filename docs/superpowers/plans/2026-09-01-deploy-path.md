@@ -1720,6 +1720,16 @@ Extend "Deploying, and staying deployed": how `deploys.yaml` works, that product
 
 - [ ] **Step 6: Verify and commit**
 
+The TypeScript suite proves nothing about this task — everything it adds is bash. So syntax-check both scripts explicitly before committing:
+
+```bash
+bash -n scripts/deploy-products.sh && bash -n scripts/auto-deploy.sh
+```
+
+Expected: no output, exit 0. A syntax error here would otherwise first surface as a cron job that silently fails on the VPS, which is the worst place to find it. If `shellcheck` is available, run it too and fix anything it flags at `warning` level or above; if it is not available, do not install it — the syntax check is the requirement.
+
+Then the usual, to confirm nothing else regressed:
+
 ```bash
 npm run typecheck && npx vitest run
 git add scripts/deploy-products.sh scripts/auto-deploy.sh .gitignore docs/decisions.md README.md
