@@ -36,6 +36,7 @@ import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
 import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
+import { WorldModel } from "./world/world-model.js";
 
 const ROOT = process.env.APP_ROOT ?? process.cwd();
 const DATA_DIR = process.env.DATA_DIR ?? join(ROOT, "data");
@@ -78,6 +79,7 @@ function main(): void {
 
   const tasks = new TaskStore(DATA_DIR);
   const memory = new MemoryStore(DATA_DIR);
+  const world = new WorldModel(DATA_DIR);
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
@@ -231,6 +233,7 @@ function main(): void {
     orchestrator,
     dataDir: DATA_DIR,
     memory,
+    world,
     memoryConfig: config.memory,
     suggestSuccessors: buildSuccessorSuggester(),
     // No agent has been chosen yet at this point (a routing failure, or no
