@@ -379,7 +379,7 @@ function main(): void {
   // Imported lazily so a boot failure above never starts a schedule.
   void import("./triggers/cron.js")
     .then(({ startCron }) => {
-      startCron(agents, orchestrator);
+      startCron(agents, orchestrator, world);
       console.log("[boot] supervisor running");
     })
     .catch((error: unknown) => {
