@@ -23,3 +23,11 @@ dist/
 # scripts/auto-deploy.sh's `git merge --ff-only`.
 caddy/Caddyfile
 caddy/deployments.tsv
+
+# scripts/deploy-products.sh's own state: per-slug last-good SHAs and cloned
+# product repos. PRODUCTS_DIR defaults outside this working tree (../products)
+# so a dirty product clone can never block auto-deploy.sh's `git merge
+# --ff-only`, but both are gitignored too in case either is ever pointed
+# inside it.
+.deploy-state/
+products/

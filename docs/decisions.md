@@ -39,6 +39,27 @@ isolated in one module so a future move to API-key billing stays a config
 change, not a rewrite; `ALLOW_API_BILLING=true` is the explicit, deliberate
 opt-out.
 
+## A deployed product never uses the operator's Claude subscription
+
+"Subscription billing, not API billing" above grounds that choice partly on
+"no user-facing product is planned." The deploy path
+(`docs/superpowers/specs/2026-09-01-deploy-path-design.md`) introduces
+exactly that, so the reasoning needs a carve-out, not a reversal: the
+supervisor itself still runs on the operator's subscription — nothing about
+running *this system's own* agents changed — but no deployed product ever
+does. Anthropic doesn't permit offering claude.ai login or rate limits to a
+third-party product's end users, and `goals.yaml`'s `means` forbid violating
+a service's terms regardless.
+
+What replaced it: a product that needs a model gets its own paid API key,
+from whichever provider `research` selects for it per product — cost,
+capability, and whether that provider's terms even permit the use. Nothing
+in the product path is Anthropic-specific. `deploys.yaml`'s `env` field is
+the seam: an entry names the variable *names* its container needs; the
+values live only in the host's product environment file and never enter the
+supervisor's container, so a product receives only what its own entry
+declared and never another product's key. See design §7.
+
 ## Accepted risk: the PR reviewer runs a PR's code directly, with its own live credentials
 
 `pr-reviewer` executes a PR's code (e.g. `npm test`) in its own environment,
