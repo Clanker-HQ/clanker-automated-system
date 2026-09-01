@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskStore } from "../src/control/task-store.js";
+import { ProbeStore } from "../src/deploy/probe-store.js";
 import { buildDigestText } from "../src/digest.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import { RunStore, newRunId } from "../src/run-store.js";
 import type { Metrics } from "../src/state/metrics-store.js";
 import { MetricsStore } from "../src/state/metrics-store.js";
+import { startDigest } from "../src/triggers/digest.js";
 
 function stores() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-"));
@@ -365,5 +367,80 @@ describe("buildDigestText — metrics section", () => {
     expect(text).not.toContain("null");
     expect(text).not.toContain("NaN");
     rmSync(dataDir, { recursive: true, force: true });
+  });
+});
+
+describe("buildDigestText — deploy liveness section", () => {
+  it("includes a warning line when a declared deployment is not serving", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-probe-"));
+    const probeStore = new ProbeStore(dataDir);
+    await probeStore.write([
+      {
+        slug: "status-page",
+        url: "https://status.example.com/",
+        lastProbeAt: "2026-08-27T23:50:00.000Z",
+        ok: false,
+        consecutiveFailures: 3,
+        detail: "HTTP 502",
+      },
+    ]);
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, probeStore, declaredSlugs: ["status-page"] });
+
+    expect(text).toContain("status-page");
+    expect(text).toContain("HTTP 502");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // The point of this test: probeStore/declaredSlugs are optional on
+  // buildDigestText, mirroring metricsStore, so an omission at the call site
+  // that wires startDigest into production would compile fine and just never
+  // run. Going through startDigest itself — the same function src/index.ts
+  // calls — proves the wiring actually forwards them, not a hand-written
+  // reimplementation that could quietly drift from what ships.
+  it("reaches the posted digest through startDigest, the production call site", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-probe-trigger-"));
+    const probeStore = new ProbeStore(dataDir);
+    const triggerNow = new Date("2026-09-01T10:00:00.000Z");
+    await probeStore.write([
+      {
+        slug: "status-page",
+        url: "https://status.example.com/",
+        lastProbeAt: new Date(triggerNow.getTime() - 5 * 60 * 1000).toISOString(),
+        ok: false,
+        consecutiveFailures: 1,
+        detail: "HTTP 500",
+      },
+    ]);
+    const posted: string[] = [];
+    const outbox = {
+      postAlert: async (_channel: string, text: string) => {
+        posted.push(text);
+        return "delivered" as const;
+      },
+    };
+    // Feb 29 on a non-leap year — never fires on its own, so only trigger() runs the job.
+    const NEVER = "0 0 29 2 *";
+    const job = startDigest({
+      schedule: NEVER,
+      timezone: "UTC",
+      channel: "ops",
+      store,
+      tasks,
+      outbox,
+      probeStore,
+      declaredSlugs: ["status-page"],
+      now: () => triggerNow,
+    });
+    try {
+      await job.trigger();
+      expect(posted).toHaveLength(1);
+      expect(posted[0]).toContain("status-page");
+    } finally {
+      job.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });

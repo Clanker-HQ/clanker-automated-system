@@ -22,6 +22,7 @@ import { makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
 import { writeDeployArtifacts } from "./deploy/caddyfile.js";
 import { type Deployment, loadDeploys } from "./deploy/deploys-schema.js";
+import { ProbeStore } from "./deploy/probe-store.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
 import { type Grant, loadGrants, validateGrantRefs } from "./grants.js";
@@ -210,6 +211,7 @@ async function main(): Promise<void> {
 
   const runStore = new RunStore(DATA_DIR);
   const metricsStore = new MetricsStore(DATA_DIR);
+  const probeStore = new ProbeStore(DATA_DIR);
   const approvedGrants = new ApprovedGrantsStore(DATA_DIR);
   const governor = new Governor({
     dataDir: DATA_DIR, config, store: runStore, overrides,
@@ -339,6 +341,8 @@ async function main(): Promise<void> {
           memory,
           memoryConfig: config.memory,
           metricsStore,
+          probeStore,
+          declaredSlugs: deployments.map((d) => d.slug),
         });
       })
       .catch((error: unknown) => {
@@ -408,6 +412,19 @@ async function main(): Promise<void> {
       });
   }
 
+  // Only when something is actually declared: a prober with nothing to probe
+  // would write an empty file every 15 minutes forever and log a line saying
+  // it probed nothing.
+  if (deployments.length > 0) {
+    void import("./triggers/probe.js")
+      .then(({ startProbe }) => {
+        startProbe({ schedule: "*/15 * * * *", timezone: config.digest.timezone, deployments, store: probeStore });
+      })
+      .catch((error: unknown) => {
+        console.error("[boot] failed to start the deployment prober", error);
+      });
+  }
+
   // Gated on the agent's own `enabled` field (agents/overseer/agent.yaml),
   // the same flag startCron's generic loop already checks for every other
   // cron agent — there is no separate config.overseer.enabled, since the
@@ -424,6 +441,8 @@ async function main(): Promise<void> {
           metricsStore,
           revenue,
           goalsPath: join(ROOT, "goals.yaml"),
+          deployments,
+          probeStore,
         });
       })
       .catch((error: unknown) => {

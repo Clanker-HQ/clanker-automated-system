@@ -1,5 +1,7 @@
 import { Cron } from "croner";
 import type { RevenueTransport } from "../control/revenue-transport.js";
+import type { Deployment } from "../deploy/deploys-schema.js";
+import type { ProbeResult, ProbeStore } from "../deploy/probe-store.js";
 import { loadGoals } from "../goals.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
@@ -58,6 +60,27 @@ function renderDueReviews(due: PortfolioEntry[], now: Date): string {
 }
 
 /**
+ * Renders every declared deployment's current liveness, or says explicitly
+ * that nothing is deployed. An empty section here would read as a rendering
+ * bug rather than "nothing is live" — the same reasoning as renderDueReviews,
+ * and the reason this section exists at all: without it the overseer reviews a
+ * portfolio entry marked "live" with no way to know it has been 502ing for a
+ * week.
+ */
+function renderProductLiveness(deployments: Deployment[], probes: ProbeResult[]): string {
+  if (deployments.length === 0) return "(nothing is deployed)";
+  const bySlug = new Map(probes.map((p) => [p.slug, p]));
+  return deployments
+    .map((d) => {
+      const probe = bySlug.get(d.slug);
+      if (!probe) return `- ${d.slug} (${d.hostname}): never probed`;
+      if (probe.ok) return `- ${d.slug} (${d.hostname}): serving, last probed ${probe.lastProbeAt}`;
+      return `- ${d.slug} (${d.hostname}): NOT SERVING — ${probe.detail ?? "no detail"}, ${probe.consecutiveFailures} consecutive failure(s), last probed ${probe.lastProbeAt}`;
+    })
+    .join("\n");
+}
+
+/**
  * Grades the previous cycle's expectations and assembles everything the
  * overseer needs into one prompt context, the same extension point
  * startCron's world.summaryForPrompt() uses (Orchestrator.executeRun's
@@ -73,6 +96,8 @@ async function buildPromptContext(opts: {
   metricsStore: MetricsStore;
   revenue: RevenueTransport;
   goalsPath: string;
+  deployments: Deployment[];
+  probeStore: ProbeStore;
   now: Date;
 }): Promise<string> {
   const previousStrategy = await opts.strategyStore.latest();
@@ -90,12 +115,14 @@ async function buildPromptContext(opts: {
     : [];
   const worldSummary = await opts.world.summaryForPrompt();
   const due = dueReviews(portfolio, opts.now);
+  const probes = await opts.probeStore.read();
 
   return (
     `## Goals\n\n${renderGoals(opts.goalsPath)}\n\n` +
     `## Previous strategy\n\n${renderPreviousStrategy(previousStrategy)}\n\n` +
     `## Verdicts on the previous cycle's expectations\n\n${renderVerdicts(verdicts)}\n\n` +
     `## Due reviews\n\n${renderDueReviews(due, opts.now)}\n\n` +
+    `## Product liveness\n\n${renderProductLiveness(opts.deployments, probes)}\n\n` +
     `## World model\n\n${worldSummary}`
   );
 }
@@ -108,6 +135,14 @@ export function startOverseer(opts: {
   metricsStore: MetricsStore;
   revenue: RevenueTransport;
   goalsPath: string;
+  /**
+   * Required, not optional, and deliberately so: an optional dependency here
+   * degrades to the overseer silently never seeing liveness, the exact trap
+   * startMetrics' `overrides` comment documents. Requiring it makes a
+   * forgotten call site a `npm run typecheck` error instead of a silent gap.
+   */
+  deployments: Deployment[];
+  probeStore: ProbeStore;
   now?: () => Date;
 }): Cron {
   if (opts.agent.trigger.type !== "cron") {
@@ -127,6 +162,8 @@ export function startOverseer(opts: {
         metricsStore: opts.metricsStore,
         revenue: opts.revenue,
         goalsPath: opts.goalsPath,
+        deployments: opts.deployments,
+        probeStore: opts.probeStore,
         now: nowDate,
       });
       await opts.orchestrator.executeRun(opts.agent, nowDate, promptContext);

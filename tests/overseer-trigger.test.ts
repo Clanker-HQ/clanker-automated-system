@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FakeRevenueTransport } from "../src/control/revenue-transport.js";
+import type { Deployment } from "../src/deploy/deploys-schema.js";
+import { ProbeStore } from "../src/deploy/probe-store.js";
 import type { Orchestrator } from "../src/orchestrator.js";
 import type { AgentDef } from "../src/registry.js";
 import { MetricsStore, type Metrics } from "../src/state/metrics-store.js";
@@ -54,6 +56,7 @@ function fixtures() {
     world: new WorldModel(dataDir),
     metricsStore: new MetricsStore(dataDir),
     revenue: new FakeRevenueTransport(),
+    probeStore: new ProbeStore(dataDir),
   };
 }
 
@@ -69,6 +72,8 @@ describe("startOverseer", () => {
       world: f.world,
       metricsStore: f.metricsStore,
       revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
       goalsPath: f.goalsPath,
     });
     try {
@@ -100,6 +105,8 @@ describe("startOverseer", () => {
       world: f.world,
       metricsStore: f.metricsStore,
       revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
       goalsPath: f.goalsPath,
       now: () => NOW,
     });
@@ -153,6 +160,8 @@ describe("startOverseer", () => {
       world: f.world,
       metricsStore: f.metricsStore,
       revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
       goalsPath: f.goalsPath,
       now: () => NOW,
     });
@@ -199,6 +208,8 @@ describe("startOverseer", () => {
       world: f.world,
       metricsStore: f.metricsStore,
       revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
       goalsPath: f.goalsPath,
       now: () => NOW,
     });
@@ -241,6 +252,8 @@ describe("startOverseer", () => {
       world: f.world,
       metricsStore: f.metricsStore,
       revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
       goalsPath: f.goalsPath,
       now: () => NOW,
     });
@@ -267,6 +280,8 @@ describe("startOverseer", () => {
       world: f.world,
       metricsStore: f.metricsStore,
       revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
       goalsPath: f.goalsPath,
       now: () => NOW,
     });
@@ -276,6 +291,53 @@ describe("startOverseer", () => {
       expect(executeRun).toHaveBeenCalledTimes(1);
       const [, , promptContext] = executeRun.mock.calls[0]!;
       expect(promptContext).toContain("first cycle");
+    } finally {
+      job.stop();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders product liveness, naming a deployment that is not serving", async () => {
+    const f = fixtures();
+    const deployment: Deployment = {
+      slug: "status-page",
+      repo: "Clanker-HQ/clanker-status-page",
+      hostname: "status.example.com",
+      port: 8080,
+      env: [],
+    };
+    await f.probeStore.write([
+      {
+        slug: "status-page",
+        url: "https://status.example.com/",
+        lastProbeAt: NOW.toISOString(),
+        ok: false,
+        consecutiveFailures: 3,
+        detail: "HTTP 502",
+      },
+    ]);
+
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const job = startOverseer({
+      agent: agent(),
+      orchestrator,
+      strategyStore: f.strategyStore,
+      world: f.world,
+      metricsStore: f.metricsStore,
+      revenue: f.revenue,
+      deployments: [deployment],
+      probeStore: f.probeStore,
+      goalsPath: f.goalsPath,
+      now: () => NOW,
+    });
+
+    try {
+      await job.trigger();
+      const [, , promptContext] = executeRun.mock.calls[0]!;
+      expect(promptContext).toContain("## Product liveness");
+      expect(promptContext).toContain("status-page");
+      expect(promptContext).toContain("NOT SERVING");
     } finally {
       job.stop();
       rmSync(f.dataDir, { recursive: true, force: true });

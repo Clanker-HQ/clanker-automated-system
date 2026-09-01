@@ -1,5 +1,7 @@
 import type { MemoryConfig } from "./config.js";
 import type { TaskStore } from "./control/task-store.js";
+import type { ProbeStore } from "./deploy/probe-store.js";
+import { probeWarnings } from "./deploy/probe-warnings.js";
 import type { MemoryStore } from "./memory/memory-store.js";
 import type { RunStore } from "./run-store.js";
 import { stalePasses } from "./state/liveness.js";
@@ -7,6 +9,9 @@ import type { Metrics, MetricsStore } from "./state/metrics-store.js";
 
 /** Twice the weekly metrics cadence, so one missed run is not an alarm. */
 const MAX_METRICS_AGE_DAYS = 14;
+
+/** Twice the 15-minute probe cadence, so one missed pass is not an alarm — the same rule MAX_METRICS_AGE_DAYS follows. */
+const MAX_PROBE_AGE_MINUTES = 30;
 
 /**
  * Pure text-building, deliberately separate from src/triggers/digest.ts's
@@ -26,6 +31,10 @@ export async function buildDigestText(opts: {
    */
   memoryConfig?: MemoryConfig;
   metricsStore?: MetricsStore;
+  /** Optional, mirroring metricsStore: existing fixtures that pass neither this nor declaredSlugs keep working. Production always passes both — see src/triggers/digest.ts. */
+  probeStore?: ProbeStore;
+  /** Slugs currently declared in deploys.yaml, for probeWarnings' "declared but never probed" check. Only consulted when probeStore is also present. */
+  declaredSlugs?: string[];
 }): Promise<string> {
   // listSince, not listRecent(10_000): the digest only ever looks at the last
   // 24h, so there's no reason to read/parse every result.json retention has
@@ -66,8 +75,19 @@ export async function buildDigestText(opts: {
   const livenessWarnings = opts.metricsStore
     ? stalePasses({ latestMetricsAt: freshMetrics?.latest?.computedAt ?? null, now, maxAgeDays: MAX_METRICS_AGE_DAYS })
     : [];
+  const deployWarnings =
+    opts.probeStore && opts.declaredSlugs
+      ? probeWarnings({ probes: await opts.probeStore.read(), declaredSlugs: opts.declaredSlugs, now, maxAgeMinutes: MAX_PROBE_AGE_MINUTES })
+      : [];
 
-  if (recentRuns.length === 0 && finishedTasks.length === 0 && waitingTasks.length === 0 && !hasFreshMetrics && livenessWarnings.length === 0) {
+  if (
+    recentRuns.length === 0 &&
+    finishedTasks.length === 0 &&
+    waitingTasks.length === 0 &&
+    !hasFreshMetrics &&
+    livenessWarnings.length === 0 &&
+    deployWarnings.length === 0
+  ) {
     return "📅 Daily digest: nothing happened in the last 24h.";
   }
 
@@ -101,6 +121,7 @@ export async function buildDigestText(opts: {
     }
   }
   for (const warning of livenessWarnings) lines.push(warning);
+  for (const warning of deployWarnings) lines.push(warning);
   if (hasFreshMetrics && freshMetrics?.latest) {
     lines.push(formatMetricsLine(freshMetrics.latest, freshMetrics.previous));
   }
