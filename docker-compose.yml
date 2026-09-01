@@ -35,7 +35,31 @@ services:
       - ./.github:/app/.github:ro
       - ./.gitignore:/app/.gitignore:ro
       - ./.dockerignore:/app/.dockerignore:ro
+      # Read-WRITE, unlike every other mount here: the supervisor renders
+      # caddy/Caddyfile and caddy/deployments.tsv from deploys.yaml at boot, and
+      # both the caddy container and the host's deploy script read them
+      # directly. A named volume would put them somewhere the host script can
+      # only reach by digging into /var/lib/docker.
+      - ./caddy:/app/caddy
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # The DIRECTORY, not ./caddy/Caddyfile itself. A bind mount whose host
+      # path does not exist yet makes Docker create a DIRECTORY at that path,
+      # and a directory named Caddyfile fails in a way that reads as a Caddy
+      # bug rather than a missing file. caddy/ always exists (.gitkeep); the
+      # Caddyfile inside it does not, until the supervisor writes it.
+      - ./caddy:/etc/caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
 
 volumes:
   agent-data:
+  caddy-data:
+  caddy-config:

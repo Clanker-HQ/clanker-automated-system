@@ -20,6 +20,7 @@ import { TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
+import { writeDeployArtifacts } from "./deploy/caddyfile.js";
 import { type Deployment, loadDeploys } from "./deploy/deploys-schema.js";
 import { ValidationError } from "./errors.js";
 import { Governor } from "./governor.js";
@@ -64,7 +65,7 @@ function parsePort(name: string, raw: string | undefined, fallback: number): num
   return n;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   let config: Config;
   let agents: AgentDef[];
   let deployments: Deployment[];
@@ -110,6 +111,15 @@ function main(): void {
       availableProductEnv: new Set(config.deploy.availableProductEnv),
     });
     console.log(`[boot] ${deployments.length} deployment(s) declared`);
+    // A routing file that fails to write is a reason for the host to keep
+    // whatever Caddyfile is already there, not a reason to stop running every
+    // agent — so this is caught and logged here rather than left to the
+    // outer catch below. Same posture as WorldModel's own reads.
+    try {
+      await writeDeployArtifacts({ deployments, dir: join(ROOT, "caddy") });
+    } catch (error) {
+      console.error("[boot] failed to render caddy/Caddyfile from deploys.yaml — keeping the previous routing", error);
+    }
     // A fine-grained PAT for the dedicated bot GitHub account, and the shared
     // secret that lets WebhookReceiver tell a genuine GitHub event apart from
     // a forged one. Resolved here, with the same boot-failure formatting as
