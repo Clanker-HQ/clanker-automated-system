@@ -881,7 +881,12 @@ outbox:
 
 Three of these are settled, not defaults to reconsider:
 
-**`tier: readonly` is correct and sufficient.** `decide()` (`src/grants.ts`) returns `allow` immediately when `detectOutwardEffect` finds nothing, and that function only fires on Bash (`git push`, `curl`/`wget`, `npm publish`, `gh`), `WebFetch`, and the git/GitHub MCP tools. Local file access and MCP tools like `queueTask` are never outward effects, so they work at every tier. `readonly` therefore denies everything outward with a clear reason while leaving this agent everything it actually needs. `approval: notify`, not `auto` — the schema rejects `auto` on a non-autonomous tier, and the other three scouts already pair `readonly` with `notify`.
+**`tier: readonly` is correct, and the tool list above is exactly what it permits.** Two separate layers matter here and it is easy to conflate them:
+
+- The **schema** (`src/agent-schema.ts`) restricts `permissions.allowedTools` by tier. `READONLY_TOOLS` is `[Read, Glob, Grep, WebSearch, WebFetch, TodoWrite]` — **`Write` and `Edit` are rejected at boot on a `readonly` agent.** That is why this agent does all of its writing through the MCP tools in Steps 2 and 3 rather than the `Write` tool. Do not "fix" a schema error here by adding `Write` and bumping the tier to `sandboxed`; the tools are the design.
+- The **grant layer** (`decide()` in `src/grants.ts`) returns `allow` immediately when `detectOutwardEffect` finds nothing, and that function only fires on Bash (`git push`, `curl`/`wget`, `npm publish`, `gh`), `WebFetch`, and the git/GitHub MCP tools. So MCP tools like `queueTask` are never outward effects and need no grant.
+
+Together: `readonly` denies every outward effect with a clear reason, the schema keeps the raw filesystem out of reach, and the validated MCP tools are the only way this agent changes anything. `approval: notify`, not `auto` — the schema rejects `auto` on a non-autonomous tier, and the other three scouts already pair `readonly` with `notify`.
 
 **`model: claude-opus-5`.** This is the one decision in the system that every other decision inherits from, it runs 52 times a year, and its job is cross-cutting synthesis — noticing that flat revenue, a tripping breaker, and three dead ends are one problem. Its output also *commissions* research directions rather than only ranking existing ones, so a better model raises the system's idea-supply ceiling instead of being capped by it. The cost difference at this cadence is rounding error against the primary goal.
 
@@ -1060,6 +1065,65 @@ Whatever Step 1 established. At minimum, add a test proving a repair task routes
 npm run typecheck && npx vitest run
 git add agents/repair src/control/dispatcher.ts tests/
 git commit -m "feat: add a repair agent so a broken builder is not a dead end"
+```
+
+---
+
+### Task C7: Let the allocation actually pause a phase of work
+
+**Why:** `Strategy.allocation` — `{ research, build, maintain }`, validated to sum to 100 (Task C1) — is written by the overseer and **read by nothing**. It is the fourth "computed by something, consumed by nothing" instance in this codebase, and closing it is what makes the system's workload *phased* rather than continuous.
+
+The system does not need every agent firing every day. There are weeks that are mostly research and weeks that are mostly building on research already done. Right now `opportunity-scout` fires at 06:00 daily regardless of whether the system has any capacity to act on another opportunity, and `improvement-scout` at 07:00 daily regardless of whether a build phase is even underway. That is wasted subscription capacity in one direction and starved capacity in the other.
+
+This also changes the hosting-plan question materially: the sustained load of a phased system is far below that of a continuously-firing one, so measure the phased design before concluding a subscription tier is too small.
+
+**Files:**
+- Modify: `src/agent-schema.ts` — **read the note below before touching this file**
+- Modify: `schema/capabilities.json` (regenerate with `npm run schema`)
+- Modify: `src/triggers/cron.ts` and `tests/cron-trigger.test.ts`
+- Modify: each cron agent's `agent.yaml` to declare its category
+
+**Interfaces:**
+- Consumes: `StrategyStore.latest()` (C1); `WorldModel` already threaded into `startCron` by Task B2b.
+- Produces: `AgentDef.category?: "research" | "build" | "maintain"`, and a cron trigger that skips a firing whose category has zero allocation in the current strategy.
+
+- [ ] **Step 1: Add `category` to the agent schema**
+
+Optional, and only meaningful on `trigger.type: cron`. An agent with no `category` is never skipped — absent means "always runs", so this change cannot silently pause anything that does not opt in. Regenerate `schema/capabilities.json` with `npm run schema` in the same commit; the two are generated together and a drifted pair is its own bug.
+
+`src/agent-schema.ts` is on `EXCLUDED_PATHS` — see the Global Constraints. An operator-directed session edits it normally; only the autonomous self-build pipeline must not.
+
+- [ ] **Step 2: Write the failing test**
+
+In `tests/cron-trigger.test.ts` (created by Task B2b — read it first, it already solves driving a cron job deterministically). Three cases:
+- An agent whose category has zero allocation in the latest strategy does **not** run when its cron fires.
+- The same agent **does** run when its category has non-zero allocation.
+- An agent with **no** category always runs, whatever the allocation says.
+
+- [ ] **Step 3: Run them and watch them fail, then implement**
+
+In `src/triggers/cron.ts`, read `StrategyStore.latest()` inside the callback — not at schedule time, since the strategy changes weekly while the jobs are created once at boot. Zero allocation means skip and log why; anything non-zero means run on the agent's normal cadence. **No strategy yet, or an unreadable one, means run** — the same fail-open posture the world-model summary already takes there. A system that silently stops scheduling because the overseer has not run yet is worse than one that over-runs.
+
+- [ ] **Step 4: Guard the overseer against pausing itself**
+
+The overseer must never be skippable by this mechanism: it is the only thing that writes the allocation, so an allocation that paused it would be unrecoverable without operator intervention, forever. Give `agents/overseer/agent.yaml` no `category` (Step 1 makes that mean "always runs") **and** add an explicit test that the overseer runs under an all-zero allocation. Belt and braces, because the failure is permanent.
+
+The same reasoning applies to `setAgentEnabled` from Task C3 — if that tool has not already been written to refuse `agent: "overseer"` when `enabled: false`, add that refusal here with a test.
+
+- [ ] **Step 5: Categorise the existing cron agents**
+
+`opportunity-scout` → `research`. `improvement-scout` → `build`. `cleanup-scout` and `dependency-scout` → `maintain`. Leave `overseer` uncategorised per Step 4.
+
+- [ ] **Step 6: Teach the overseer what allocation now does**
+
+Update `agents/overseer/prompt.md`: allocation is no longer advisory prose, it gates whether whole categories of agent fire this cycle. Setting a category to 0 pauses it entirely until the next strategy. Say plainly that this is the intended way to run a research-heavy week followed by a build-heavy one, and that pausing everything is not a valid strategy.
+
+- [ ] **Step 7: Verify and commit**
+
+```bash
+npm run typecheck && npx vitest run
+git add src/agent-schema.ts schema/capabilities.json src/triggers/cron.ts tests/cron-trigger.test.ts agents/
+git commit -m "feat: let the strategy's allocation pause a phase of work"
 ```
 
 ---
