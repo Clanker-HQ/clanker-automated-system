@@ -336,7 +336,11 @@ export class Orchestrator {
     if (result.status === "success" && this.verifier) {
       try {
         const tail = await writer.tail(20);
-        const verifiedOutcome = await this.verifier.verify({ prompt: ctx.prompt, summary: result.summary, tail });
+        const verifiedOutcome = await this.verifier.verify({
+          prompt: ctx.prompt, summary: result.summary, tail,
+          costUsd: result.costUsd, maxBudgetUsd: agent.run.maxBudgetUsd,
+          turns: result.turns, maxTurns: agent.run.maxTurns,
+        });
         result = await this.store.recordVerification(runId, verifiedOutcome);
       } catch (err) {
         console.error(`[orchestrator] outcome verification failed for run ${runId}`, err);

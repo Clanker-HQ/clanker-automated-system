@@ -752,6 +752,30 @@ describe("Orchestrator outcome verification", () => {
     expect(verifier.calls[0]!.tail.join("\n")).toContain("starting");
   });
 
+  it("passes the run's own cost/turns and the agent's ceiling to the verifier", async () => {
+    const verifier = new FakeOutcomeVerifier({ verdict: "achieved", reason: "fine" });
+    const { agent, orchestrator } = harness(
+      {
+        events: [
+          { type: "tool_use", name: "WebSearch" },
+          { type: "tool_use", name: "WebFetch" },
+          { type: "assistant", text: "Done: wrote notes." },
+          { type: "usage", inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.05, durationMs: 900 },
+        ],
+      },
+      {},
+      undefined,
+      verifier,
+    );
+    await orchestrator.executeRun(agent);
+
+    expect(verifier.calls).toHaveLength(1);
+    expect(verifier.calls[0]!.costUsd).toBe(0.05);
+    expect(verifier.calls[0]!.maxBudgetUsd).toBe(agent.run.maxBudgetUsd);
+    expect(verifier.calls[0]!.turns).toBe(2);
+    expect(verifier.calls[0]!.maxTurns).toBe(agent.run.maxTurns);
+  });
+
   it("never grades a run that isn't a clean success", async () => {
     const verifier = new FakeOutcomeVerifier({ verdict: "achieved", reason: "fine" });
     const { agent, orchestrator } = harness(

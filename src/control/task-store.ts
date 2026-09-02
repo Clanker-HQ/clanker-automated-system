@@ -94,6 +94,17 @@ export interface Task {
    * either way; nothing reads it after that.
    */
   lastVerificationReason?: string;
+  /**
+   * Cumulative `costUsd` across every not-achieved attempt at this task so
+   * far (see dispatcher.ts's RETRY_COST_CAP_MULTIPLIER) — a full-cost run
+   * that finishes clean but gets graded not-achieved has already spent real
+   * money before the retry decision is even made, and MAX_RETRIES alone
+   * can't see that: a task whose OutcomeVerifier bar no single run's budget
+   * can clear would otherwise pay for the same expensive run 4 times over
+   * before giving up anyway. Left in place once the task finishes; nothing
+   * reads it after that.
+   */
+  spentUsd?: number;
 }
 
 export class TaskStore {

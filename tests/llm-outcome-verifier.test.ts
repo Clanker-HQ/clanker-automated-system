@@ -6,7 +6,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   return { ...actual, query: queryMock };
 });
 
-const { LlmOutcomeVerifier, parseVerdict } = await import("../src/control/llm-outcome-verifier.js");
+const { LlmOutcomeVerifier, parseVerdict, budgetUtilizationNote } = await import("../src/control/llm-outcome-verifier.js");
 
 function stream(messages: unknown[]): AsyncIterable<unknown> {
   return {
@@ -53,6 +53,35 @@ describe("parseVerdict", () => {
   });
 });
 
+describe("budgetUtilizationNote", () => {
+  it("returns an empty string when no budget or turn ceiling is known", () => {
+    expect(budgetUtilizationNote({ prompt: "x", summary: "y", tail: [] })).toBe("");
+  });
+
+  it("reports usage and tells the grader to accept an honest partial answer when the run stopped near its ceiling", () => {
+    const note = budgetUtilizationNote({
+      prompt: "x", summary: "y", tail: [], costUsd: 1.9, maxBudgetUsd: 2, turns: 20, maxTurns: 24,
+    });
+    expect(note).toContain("$1.90 of a $2.00 budget");
+    expect(note).toContain("20 of a maximum 24 turns");
+    expect(note).toContain("near its resource ceiling");
+    expect(note).toContain("achieved");
+  });
+
+  it("tells the grader a gap reflects giving up early when usage was well under the ceiling", () => {
+    const note = budgetUtilizationNote({
+      prompt: "x", summary: "y", tail: [], costUsd: 0.2, maxBudgetUsd: 2, turns: 3, maxTurns: 24,
+    });
+    expect(note).toContain("well short of its resource ceiling");
+  });
+
+  it("still reports usage when only cost, not turns, is known", () => {
+    const note = budgetUtilizationNote({ prompt: "x", summary: "y", tail: [], costUsd: 1.9, maxBudgetUsd: 2 });
+    expect(note).toContain("$1.90 of a $2.00 budget");
+    expect(note).not.toContain("turns");
+  });
+});
+
 describe("LlmOutcomeVerifier", () => {
   it("grades a run as achieved from the model's reply", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
@@ -83,6 +112,17 @@ describe("LlmOutcomeVerifier", () => {
     expect(call.prompt).toContain("the task");
     expect(call.prompt).toContain("the summary");
     expect(call.prompt).toContain("line one");
+  });
+
+  it("includes budget/turn utilization in the grading call when given", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    queryMock.mockReturnValue(stream([assistantMessage("achieved: fine")]));
+    await new LlmOutcomeVerifier().verify({
+      prompt: "x", summary: "y", tail: [], costUsd: 1.9, maxBudgetUsd: 2, turns: 20, maxTurns: 24,
+    });
+    const call = queryMock.mock.calls[0]![0] as { prompt: string };
+    expect(call.prompt).toContain("$1.90 of a $2.00 budget");
+    expect(call.prompt).toContain("20 of a maximum 24 turns");
   });
 
   describe("timeout", () => {

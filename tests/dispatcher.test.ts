@@ -35,6 +35,7 @@ function specialist(overrides: Partial<AgentDef> = {}): AgentDef {
     enabled: true,
     description: "researches things",
     trigger: { type: "dispatched" },
+    run: { model: "claude-sonnet-5", effort: "low", maxTurns: 24, timeoutMinutes: 20, maxBudgetUsd: 2 },
     ...overrides,
   } as unknown as AgentDef;
 }
@@ -323,6 +324,66 @@ describe("runDispatchTick", () => {
       });
       expect(outcome).toEqual({ ran: true, taskId: task.id });
       expect((await tasks.get(task.id))?.status).toBe("done");
+    });
+
+    it("accumulates cost across not-achieved retries on the task record", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ costUsd: 1.2, verifiedOutcome: { verdict: "not-achieved", reason: "only one option" } }),
+      );
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+      });
+      expect((await tasks.get(task.id))?.spentUsd).toBe(1.2);
+    });
+
+    it("stops retrying once cumulative spend across attempts reaches 2x the run's own budget, even with retries remaining", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      // Attempt 1 already spent $3.5 of this agent's $2 budget (a long research
+      // run) and was graded not-achieved -- simulate having just retried once.
+      await tasks.update(task.id, { retryCount: 1, spentUsd: 3.5 });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ costUsd: 1, summary: "Partial.", verifiedOutcome: { verdict: "not-achieved", reason: "still incomplete" } }),
+      );
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir, world,
+      });
+      // Not deferred: this task's spend is accepted as done, not queued for
+      // another attempt, even though retryCount (1) is well under MAX_RETRIES (3).
+      expect(outcome).toEqual({ ran: true, taskId: task.id });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("done");
+      expect(updated?.result?.summary).toBe("Partial.");
+      expect(notify).toHaveBeenCalledTimes(1);
+      const text = notify.mock.calls[0]![0] as string;
+      expect(text).toContain("⚠️");
+      expect(text).toContain("retry cap");
+      expect(text).toContain("still incomplete");
+    });
+
+    it("keeps retrying below the cost cap even after a prior expensive not-achieved attempt", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await tasks.update(task.id, { retryCount: 1, spentUsd: 1 });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ costUsd: 1, verifiedOutcome: { verdict: "not-achieved", reason: "still incomplete" } }),
+      );
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+      });
+      // $1 (prior) + $1 (this run) = $2, under the $4 cap (2x the $2 budget) --
+      // still retries normally.
+      expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("pending");
+      expect(updated?.retryCount).toBe(2);
+      expect(updated?.spentUsd).toBe(2);
     });
   });
 
