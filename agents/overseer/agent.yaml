@@ -8,14 +8,7 @@ description: >-
 
 trigger:
   type: cron
-  # ############ TEMPORARY — TEST RUN ONLY, REVERT BEFORE COMMITTING ############
-  # Fires once today at 12:58 local so the first overseer cycle can be watched.
-  # It will fire again at 12:58 TOMORROW if this is not put back.
-  # Restore with: git checkout agents/overseer/agent.yaml
-  # Real value: "0 5 * * 1"  (Monday 05:00 — after reflection at 03:00 and
-  # metrics at 04:00, so both are fresh)
-  schedule: "58 12 * * *"
-  # #############################################################################
+  schedule: "0 5 * * 1"   # Monday 05:00 — after reflection (03:00) and metrics (04:00), so both are fresh
   timezone: Europe/Berlin
 
 run:
