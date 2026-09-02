@@ -156,14 +156,18 @@ describe("TaskStore", () => {
     expect(await s.nextPending(new Set([high.id, low.id]))).toBeNull();
   });
 
-  it("claimNextPending atomically picks the next pending task and marks it running", async () => {
+  // "queued", not "running": a claim happens before routing and before this
+  // task has any chance at a Governor concurrency slot. Calling it "running"
+  // here was the whole bug — !tasks showed several claimed tasks as
+  // "running" simultaneously when only maxConcurrent of them genuinely were.
+  it("claimNextPending atomically picks the next pending task and marks it queued", async () => {
     const s = store();
     const task = await s.create({ text: "x", createdBy: "discord:owner" });
     const claimed = await s.claimNextPending(new Set(), "2026-08-28T00:00:00.000Z");
     expect(claimed?.id).toBe(task.id);
-    expect(claimed?.status).toBe("running");
+    expect(claimed?.status).toBe("queued");
     expect(claimed?.startedAt).toBe("2026-08-28T00:00:00.000Z");
-    expect((await s.get(task.id))?.status).toBe("running");
+    expect((await s.get(task.id))?.status).toBe("queued");
   });
 
   it("claimNextPending returns null, and claims nothing, when everything is excluded", async () => {
@@ -219,6 +223,20 @@ describe("TaskStore", () => {
     const s = store();
     const task = await s.create({ text: "x", createdBy: "discord:owner" });
     await s.update(task.id, { status: "running", specialistAgent: "research" });
+    const { reset } = await s.reconcile();
+    expect(reset).toHaveLength(1);
+    const after = await s.get(task.id);
+    expect(after?.status).toBe("pending");
+    expect(after?.specialistAgent).toBeUndefined();
+  });
+
+  // "queued" is in flight exactly like "running" is — claimed, with nothing
+  // actually working it after a crash — so it needs the same recovery path,
+  // not just "running"'s.
+  it("reconcile resets a queued task back to pending too", async () => {
+    const s = store();
+    const task = await s.create({ text: "x", createdBy: "discord:owner" });
+    await s.update(task.id, { status: "queued", specialistAgent: "research" });
     const { reset } = await s.reconcile();
     expect(reset).toHaveLength(1);
     const after = await s.get(task.id);

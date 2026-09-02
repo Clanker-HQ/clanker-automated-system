@@ -644,7 +644,7 @@ describe("DiscordBot task commands", () => {
     expect(reply).toContain("Circuit breaker: on");
     expect(reply).toContain("Disabled agents: none");
     expect(reply).toContain("Rate limit: no reading yet");
-    expect(reply).toContain("0 pending, 0 running, 0 waiting");
+    expect(reply).toContain("0 pending, 0 queued, 0 running, 0 waiting");
   });
 
   it("!status reports rate-limit utilization once a reading exists", async () => {
@@ -671,23 +671,30 @@ describe("DiscordBot task commands", () => {
     expect(reply).toContain("Disabled agents: research");
   });
 
-  it("!status counts pending, running, and waiting tasks", async () => {
+  it("!status counts pending, queued, running, and waiting tasks", async () => {
     const { transport, bot, tasks } = setup();
     await tasks.create({ text: "a", createdBy: "discord:owner" });
-    const running = await tasks.create({ text: "b", createdBy: "discord:owner" });
+    const queued = await tasks.create({ text: "b", createdBy: "discord:owner" });
+    await tasks.update(queued.id, { status: "queued" });
+    const running = await tasks.create({ text: "c", createdBy: "discord:owner" });
     await tasks.update(running.id, { status: "running" });
-    const waiting = await tasks.create({ text: "c", createdBy: "discord:owner" });
+    const waiting = await tasks.create({ text: "d", createdBy: "discord:owner" });
     await tasks.update(waiting.id, { status: "waiting" });
-    const done = await tasks.create({ text: "d", createdBy: "discord:owner" });
+    const done = await tasks.create({ text: "e", createdBy: "discord:owner" });
     await tasks.update(done.id, { status: "done" });
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
-    expect(transport.sent[0]!.text).toContain("1 pending, 1 running, 1 waiting");
+    expect(transport.sent[0]!.text).toContain("1 pending, 1 queued, 1 running, 1 waiting");
   });
 
-  it("!tasks lists pending, running, and waiting tasks, not finished ones", async () => {
+  it("!tasks lists pending, queued, running, and waiting tasks, not finished ones", async () => {
     const { transport, bot, tasks } = setup();
     await tasks.create({ text: "a pending one", createdBy: "discord:owner" });
+    // Claimed by the dispatcher but not yet admitted by the Governor — the
+    // exact state that made !tasks previously show several tasks as
+    // "running" when only maxConcurrent of them genuinely were.
+    const queued = await tasks.create({ text: "a queued one", createdBy: "discord:owner" });
+    await tasks.update(queued.id, { status: "queued" });
     const running = await tasks.create({ text: "a running one", createdBy: "discord:owner" });
     await tasks.update(running.id, { status: "running" });
     // A run parked on the owner's own approve/deny/answer: still in flight, and
@@ -703,6 +710,9 @@ describe("DiscordBot task commands", () => {
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!tasks" });
     const reply = transport.sent[0]!.text;
     expect(reply).toContain("a pending one");
+    // Rendered distinctly from "running" — that distinction is this feature's
+    // whole point.
+    expect(reply).toContain("queued (waiting for a slot) — a queued one");
     expect(reply).toContain("a running one");
     expect(reply).toContain("a waiting one");
     expect(reply).not.toContain("a finished one");

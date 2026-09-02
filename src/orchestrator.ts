@@ -96,7 +96,24 @@ export class Orchestrator {
    * (the same task every day), but a `webhook` agent needs to say which PR
    * this particular run is about — that's what this parameter carries.
    */
-  async executeRun(agent: AgentDef, now: Date = new Date(), promptContext?: string): Promise<RunResult | undefined> {
+  /**
+   * @param onAdmitted Fires once Governor.admit() actually resolves "admit" —
+   * i.e. the moment this run has a real concurrency slot and execution is
+   * about to begin, not when the caller merely asked to start one. admit()
+   * itself can block for a long time here: acquireSlot queues behind every
+   * other run sharing config.yaml's maxConcurrent, and there is no other
+   * signal for "still waiting its turn" vs. "now actually running". Callers
+   * that need that distinction (Dispatcher, to keep a Task's status honest —
+   * see TaskStore's "queued" vs "running") pass this; callers that don't
+   * (cron, webhook) simply omit it. Best-effort: a failure here must never
+   * fail the run itself, so it is caught and logged, not awaited-and-thrown.
+   */
+  async executeRun(
+    agent: AgentDef,
+    now: Date = new Date(),
+    promptContext?: string,
+    onAdmitted?: () => void | Promise<void>,
+  ): Promise<RunResult | undefined> {
     const admitted = await this.governor.admit(agent, "trigger");
     if (admitted.kind === "refuse") {
       console.log(`[governor] refused ${agent.name}: ${admitted.reason}`);
@@ -106,6 +123,12 @@ export class Orchestrator {
         });
       }
       return undefined;
+    }
+
+    if (onAdmitted) {
+      await Promise.resolve(onAdmitted()).catch((err: unknown) => {
+        console.error(`[orchestrator] onAdmitted callback failed for ${agent.name}`, err);
+      });
     }
 
     try {

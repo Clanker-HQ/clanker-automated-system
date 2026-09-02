@@ -75,7 +75,7 @@ describe("runDispatchTick", () => {
       orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
     });
     expect(result).toEqual({ ran: true, taskId: task.id });
-    expect(executeRun).toHaveBeenCalledWith(specialist(), expect.any(Date), expect.stringContaining("find a profitable niche"));
+    expect(executeRun).toHaveBeenCalledWith(specialist(), expect.any(Date), expect.stringContaining("find a profitable niche"), expect.any(Function));
     const updated = await tasks.get(task.id);
     expect(updated?.status).toBe("done");
     expect(updated?.specialistAgent).toBe("research");
@@ -850,7 +850,20 @@ describe("Dispatcher.wake", () => {
     await tasks.create({ text: "b", createdBy: "discord:owner" });
     const resolvers: Array<(r: RunResult) => void> = [];
     const executeRun = vi.fn().mockImplementation(
-      () => new Promise<RunResult>((resolve) => resolvers.push(resolve)),
+      // Mirrors the real Orchestrator.executeRun contract: onAdmitted fires
+      // once admission succeeds, awaited, BEFORE the run itself starts — see
+      // TaskStore's "queued" (claimed, no slot yet) vs "running" (admitted,
+      // actually executing). A fake that ignored the callback would leave
+      // every task "queued" forever and prove nothing about the transition.
+      async (
+        _agent: AgentDef,
+        _now?: Date,
+        _promptContext?: string,
+        onAdmitted?: () => void | Promise<void>,
+      ) => {
+        await onAdmitted?.();
+        return new Promise<RunResult>((resolve) => resolvers.push(resolve));
+      },
     );
     const dispatcher = new Dispatcher({
       tasks, router: new FakeRouter("research"), agents: [specialist()],
@@ -859,13 +872,61 @@ describe("Dispatcher.wake", () => {
     const wakePromise = dispatcher.wake();
     // Poll rather than trust a fixed delay: claiming goes through real
     // (temp-dir) disk I/O, which can take longer than a single event-loop
-    // tick, especially under the load of the full suite running in parallel.
-    await vi.waitFor(() => expect(executeRun).toHaveBeenCalledTimes(2));
-    expect((await tasks.list()).map((t) => t.status).sort()).toEqual(["running", "running"]);
+    // tick, especially under the load of the full suite running in parallel —
+    // and now so does the queued -> running write onAdmitted triggers.
+    await vi.waitFor(async () => {
+      expect(executeRun).toHaveBeenCalledTimes(2);
+      expect((await tasks.list()).map((t) => t.status).sort()).toEqual(["running", "running"]);
+    });
 
     resolvers.forEach((resolve) => resolve(successResult()));
     await wakePromise;
     expect((await tasks.list()).map((t) => t.status)).toEqual(["done", "done"]);
+  });
+
+  // Reproduces exactly what was reported: three tasks claimed at once while
+  // the Governor only had room to admit one. `!tasks`/`!status` showed all
+  // three as "running" — this is the fix, at the layer the bug actually
+  // lived in (Dispatcher passing onAdmitted through to a fake standing in
+  // for the real Governor-gated Orchestrator), not just in TaskStore/
+  // Orchestrator unit tests in isolation.
+  it("shows only the admitted task as running while the rest stay queued behind it", async () => {
+    const { tasks, dataDir, world } = taskStore();
+    await tasks.create({ text: "a", createdBy: "discord:owner" });
+    await tasks.create({ text: "b", createdBy: "discord:owner" });
+    await tasks.create({ text: "c", createdBy: "discord:owner" });
+
+    let admittedCount = 0;
+    const resolvers: Array<(r: RunResult) => void> = [];
+    const executeRun = vi.fn().mockImplementation(
+      async (
+        _agent: AgentDef,
+        _now?: Date,
+        _promptContext?: string,
+        onAdmitted?: () => void | Promise<void>,
+      ) => {
+        // Simulates Governor maxConcurrent: 1 — only the first claim ever
+        // gets admitted; the other two never call onAdmitted at all, exactly
+        // as a real admit() blocked in acquireSlot never does until a slot
+        // frees.
+        admittedCount += 1;
+        if (admittedCount === 1) await onAdmitted?.();
+        return new Promise<RunResult>((resolve) => resolvers.push(resolve));
+      },
+    );
+    const dispatcher = new Dispatcher({
+      tasks, router: new FakeRouter("research"), agents: [specialist()],
+      orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+    });
+
+    const wakePromise = dispatcher.wake();
+    await vi.waitFor(async () => {
+      expect(executeRun).toHaveBeenCalledTimes(3);
+      expect((await tasks.list()).map((t) => t.status).sort()).toEqual(["queued", "queued", "running"]);
+    });
+
+    resolvers.forEach((resolve) => resolve(successResult()));
+    await wakePromise;
   });
 
   it("keeps draining past a task that threw — a thrown error is not a deferral", async () => {
@@ -933,6 +994,7 @@ describe("repair agent routing (Task C6)", () => {
       expect.objectContaining({ name: "repair" }),
       expect.any(Date),
       expect.stringContaining("diagnose and fix it"),
+      expect.any(Function),
     );
     const updated = await tasks.get(task.id);
     expect(updated?.status).toBe("done");
@@ -955,7 +1017,7 @@ describe("repair agent routing (Task C6)", () => {
       orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
     });
     expect(router.calls[0]?.specialists).toEqual([{ name: "repair", description: repair.description }]);
-    expect(executeRun).toHaveBeenCalledWith(repair, expect.any(Date), expect.any(String));
+    expect(executeRun).toHaveBeenCalledWith(repair, expect.any(Date), expect.any(String), expect.any(Function));
   });
 
   // Symmetric check: repair's mere presence in the registry must not hijack
@@ -972,7 +1034,7 @@ describe("repair agent routing (Task C6)", () => {
       tasks, router, agents: [builder, repair],
       orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
     });
-    expect(executeRun).toHaveBeenCalledWith(builder, expect.any(Date), expect.any(String));
+    expect(executeRun).toHaveBeenCalledWith(builder, expect.any(Date), expect.any(String), expect.any(Function));
     const updated = await tasks.get(task.id);
     expect(updated?.specialistAgent).toBe("builder");
   });

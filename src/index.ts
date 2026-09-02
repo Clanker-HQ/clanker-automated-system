@@ -306,7 +306,7 @@ async function main(): Promise<void> {
 
   void tasks.reconcile().then(({ reset }) => {
     if (reset.length > 0) {
-      console.log(`[tasks] ${reset.length} task(s) reset from "running" to "pending" after restart`);
+      console.log(`[tasks] ${reset.length} task(s) reset to "pending" after restart (were "queued" or "running")`);
     }
     dispatcher.start();
     void dispatcher.wake();
