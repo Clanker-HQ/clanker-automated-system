@@ -1280,9 +1280,14 @@ export class SdkRunner implements Runner {
           consecutiveToolFailures = event.ok ? 0 : consecutiveToolFailures + 1;
         }
         if (consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+          // "interrupted", not "error": the agent did nothing wrong, and an
+          // "error" would count toward its circuit breaker — so three
+          // unrelated outages in a row would disable the agent until a human
+          // reset it. That is the same shape as the rate-limit deadlock: a
+          // transient external fault turned into a permanent lockout.
           terminalEvent = {
-            type: "error",
-            message:
+            type: "interrupted",
+            reason:
               `Stopped after ${consecutiveToolFailures} consecutive tool failures with nothing succeeding in between. ` +
               `The tools this run depends on are not working, and retrying a broken tool costs the same as using a working one.`,
           };

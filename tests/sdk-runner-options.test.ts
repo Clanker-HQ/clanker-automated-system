@@ -269,9 +269,13 @@ describe("SdkRunner query options", () => {
 
     const { events } = await run([toolFailure, toolFailure, toolFailure, toolFailure, toolFailure, RESULT_MESSAGE]);
 
-    const stopped = events.find((e) => e.type === "error");
+    // "interrupted", not "error": an error counts toward the agent's circuit
+    // breaker, and three outages in a row would then disable an agent that did
+    // nothing wrong.
+    const stopped = events.find((e) => e.type === "interrupted");
     expect(stopped).toBeDefined();
-    expect((stopped as { message: string }).message).toMatch(/consecutive tool failures/i);
+    expect((stopped as { reason: string }).reason).toMatch(/consecutive tool failures/i);
+    expect(events.some((e) => e.type === "error")).toBe(false);
   });
 
   // The reason the counter resets on ANY success rather than tracking one tool:
@@ -291,6 +295,7 @@ describe("SdkRunner query options", () => {
       RESULT_MESSAGE,
     ]);
 
+    expect(events.some((e) => e.type === "interrupted")).toBe(false);
     expect(events.some((e) => e.type === "error")).toBe(false);
   });
 

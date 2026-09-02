@@ -65,3 +65,31 @@ describe("BreakerStore", () => {
     expect(await new BreakerStore(dir).isTripped("a")).toBe(true);
   });
 });
+
+// A run stopped because its tools were broken says nothing about the agent.
+// Counting it would turn three unrelated outages into a disabled agent that
+// only a human could re-enable — the same shape as the rate-limit deadlock,
+// where a transient external fault became a permanent lockout.
+describe("BreakerStore and interrupted runs", () => {
+  it("does not count an interrupted run as a failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-breaker-"));
+    const breaker = new BreakerStore(dir);
+
+    await breaker.recordResult("research", "interrupted");
+    await breaker.recordResult("research", "interrupted");
+    await breaker.recordResult("research", "interrupted");
+
+    expect(await breaker.isTripped("research")).toBe(false);
+  });
+
+  it("still trips on genuine failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-breaker-"));
+    const breaker = new BreakerStore(dir);
+
+    await breaker.recordResult("research", "failed");
+    await breaker.recordResult("research", "failed");
+    await breaker.recordResult("research", "failed");
+
+    expect(await breaker.isTripped("research")).toBe(true);
+  });
+});

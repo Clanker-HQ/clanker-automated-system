@@ -6,6 +6,14 @@ export type RunEvent =
   | { type: "tool_result"; name: string; ok: boolean }
   | { type: "usage"; inputTokens: number; outputTokens: number; costUsd: number; durationMs: number }
   | { type: "error"; message: string }
+  /**
+   * The run was stopped by the system because its environment stopped working
+   * — not because the agent did anything wrong. Maps to RunStatus
+   * "interrupted", which `BreakerStore`'s FAILURE_STATUSES deliberately
+   * excludes: a broken dependency must not disable the agent that happened to
+   * be running when it broke.
+   */
+  | { type: "interrupted"; reason: string }
   | {
       type: "rate_limit_event";
       status: "allowed" | "allowed_warning" | "rejected";
