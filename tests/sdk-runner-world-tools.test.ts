@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfigOverridesStore } from "../src/config-overrides.js";
+import { FakeFindingReviewer } from "../src/control/finding-reviewer.js";
 import { PendingStore } from "../src/control/pending.js";
 import type { AgentDef } from "../src/registry.js";
 import type { RunEvent } from "../src/runner/types.js";
@@ -104,6 +105,92 @@ describe("SdkRunner worldModel tools", () => {
       confidence: "medium",
       sources: ["https://example.com/pricing"],
     });
+  });
+
+  it("downgrades confidence and appends the reviewer's note when FindingReviewer disagrees", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-world-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const world = new WorldModel(dataDir);
+    const findingReviewer = new FakeFindingReviewer({
+      confidence: "low",
+      note: "claim rests on a blog roundup, not the marketplace itself",
+    });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world, findingReviewer });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.worldModel!.instance!._registeredTools.recordFinding!.handler;
+
+    await handler({
+      topic: "Shortlist 3 candidate products",
+      conclusion: "Candidate 1 beats every named competitor.",
+      confidence: "high",
+      sources: ["https://example.com/roundup"],
+    });
+
+    const finding = await world.readFinding("Shortlist 3 candidate products");
+    expect(finding?.confidence).toBe("low");
+    expect(finding?.conclusion).toContain("Candidate 1 beats every named competitor.");
+    expect(finding?.conclusion).toContain("claim rests on a blog roundup, not the marketplace itself");
+    expect(findingReviewer.calls).toEqual([
+      {
+        topic: "Shortlist 3 candidate products",
+        conclusion: "Candidate 1 beats every named competitor.",
+        confidence: "high",
+        sources: ["https://example.com/roundup"],
+      },
+    ]);
+  });
+
+  it("leaves the finding unchanged when FindingReviewer agrees", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-world-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const world = new WorldModel(dataDir);
+    const findingReviewer = new FakeFindingReviewer((input) => ({ confidence: input.confidence }));
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world, findingReviewer });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.worldModel!.instance!._registeredTools.recordFinding!.handler;
+
+    await handler({
+      topic: "Headless CMS pricing",
+      conclusion: "Not worth pursuing: margins are too thin below $20/mo.",
+      confidence: "medium",
+      sources: ["https://example.com/pricing"],
+    });
+
+    const finding = await world.readFinding("Headless CMS pricing");
+    expect(finding).toMatchObject({
+      conclusion: "Not worth pursuing: margins are too thin below $20/mo.",
+      confidence: "medium",
+    });
+  });
+
+  it("still records the finding as given when FindingReviewer throws", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-world-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const world = new WorldModel(dataDir);
+    const findingReviewer = { review: vi.fn().mockRejectedValue(new Error("grading call exploded")) };
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world, findingReviewer });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.worldModel!.instance!._registeredTools.recordFinding!.handler;
+
+    const result = await handler({
+      topic: "Headless CMS pricing",
+      conclusion: "Not worth pursuing.",
+      confidence: "high",
+      sources: [],
+    });
+
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Headless CMS pricing") }] });
+    const finding = await world.readFinding("Headless CMS pricing");
+    expect(finding).toMatchObject({ conclusion: "Not worth pursuing.", confidence: "high" });
   });
 
   // Zod's .default() is only applied on the real MCP request path (the

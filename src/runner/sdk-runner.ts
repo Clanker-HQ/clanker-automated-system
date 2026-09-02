@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { MemoryConfig } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import { touchesExcludedPath } from "../control/excluded-paths.js";
+import type { FindingReviewer } from "../control/finding-reviewer.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
@@ -466,6 +467,8 @@ export class SdkRunner implements Runner {
       memoryConfig?: MemoryConfig;
       /** Optional, same shape as `tasks`/`memory`: without it recordFinding/updatePortfolioEntry are simply not registered. */
       world?: WorldModel;
+      /** Optional: without it, recordFinding writes the finding exactly as given, no automated confidence check. */
+      findingReviewer?: FindingReviewer;
       /** Optional: without it, writeStrategy is simply not registered (see Task C3). */
       strategyStore?: StrategyStore;
       /**
@@ -1165,6 +1168,7 @@ export class SdkRunner implements Runner {
       : undefined;
 
     const worldDep = this.deps.world;
+    const findingReviewerDep = this.deps.findingReviewer;
     /**
      * The world model's write side — agents/research and the scouts read it
      * via `world.summaryForPrompt()` baked into their prompt (see
@@ -1200,10 +1204,27 @@ export class SdkRunner implements Runner {
                         sources: z.array(z.string()).default([]),
                       },
                       async ({ topic, conclusion, confidence, sources }) => {
+                        let finalConclusion = conclusion;
+                        let finalConfidence = confidence;
+                        // Never allowed to block recordFinding itself: a grading
+                        // call that errors or hangs is a lost review, not a lost
+                        // finding — same posture Orchestrator takes toward
+                        // OutcomeVerifier failing.
+                        if (findingReviewerDep) {
+                          try {
+                            const review = await findingReviewerDep.review({ topic, conclusion, confidence, sources });
+                            if (review.confidence !== confidence) {
+                              finalConfidence = review.confidence;
+                              finalConclusion = `${conclusion}\n\n[Automated review downgraded confidence from ${confidence} to ${review.confidence}: ${review.note ?? "no reason given"}]`;
+                            }
+                          } catch (error) {
+                            console.error(`[recordFinding] review failed for topic "${topic}"`, error);
+                          }
+                        }
                         await worldDep.writeFinding(topic, {
                           topic,
-                          conclusion,
-                          confidence,
+                          conclusion: finalConclusion,
+                          confidence: finalConfidence,
                           sources,
                           updatedAt: new Date().toISOString(),
                         });

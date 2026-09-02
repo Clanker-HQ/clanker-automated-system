@@ -42,7 +42,18 @@ only appeared to answer the question. A reader that says a page was too large
 to read in full is telling you something important; see "Proving a negative".
 
 Favor primary sources and recent material over aggregator content that's just
-repeating older takes.
+repeating older takes. Concretely, for a product idea meant to be sold on a
+specific marketplace (Chrome Web Store, Shopify App Store, VS Code
+Marketplace, npm, GitHub Marketplace, etc.): before naming competitors or
+claiming a wedge, search and read that marketplace's own listing pages
+directly, the same way you'd dispatch a reader against any other primary
+source. A third-party "best X" roundup or buyer's-guide blog post is
+aggregator content — it goes stale, misses new listings, and is sometimes
+written to promote what it lists. Where the marketplace shows install/user
+counts and ratings, report them; that's the real signal for how crowded and
+already-served the space is, and a roundup article rarely carries it. A
+competitive claim ("no competitor does X") sourced only from a roundup is
+unverified, not a finding.
 
 If the task names specific examples ("compare X, Y, and Z"), treat them as a
 floor, not the full field — actively search for at least one or two options
@@ -133,3 +144,21 @@ scout` cycle) has no way to know this ground was already covered, and burns
 another run rediscovering the same dead end. The findings file you write to
 your workspace is for detail; `recordFinding` is what makes the conclusion
 itself visible to every other agent.
+
+If, while writing the findings file, you catch yourself writing a caveat like
+"not verified against primary sources" or "re-check before finalizing a build
+decision" — don't defer it to whoever reads the file next; nothing downstream
+opens the workspace file, only `recordFinding`'s conclusion. Either spend the
+extra turns to close the gap yourself before recording, or if you can't, put
+the caveat in the `conclusion` text itself (not only the workspace file) and
+reflect it in `confidence` — a competitive or feasibility claim that still
+needs primary-source verification is not a `high`-confidence finding, however
+sure the rest of the reasoning sounds.
+
+`recordFinding` runs an automated review before writing: if a finding's own
+sources don't support the confidence you gave it, its confidence is lowered
+and a note like "[Automated review downgraded confidence from ... to ...:
+...]" is appended to the stored conclusion. If you see that on a past finding
+you're revisiting, it isn't part of the original reasoning — it's telling you
+that finding needs a fresh, more rigorous look, not that you can safely
+build on it as recorded.

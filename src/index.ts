@@ -4,6 +4,7 @@ import { type Config, loadConfig } from "./config.js";
 import { ConfigOverridesStore, resolveGovernorSettings } from "./config-overrides.js";
 import { DiscordBot } from "./control/bot.js";
 import { reconcileAndConnectBot } from "./control/boot-wiring.js";
+import { buildFindingReviewer } from "./control/build-finding-reviewer.js";
 import { buildOutcomeVerifier } from "./control/build-outcome-verifier.js";
 import { buildReflectionSynthesiser } from "./control/build-reflection-synthesiser.js";
 import { buildRouter } from "./control/build-router.js";
@@ -165,6 +166,7 @@ async function main(): Promise<void> {
       memoryConfig: config.memory,
       systemContext,
       world,
+      findingReviewer: buildFindingReviewer(),
       strategyStore,
       overrides,
       breaker,
