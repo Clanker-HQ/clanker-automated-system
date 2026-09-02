@@ -156,6 +156,27 @@ describe("Governor.admit", () => {
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("budget"), alert: true });
   });
 
+  // Same reasoning as the breaker's alert:false above: budget-reached is a
+  // STATE re-checked on every dispatch for the rest of the day, so a task
+  // queue turns "alert: true" into an identical Discord message per refused
+  // trigger. One alert per day the threshold is first crossed is enough.
+  it("alerts only once per day once the daily budget is reached", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const runStore = new RunStore(dir);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T08:00:00.000Z"));
+    try {
+      const writer = await runStore.open(newRunId("smoke", new Date("2026-08-26T08:00:00.000Z")), "smoke");
+      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 10, durationMs: 1 });
+      await writer.close({ status: "success", summary: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const governor = build(dir);
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("budget"), alert: true });
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("budget"), alert: false });
+  });
+
   it("does not count yesterday's spend against today's budget", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const runStore = new RunStore(dir);
@@ -182,11 +203,44 @@ describe("Governor.admit", () => {
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("rate limit"), alert: true });
   });
 
+  // Same STATE-vs-EVENT reasoning as the breaker's alert:false: this snapshot
+  // is re-read on every dispatch, so a dispatcher tick (or a queued task)
+  // firing every 30s reposted the same "rate limit ... 94%" line to Discord
+  // for as long as utilization stayed above threshold. Alert once per distinct
+  // snapshot (keyed by recordedAt), then stay quiet until a fresh reading
+  // actually changes something — `!status` shows the current figure meanwhile.
+  it("alerts only once for an unchanged rejected snapshot, so a queue of refused triggers doesn't spam Discord", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "rejected" });
+    const governor = build(dir);
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("rate limit"), alert: true });
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("rate limit"), alert: false });
+  });
+
   it("refuses once utilization crosses the pause threshold, even when status is only a warning", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.97 });
     const result = await build(dir).admit(agent(), "trigger");
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+  });
+
+  it("alerts only once for an unchanged over-threshold utilization reading, across repeated admits", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.97 });
+    const governor = build(dir);
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: false });
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: false });
+  });
+
+  it("alerts again once a fresh rate-limit snapshot replaces the one already alerted on", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const tracker = new RateLimitTracker(dir);
+    await tracker.record({ status: "allowed_warning", utilization: 0.97 });
+    const governor = build(dir);
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+    await tracker.record({ status: "allowed_warning", utilization: 0.98 });
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
   });
 
   it("admits below the pause threshold, warning status and all", async () => {
