@@ -39,6 +39,7 @@ interface QueryParams {
     tools: string[];
     permissionMode: string;
     settingSources: unknown[];
+    settings?: { autoCompactWindow?: number; promptCacheTtl?: string; subagentPromptCacheTtl?: string };
     env: Record<string, string>;
     abortController: AbortController;
     agents?: Record<
@@ -414,6 +415,50 @@ describe("SdkRunner query options", () => {
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     await collect(new SdkRunner().execute(bare, CTX, new AbortController().signal));
     expect((queryMock.mock.calls[0]![0] as QueryParams).options.tools).toEqual([]);
+  });
+
+  // research's own conversation is what's resent on every turn — the
+  // dominant cost this whole file exists to bound, bigger than any of the
+  // schema trims above. A lower autoCompactWindow makes the SDK's own
+  // auto-compaction fire before the default ~200k-token ceiling, summarizing
+  // older search/read content instead of dragging it through every
+  // remaining turn. Scoped to research alone: this is a NEW kind of change
+  // from the schema trims — it can lose fidelity in older conversation
+  // content, and no other agent's workflow (builder's red-green loop,
+  // pr-reviewer's fan-out) has been checked against that risk.
+  it("sets a lower autoCompactWindow for research, so auto-compaction fires well before the default ~200k-token ceiling", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const research = { ...AGENT, name: "research" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(new SdkRunner().execute(research, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueryParams;
+    expect(params.options.settings?.autoCompactWindow).toBeGreaterThan(0);
+    expect(params.options.settings?.autoCompactWindow).toBeLessThan(100_000);
+  });
+
+  // Verified against the SDK's own resolution function (grep the installed
+  // @anthropic-ai/claude-agent-sdk-win32-x64 bundle for "FORCE_PROMPT_CACHING_5M"):
+  // absent an explicit override, the cache TTL is 5 minutes, full stop — the
+  // "1 hour on a subscription" line in the settings.promptCacheTtl doc string
+  // does not match what the resolver actually checks (an ENABLE_PROMPT_CACHING_1H
+  // env var this repo never sets), and the sibling subagentPromptCacheTtl
+  // field's own doc string ("Unset = automatic (5 minutes unless
+  // ENABLE_PROMPT_CACHING_1H=1)") says so plainly. 5 minutes is long enough
+  // for the turn-to-turn gaps a healthy run actually has (single-digit
+  // seconds, per the real transcript), but not for a pause this system is
+  // specifically exposed to: a governor-paced retry or rate-limit backoff
+  // longer than 5 minutes would cold-cache the very next turn, right when
+  // the account is already under the most strain. Explicitly requesting the
+  // 1-hour TTL removes that risk with no content-fidelity cost (unlike
+  // autoCompactWindow), so it applies to every agent, not just research.
+  it("requests the 1-hour cache TTL for every agent, not just research", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { params } = await run([RESULT_MESSAGE]);
+    expect(params.options.settings?.promptCacheTtl).toBe("1h");
+    expect(params.options.settings?.subagentPromptCacheTtl).toBe("1h");
+    // Confirms this is the "smoke" agent, not research — autoCompactWindow
+    // must stay scoped to research alone.
+    expect(params.options.settings?.autoCompactWindow).toBeUndefined();
   });
 });
 

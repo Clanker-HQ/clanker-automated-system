@@ -156,6 +156,35 @@ const GITHUB_PR_AGENTS: ReadonlySet<string> = new Set(["builder", "pr-reviewer",
  */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 5;
 
+/**
+ * Overrides the SDK's default auto-compaction ceiling (the model's context
+ * limit, ~200k tokens for Sonnet -- see settings.autoCompactWindow in
+ * node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts) for research only.
+ *
+ * research's own accumulated conversation -- not the fixed per-turn baseline
+ * the other constants in this file bound -- is the dominant term in what a
+ * run costs: every turn resends everything before it, so content added at
+ * turn 3 is paid for again on every one of the ~20 turns after it. A 200k
+ * ceiling never engages for a run whose peak context lands around 75-85k
+ * tokens (back-computed from a verified $1.02/515k-token run), so today
+ * research pays that full quadratic cost with no relief.
+ *
+ * 60,000 is a first, deliberately moderate cut: high enough to preserve most
+ * of the "search and dispatch readers" phase (see prompt.md) before the
+ * "synthesize and write" phase begins, low enough to plausibly fire at least
+ * once on a normal run and trim the tail that phase boundary creates. This
+ * is the one change in this file that can lose fidelity in older
+ * conversation content (compaction summarizes; it does not just drop
+ * redundant filler), which is exactly the axis agents/research/prompt.md's
+ * "Proving a negative" section is written to protect -- so it is scoped to
+ * research alone, not applied system-wide, and its actual effect (does the
+ * SDK's own compact_boundary event even fire, and does the run's summary
+ * still hold up) needs to be read off the next real run via the "compacted"
+ * RunEvent this same change adds observability for (see toRunEvents' "system"
+ * case), not assumed from this reasoning alone.
+ */
+const RESEARCH_AUTO_COMPACT_WINDOW = 60_000;
+
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -367,6 +396,14 @@ export function toRunEvents(message: unknown): RunEvent[] {
       if (typeof info.utilization === "number") (event as Record<string, unknown>).utilization = info.utilization;
       if (typeof info.resetsAt === "number") (event as Record<string, unknown>).resetsAt = info.resetsAt;
       return [event];
+    }
+
+    case "system": {
+      if (m.subtype !== "compact_boundary") return [];
+      const meta = (m.compact_metadata as Record<string, unknown> | undefined) ?? {};
+      const trigger = meta.trigger === "manual" ? "manual" : "auto";
+      const postTokens = typeof meta.post_tokens === "number" ? meta.post_tokens : undefined;
+      return [{ type: "compacted", trigger, preTokens: num(meta.pre_tokens), postTokens }];
     }
 
     default:
@@ -1286,6 +1323,22 @@ export class SdkRunner implements Runner {
         tools: agent.permissions.allowedTools,
         permissionMode: "default",
         settingSources: [],
+        // Explicitly request the 1-hour cache TTL rather than relying on
+        // the SDK's own default: absent this, the resolver falls back to 5
+        // minutes unless ENABLE_PROMPT_CACHING_1H is set in the environment
+        // (nothing in this repo sets it) -- verified against the installed
+        // SDK's own resolution function, not just its (inconsistent) doc
+        // string. 5 minutes is long enough for a healthy run's own
+        // turn-to-turn gaps, but not for a governor-paced retry or
+        // rate-limit backoff longer than that -- exactly the condition this
+        // system is built around, and exactly when a cold cache costs the
+        // most. No content-fidelity risk (unlike autoCompactWindow below),
+        // so this applies to every agent, not just research.
+        settings: {
+          promptCacheTtl: "1h",
+          subagentPromptCacheTtl: "1h",
+          ...(agent.name === "research" ? { autoCompactWindow: RESEARCH_AUTO_COMPACT_WINDOW } : {}),
+        },
         env: childEnv,
         abortController: controller,
         canUseTool,

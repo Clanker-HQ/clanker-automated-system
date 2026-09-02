@@ -249,6 +249,41 @@ describe("toRunEvents", () => {
     const events = toRunEvents({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
     expect(events).toEqual([{ type: "rate_limit_event", status: "allowed" }]);
   });
+
+  // Auto-compaction (settings.autoCompactWindow, see sdk-runner.ts) had no
+  // observability at all before this: a `system`/`compact_boundary` message
+  // fell into the `default: return []` branch below and vanished, so nobody
+  // could tell whether it fired, how often, or how much it actually saved
+  // (pre_tokens/post_tokens ride along on the SDK's own message for exactly
+  // this). Every conclusion this system has drawn from token counts so far
+  // has come from a number that was actually being recorded — this is that
+  // same discipline applied to the one new lever that touches conversation
+  // content, not just the fixed per-turn baseline.
+  it("maps a compact_boundary system message to a compacted RunEvent", () => {
+    const events = toRunEvents({
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "auto", pre_tokens: 62000, post_tokens: 8100, duration_ms: 1400 },
+      uuid: "u1",
+      session_id: "s1",
+    });
+    expect(events).toEqual([{ type: "compacted", trigger: "auto", preTokens: 62000, postTokens: 8100 }]);
+  });
+
+  it("maps a manual compact_boundary with no post_tokens, defaulting it to undefined", () => {
+    const events = toRunEvents({
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "manual", pre_tokens: 40000 },
+      uuid: "u2",
+      session_id: "s1",
+    });
+    expect(events).toEqual([{ type: "compacted", trigger: "manual", preTokens: 40000, postTokens: undefined }]);
+  });
+
+  it("ignores a system message that isn't a compact boundary", () => {
+    expect(toRunEvents({ type: "system", subtype: "init", session_id: "s1" })).toEqual([]);
+  });
 });
 
 // linkAbort exists because a listener attached to an AbortSignal that is

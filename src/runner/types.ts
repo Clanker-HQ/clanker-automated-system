@@ -35,7 +35,14 @@ export type RunEvent =
       resetsAt?: number;
     }
   | { type: "parked"; kind: "approval" | "question"; pendingId: string }
-  | { type: "denied"; reason: string };
+  | { type: "denied"; reason: string }
+  /**
+   * The SDK's own auto-compaction fired mid-run (settings.autoCompactWindow
+   * in SdkRunner, currently set for `research` only), replacing older
+   * conversation content with a summary. `postTokens` is absent when the
+   * SDK's message didn't report it, not when compaction produced zero.
+   */
+  | { type: "compacted"; trigger: "manual" | "auto"; preTokens: number; postTokens?: number };
 
 export interface RunContext {
   runId: string;
