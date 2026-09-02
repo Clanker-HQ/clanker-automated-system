@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PendingStore } from "../src/control/pending.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../src/control/task-store.js";
+import { FakeTaskReviewer } from "../src/control/task-reviewer.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import type { AgentDef } from "../src/registry.js";
 import type { RunEvent } from "../src/runner/types.js";
@@ -376,6 +377,125 @@ describe("SdkRunner queueTask tool", () => {
 
     expect(fourth.content[0]!.text).toContain("Refused");
     expect(await tasks.list()).toHaveLength(3);
+  });
+});
+
+// Scoped to research alone (see TASK_REVIEW_AGENTS in sdk-runner.ts): a
+// research-proposed build task is the one that flows straight to builder and
+// eventually real spend (hosting, registration fees), which is what a
+// research run's own recordFinding conclusion getting ahead of its sourcing
+// actually put at risk. The scouts/overseer propose narrower, more reversible
+// work, so review is not applied to them here.
+describe("SdkRunner queueTask automated review (research only)", () => {
+  const RESEARCH_AGENT = { ...AGENT, name: "research" } as unknown as AgentDef;
+
+  it("refuses a poorly-grounded proposal from research, without queuing it", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const taskReviewer = new FakeTaskReviewer({
+      allowed: false,
+      reason: "claim about competitor pricing rests on a blog roundup, not the vendor's own page",
+    });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, taskReviewer });
+    await collect(runner.execute(RESEARCH_AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Build the checkout flow for candidate 1.", domain: "general" })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Refused");
+    expect(result.content[0]!.text).toContain("blog roundup");
+    expect(await tasks.list()).toEqual([]);
+    expect(taskReviewer.calls).toEqual([
+      { text: "Build the checkout flow for candidate 1.", domain: "general", subject: undefined, createdBy: "agent:research" },
+    ]);
+  });
+
+  it("queues a well-grounded proposal from research normally", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const taskReviewer = new FakeTaskReviewer({ allowed: true });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, taskReviewer });
+    await collect(runner.execute(RESEARCH_AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Build the checkout flow for candidate 1." })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Queued task");
+    expect(await tasks.list()).toHaveLength(1);
+  });
+
+  it("does not apply review to a non-research agent, even with an always-refusing reviewer wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const taskReviewer = new FakeTaskReviewer({ allowed: false, reason: "would refuse everything" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, taskReviewer });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Look into a new opportunity." })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Queued task");
+    expect(await tasks.list()).toHaveLength(1);
+    expect(taskReviewer.calls).toEqual([]);
+  });
+
+  it("still queues the task when TaskReviewer throws", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const taskReviewer = { review: vi.fn().mockRejectedValue(new Error("grading call exploded")) };
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, taskReviewer });
+    await collect(runner.execute(RESEARCH_AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Build the checkout flow for candidate 1." })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Queued task");
+    expect(await tasks.list()).toHaveLength(1);
+  });
+
+  it("counts a review refusal against the same per-run cap as a duplicate refusal", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const taskReviewer = new FakeTaskReviewer({ allowed: false, reason: "not grounded" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, taskReviewer });
+    await collect(runner.execute(RESEARCH_AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    await handler({ text: "one" });
+    await handler({ text: "two" });
+    await handler({ text: "three" });
+    const fourth = (await handler({ text: "four" })) as { content: { type: string; text: string }[] };
+
+    expect(fourth.content[0]!.text).toContain("maximum allowed in one run");
+    expect(await tasks.list()).toEqual([]);
   });
 });
 

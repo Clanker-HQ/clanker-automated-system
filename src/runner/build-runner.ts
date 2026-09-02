@@ -4,6 +4,7 @@ import type { FindingReviewer } from "../control/finding-reviewer.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import type { PendingStore } from "../control/pending.js";
+import type { TaskReviewer } from "../control/task-reviewer.js";
 import type { TaskStore } from "../control/task-store.js";
 import type { Grant } from "../grants.js";
 import type { MemoryStore } from "../memory/memory-store.js";
@@ -34,6 +35,7 @@ export function buildRunner(
     github?: GithubTransport;
     gitPusher?: GitPusher;
     tasks?: TaskStore;
+    taskReviewer?: TaskReviewer;
     wake?: () => Promise<void>;
     systemContext?: string;
     memory?: MemoryStore;
