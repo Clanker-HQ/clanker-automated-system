@@ -28,8 +28,20 @@ export const EXPLORATION_INTERVAL = 5;
  * approve/deny/answer (a `parked`/`question` RunResult). It is neither finished
  * nor failed — the run resumes its original session once the owner replies —
  * so it deliberately keeps no `finishedAt`/`failureReason`.
+ *
+ * "queued" and "running" are deliberately distinct, not one "in flight"
+ * state. claimNextPending marks a task "queued" the instant it is claimed —
+ * before routing, before Governor.admit() is ever called — so two dispatch
+ * attempts can never claim the same task. Whether that claim can actually
+ * START a run depends on Governor concurrency (config.yaml's maxConcurrent),
+ * which can block for as long as every other slot stays busy. Collapsing
+ * both into "running" (the previous behaviour) made `!tasks` show N tasks
+ * "running" when only maxConcurrent of them genuinely were — the rest were
+ * claimed and waiting their turn. Dispatcher.executeAndFinalize flips
+ * "queued" to "running" via the onAdmitted callback, exactly when
+ * Governor.admit() actually resolves.
  */
-export type TaskStatus = "pending" | "running" | "done" | "failed" | "waiting";
+export type TaskStatus = "pending" | "queued" | "running" | "done" | "failed" | "waiting";
 
 /**
  * "exploitation" is the default (see create()) so every existing caller —
@@ -228,10 +240,13 @@ export class TaskStore {
 
   /**
    * Atomically picks the next eligible pending task (see nextPending) and
-   * marks it "running" in the same step, so two dispatch attempts racing
+   * marks it "queued" in the same step, so two dispatch attempts racing
    * concurrently can never both claim the same task — nextPending() alone is
    * just a read, with nothing stopping two callers from picking the same
-   * result before either one flags it as taken.
+   * result before either one flags it as taken. "queued" rather than
+   * "running": claiming happens before routing and before this task has any
+   * chance at a Governor concurrency slot, so calling it "running" here would
+   * be false the moment more tasks are claimed than maxConcurrent allows.
    *
    * Also enforces the exploration floor: once EXPLORATION_INTERVAL claims in
    * a row have gone to something other than "exploration", the next claim
@@ -265,20 +280,21 @@ export class TaskStore {
       // task finally arrives it is promoted immediately rather than waiting
       // out another full interval.
       await this.writeClaimsSinceExploration((task.category ?? "exploitation") === "exploration" ? 0 : claimsSinceExploration);
-      return this.update(task.id, { status: "running", startedAt });
+      return this.update(task.id, { status: "queued", startedAt });
     });
   }
 
   /**
-   * A task still marked "running" from before a restart has nothing actually
-   * working it — the Orchestrator's own crash handling covers the agent run
-   * itself, but the task-level record must not stay stuck. Reset it to
-   * "pending" so the next dispatcher tick picks it back up.
+   * A task still marked "queued" or "running" from before a restart has
+   * nothing actually working it — the Orchestrator's own crash handling
+   * covers the agent run itself, but the task-level record must not stay
+   * stuck in either in-flight state. Reset it to "pending" so the next
+   * dispatcher tick picks it back up.
    */
   async reconcile(): Promise<{ reset: Task[] }> {
-    const running = (await this.list()).filter((t) => t.status === "running");
+    const inFlight = (await this.list()).filter((t) => t.status === "queued" || t.status === "running");
     const reset: Task[] = [];
-    for (const task of running) {
+    for (const task of inFlight) {
       reset.push(await this.update(task.id, { status: "pending", specialistAgent: undefined }));
     }
     return { reset };

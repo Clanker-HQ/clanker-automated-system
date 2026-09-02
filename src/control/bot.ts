@@ -85,11 +85,14 @@ function formatTaskDetail(task: Task): string {
     case "waiting":
       lines.push("Waiting on you to approve/deny/answer — check for an earlier prompt in this channel.");
       break;
+    case "queued":
+      lines.push(`Claimed and routed, waiting for a concurrency slot to open (claimed ${task.startedAt ?? "?"}).`);
+      break;
     case "running":
-      lines.push(`Still running (started ${task.startedAt ?? "?"}).`);
+      lines.push(`Actually running (started ${task.startedAt ?? "?"}).`);
       break;
     case "pending":
-      lines.push("Still queued.");
+      lines.push("Not yet claimed by a dispatcher pass.");
       break;
   }
   return lines.join("\n");
@@ -503,9 +506,9 @@ export class DiscordBot {
       case "!status": {
         const status = await this.governor.status();
         const active = await this.tasks.list();
-        const counts = { pending: 0, running: 0, waiting: 0 };
+        const counts = { pending: 0, queued: 0, running: 0, waiting: 0 };
         for (const t of active) {
-          if (t.status === "pending" || t.status === "running" || t.status === "waiting") counts[t.status]++;
+          if (t.status === "pending" || t.status === "queued" || t.status === "running" || t.status === "waiting") counts[t.status]++;
         }
         const lines = [
           status.stopped ? "🛑 STOPPED — no new runs or resumes until `!resume`" : "▶️ running",
@@ -519,7 +522,7 @@ export class DiscordBot {
           status.rateLimitUtilization === null
             ? "Rate limit: no reading yet"
             : `Rate limit: ${(status.rateLimitUtilization * 100).toFixed(0)}% of window (pauses at ${(status.rateLimitPauseThreshold * 100).toFixed(0)}%)`,
-          `Tasks: ${counts.pending} pending, ${counts.running} running, ${counts.waiting} waiting`,
+          `Tasks: ${counts.pending} pending, ${counts.queued} queued, ${counts.running} running, ${counts.waiting} waiting`,
         ];
         return void reply(lines.join("\n"));
       }
@@ -528,13 +531,16 @@ export class DiscordBot {
         const active = all
           // "waiting" belongs here too: it is a live run paused on a human
           // approve/deny/answer, so it is exactly what the owner needs to see.
-          .filter((t) => t.status === "pending" || t.status === "running" || t.status === "waiting")
+          // "queued" is claimed-but-not-yet-admitted — see TaskStatus's own
+          // comment for why that is not the same thing as "running".
+          .filter((t) => t.status === "pending" || t.status === "queued" || t.status === "running" || t.status === "waiting")
           .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
         const lines = active.map((t) => {
           const text = t.text.length > 60 ? `${t.text.slice(0, 57)}...` : t.text;
-          return `${t.id.slice(0, 8)} — ${t.status} — ${text}`;
+          const label = t.status === "queued" ? "queued (waiting for a slot)" : t.status;
+          return `${t.id.slice(0, 8)} — ${label} — ${text}`;
         });
-        return void reply(lines.length > 0 ? lines.join("\n") : "No pending, running, or waiting tasks.");
+        return void reply(lines.length > 0 ? lines.join("\n") : "No pending, queued, running, or waiting tasks.");
       }
       default:
         return void reply(`Unknown command: ${command}`);

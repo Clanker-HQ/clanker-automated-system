@@ -11,7 +11,12 @@ import type { Router, Specialist } from "./router.js";
 import type { Task, TaskStore } from "./task-store.js";
 
 export interface RunTrigger {
-  executeRun(agent: AgentDef, now?: Date, promptContext?: string): Promise<RunResult | undefined>;
+  executeRun(
+    agent: AgentDef,
+    now?: Date,
+    promptContext?: string,
+    onAdmitted?: () => void | Promise<void>,
+  ): Promise<RunResult | undefined>;
 }
 
 export interface DispatcherDeps {
@@ -268,7 +273,15 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       console.error("[dispatcher] world model summary skipped", error);
     }
     const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${memoryContext}${worldContext}`;
-    const result = await deps.orchestrator.executeRun(agent, now(), promptContext);
+    // "queued" (set by claimNextPending) becomes "running" only once this run
+    // actually clears Governor concurrency — not at claim time, and not just
+    // because executeRun was called. Best-effort: a write failure here must
+    // never be allowed to fail the run itself.
+    const result = await deps.orchestrator.executeRun(agent, now(), promptContext, async () => {
+      await deps.tasks.update(task.id, { status: "running" }).catch((err: unknown) => {
+        console.error(`[dispatcher] failed to mark task ${task.id} "running" on admission`, err);
+      });
+    });
 
     if (!result) {
       // Governor refused admission (quiet hours, budget, breaker, STOP file) —
