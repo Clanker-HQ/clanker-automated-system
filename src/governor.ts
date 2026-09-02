@@ -5,7 +5,7 @@ import { ConfigOverridesStore, resolveGovernorSettings } from "./config-override
 import type { AgentDef } from "./registry.js";
 import { RunStore } from "./run-store.js";
 import { BreakerStore } from "./state/breaker.js";
-import { RateLimitTracker } from "./state/rate-limit.js";
+import { RateLimitTracker, type RateLimitSnapshot } from "./state/rate-limit.js";
 
 export type AdmitResult = { kind: "admit" } | { kind: "refuse"; reason: string; alert: boolean };
 
@@ -32,6 +32,40 @@ function isWithinQuietHours(quietHours: QuietHours, now: Date): boolean {
   const current = `${hour}:${minute}`;
   // Same-day window only (from < to), matching config.yaml's documented examples.
   return current >= quietHours.from && current < quietHours.to;
+}
+
+/**
+ * How long a rate-limit snapshot keeps refusing runs when it carries no
+ * `resetsAt`, and the hard ceiling on how long one may refuse even when it
+ * does. Deliberately short, because the failure modes are wildly asymmetric:
+ * letting a run through when the account really is throttled costs one run
+ * that fails immediately at the API — and that failure records a fresh
+ * snapshot, so the system self-corrects at most once an hour. Refusing on a
+ * stale snapshot costs everything, forever.
+ */
+const RATE_LIMIT_SNAPSHOT_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * The snapshot only if it still describes the present, else null.
+ *
+ * This exists because the rate-limit state is the one piece of state that
+ * blocks its own replacement: a "rejected" snapshot refuses every run, and
+ * the only thing that writes a newer snapshot is a run. Obeyed unconditionally
+ * it is a deadlock, and on 2026-09-01 it was one — a snapshot whose own
+ * `resetsAt` had already elapsed refused every dispatch for hours, with no
+ * path back except deleting the file by hand.
+ *
+ * `resetsAt` is the cooldown `recordRateLimitError` already computes (doubling
+ * per consecutive miss, capped at 30 minutes) and documents as being consulted
+ * here. It was written and never read. Whichever of the two bounds expires
+ * first wins, so a long window reported by the API cannot pin the system shut
+ * either.
+ */
+function currentRateLimit(snapshot: RateLimitSnapshot | null, now: Date): RateLimitSnapshot | null {
+  if (!snapshot) return null;
+  if (now.getTime() - new Date(snapshot.recordedAt).getTime() >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS) return null;
+  if (snapshot.resetsAt !== undefined && now.getTime() >= snapshot.resetsAt * 1000) return null;
+  return snapshot;
 }
 
 function startOfDay(now: Date, timezone: string): string {
@@ -101,7 +135,9 @@ export class Governor {
       return { kind: "refuse", reason: `daily budget reached ($${spentToday.toFixed(2)} of $${settings.dailyBudgetUsd})`, alert: true };
     }
 
-    const snapshot = await this.rateLimits.read();
+    // Only a snapshot that still describes the present may refuse anything —
+    // see currentRateLimit. A stale one is discarded rather than obeyed.
+    const snapshot = currentRateLimit(await this.rateLimits.read(), now);
     if (snapshot?.status === "rejected") {
       return { kind: "refuse", reason: `rate limit currently rejected (as of ${snapshot.recordedAt})`, alert: true };
     }
