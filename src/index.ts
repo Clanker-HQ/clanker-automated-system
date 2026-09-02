@@ -9,6 +9,7 @@ import { buildOutcomeVerifier } from "./control/build-outcome-verifier.js";
 import { buildReflectionSynthesiser } from "./control/build-reflection-synthesiser.js";
 import { buildRouter } from "./control/build-router.js";
 import { buildSuccessorSuggester } from "./control/build-successor-suggester.js";
+import { buildTaskReviewer } from "./control/build-task-reviewer.js";
 import { Dispatcher } from "./control/dispatcher.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
 import { RealGitPusher } from "./control/git-pusher.js";
@@ -162,6 +163,7 @@ async function main(): Promise<void> {
       grants, pending: new PendingStore(DATA_DIR), github,
       gitPusher: new RealGitPusher(),
       tasks,
+      taskReviewer: buildTaskReviewer(),
       memory,
       memoryConfig: config.memory,
       systemContext,

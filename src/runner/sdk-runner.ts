@@ -8,6 +8,7 @@ import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
 import { evaluateSelfBuildPr, isSelfBuildChange } from "../control/self-build-gate.js";
+import type { TaskReviewer } from "../control/task-reviewer.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../control/task-store.js";
 import { decide, detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { MemoryStore } from "../memory/memory-store.js";
@@ -460,6 +461,8 @@ export class SdkRunner implements Runner {
       tasks?: TaskStore;
       /** Wakes the dispatcher after queueTask adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
       wake?: () => Promise<void>;
+      /** Optional: without it, queueTask queues exactly what's given, no automated rationale check — same fallback posture as findingReviewer below. */
+      taskReviewer?: TaskReviewer;
       /** docs/system-context.md's contents, read once at boot (src/index.ts). Optional so tests/scripts that don't care can skip it — the systemContext tool is simply not registered without it. */
       systemContext?: string;
       /** Optional, same shape as `tasks`: without it queueTask keeps its old flat-priority behaviour and writes no memory records. */
@@ -959,6 +962,14 @@ export class SdkRunner implements Runner {
     let queueTaskCalls = 0;
     const tasksDep = this.deps.tasks;
     const wakeDep = this.deps.wake;
+    const taskReviewerDep = this.deps.taskReviewer;
+    // Scoped to research alone: its own prompt.md is the only one instructed
+    // to call queueTask off a "something concrete is worth building" research
+    // conclusion — the one path that flows straight to `builder` and
+    // eventually real spend (hosting, registration fees). The scouts/overseer
+    // propose narrower, more reversible work (this system's own code, or a
+    // research question), so review is not applied to them here.
+    const TASK_REVIEW_AGENTS: ReadonlySet<string> = new Set(["research"]);
     const memoryDep = this.deps.memory;
     const memoryConfigDep = this.deps.memoryConfig;
     /**
@@ -1058,6 +1069,38 @@ export class SdkRunner implements Runner {
                             now,
                           ),
                         );
+                      }
+
+                      // After the free novelty check, before the paid review
+                      // call: no reason to spend on grading a proposal that
+                      // would already have been refused as a duplicate.
+                      if (taskReviewerDep && TASK_REVIEW_AGENTS.has(agent.name)) {
+                        try {
+                          const review = await taskReviewerDep.review({
+                            text, domain, subject, createdBy: `agent:${agent.name}`,
+                          });
+                          if (!review.allowed) {
+                            // Counted against the per-run cap, same as the
+                            // duplicate-refusal above: a run that keeps
+                            // proposing ungrounded ideas should run out of
+                            // attempts rather than retry forever.
+                            queueTaskCalls += 1;
+                            return {
+                              content: [
+                                {
+                                  type: "text" as const,
+                                  text: `Refused: automated review found this rationale not adequately grounded — ${review.reason}. Strengthen the sourcing or drop this proposal.`,
+                                },
+                              ],
+                            };
+                          }
+                        } catch (error) {
+                          // Never allowed to block queueTask itself: a grading
+                          // call that errors or hangs is a lost review, not a
+                          // lost proposal — same posture Orchestrator takes
+                          // toward a failed OutcomeVerifier call.
+                          console.error(`[queueTask] review failed for agent ${agent.name}`, error);
+                        }
                       }
 
                       queueTaskCalls += 1;
