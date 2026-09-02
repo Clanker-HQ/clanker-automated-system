@@ -154,3 +154,11 @@ the caveat in the `conclusion` text itself (not only the workspace file) and
 reflect it in `confidence` — a competitive or feasibility claim that still
 needs primary-source verification is not a `high`-confidence finding, however
 sure the rest of the reasoning sounds.
+
+`recordFinding` runs an automated review before writing: if a finding's own
+sources don't support the confidence you gave it, its confidence is lowered
+and a note like "[Automated review downgraded confidence from ... to ...:
+...]" is appended to the stored conclusion. If you see that on a past finding
+you're revisiting, it isn't part of the original reasoning — it's telling you
+that finding needs a fresh, more rigorous look, not that you can safely
+build on it as recorded.
