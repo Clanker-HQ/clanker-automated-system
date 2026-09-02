@@ -99,7 +99,7 @@ export function loadGrants(path: string): Grant[] {
  * authority; the pair (kind, target) is.
  */
 export interface OutwardEffect {
-  kind: "http" | "git-push" | "provision" | "github-pr";
+  kind: "http" | "git-push" | "provision" | "github-pr" | "env-read";
   description: string;
   target: string;
   /** Only ever set by the pushBranch effect below — a raw Bash `git push` never carries one. */
@@ -114,6 +114,20 @@ export const DEFAULT_UPSTREAM_TARGET = "(default upstream)";
 // Node's URL keeps the brackets on an IPv6 hostname ("http://[::1]/" ->
 // "[::1]"), so both spellings are listed rather than assumed.
 const LOCAL_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * Matches ".env" as its own path segment or filename — `cat .env`,
+ * `./.env`, `../foo/.env`, an absolute path — but not a name that merely
+ * starts the same way, like `.env.example` (this repo's committed, secret-
+ * free template) or `.environment`. No agent's legitimate work ever reads
+ * .env directly: every credential this system uses flows through a
+ * server-side MCP tool that holds it internally, so a command referencing
+ * this file by any path has no legitimate use and is refused unconditionally
+ * in `decide()` below — no grant can authorise it, the same posture
+ * `EXCLUDED_PATHS` (src/control/excluded-paths.ts) takes for a PR touching a
+ * security-sensitive file.
+ */
+const ENV_FILE_PATTERN = /(^|[\s"'/])\.env($|[\s"'])/;
 
 /**
  * True only when the *hostname* of a parsed URL is loopback.
@@ -137,6 +151,20 @@ function isLocalUrl(url: string): boolean {
 export function detectOutwardEffect(toolName: string, input: Record<string, unknown>): OutwardEffect | null {
   if (toolName === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
+
+    // Checked before every other Bash pattern below, deliberately: a command
+    // that both reads .env and does something else outward-looking (e.g. the
+    // incident this exists because of — cd + grep .env + curl, all one
+    // string) must be caught here first, so this stays a refusal even if a
+    // later pattern (curl, git push, ...) were ever loosened or removed.
+    if (ENV_FILE_PATTERN.test(command)) {
+      return {
+        kind: "env-read",
+        description: `command reads .env (${command.trim()})`,
+        target: "env-file",
+      };
+    }
+
     // Bare `git push` — no remote argument, pushing to the configured upstream
     // — is the commonest real-world form, and requiring a captured argument
     // meant it was detected as nothing at all. It now reports a sentinel
@@ -286,6 +314,18 @@ export function decide(
 ): Decision {
   const effect = detectOutwardEffect(toolName, input);
   if (!effect) return { kind: "allow" };
+
+  // Unconditional, ahead of the tier/grant checks below: no grant kind is
+  // ever "env-read" (see ENV_FILE_PATTERN's doc comment), so a grant could
+  // never legitimately match here anyway — this exists purely to give a
+  // clear, specific refusal instead of the generic "no grant matches"
+  // message every other unmatched effect gets.
+  if (effect.kind === "env-read") {
+    return {
+      kind: "deny",
+      reason: `commands that read .env are never permitted, regardless of grants: ${effect.description}`,
+    };
+  }
 
   if (agent.tier === "readonly" || agent.tier === "sandboxed") {
     return { kind: "deny", reason: `tier "${agent.tier}" forbids outward effects: ${effect.description}` };
