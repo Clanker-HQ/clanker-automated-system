@@ -74,12 +74,23 @@ A bind mount rather than the named `agent-data` volume specifically because the 
 
 Two kinds of hostname follow from this, and the difference is a decision the operator made explicitly during brainstorming:
 
-- **This system's own services** — the status page, and the eventual dashboard — use a free wildcard-DNS hostname of the form `<name>.<vps-ip-with-dashes>.sslip.io`, which resolves to the IP encoded in it with no registrar, no account and no DNS configuration. Zero setup, and adequate for something only the operator looks at.
+- **This system's own services** — the status page, and the eventual dashboard — were originally specified to use a free wildcard-DNS hostname of the form `<name>.<vps-ip-with-dashes>.sslip.io`, which resolves to the IP encoded in it with no registrar, no account and no DNS configuration. **This no longer works, and the section below records why.**
 - **Products** get a real domain. A free hostname of that shape is not acceptable on something the system is asking strangers to pay for, and the credibility cost is real. Until D1b can register a domain and point its DNS automatically, this is one manual operator step per product: buy the domain, point an A record at the VPS, add the entry.
 
 That manual step is a feature, not a gap to apologise for. A domain costs about €10, so requiring one is a cheap, honest gate that a product only clears when it is genuinely worth shipping — which is the same kill-or-justify judgment Task C5 already forces at every portfolio review. When D1b automates registration, the gate becomes the `provision` grant's scope and its bank-enforced ceiling instead, and nothing in this design changes.
 
-**One caveat to record:** Let's Encrypt's rate limits apply per registered domain, and every user of `sslip.io` shares one. Issuance for a `sslip.io` hostname can therefore occasionally be refused through no fault of this system. Because the hostname is per-entry, the fix is to change that entry — a free DuckDNS name, or a real domain — and not to redesign anything. Products are unaffected, since they use real domains.
+**Amended 2026-09-01, after the first real research run.** The original caveat here said `sslip.io` issuance "can occasionally be refused". That understated it, and the `research` agent was asked to check it. Its conclusion is recorded in the world model as `sslip-io-public-suffix-list-status-and-let-s-encrypt-rate-limits` (confidence: high), and it checked the Public Suffix List's own data file rather than reasoning from memory:
+
+`sslip.io` is **not** on the Public Suffix List, so Let's Encrypt treats it as a single registered domain and every user of the service worldwide shares one certificate pool. That pool — raised to 50,000 per week on request — was **exhausted in February 2026**, with issuance failing as `too many certificates (50000) already issued for 'sslip.io' in the last 168h0m0s` ([sslip.io#108](https://github.com/cunnie/sslip.io/issues/108), [Let's Encrypt rate limits](https://letsencrypt.org/docs/rate-limits/)).
+
+So this is not an occasional risk to route around; it is a hostname scheme that cannot reliably obtain a certificate at all. **The design's free-hostname default is withdrawn.** The system's own services need the same thing products need: a hostname on a domain whose rate limit is not shared with the entire internet. Two ways to get one, and the choice is the operator's:
+
+- **Register one domain** (~€10/year). One purchase covers the webhook endpoint, the dashboard, and any product as a subdomain, and it is the only option that also gives the webhook a hostname stable enough for GitHub to keep delivering to.
+- **A PSL-listed free provider** such as DuckDNS, where each registered name is its own rate-limit scope. This needs the same verification `sslip.io` just failed — that its suffix is genuinely on the Public Suffix List — before it is written into this design as a default. Do not assume it; check it the same way.
+
+The per-entry `hostname` field means this correction changes no code: it changes what goes in the field. What it does invalidate is the free-hostname wording in `deploys.yaml`'s header comment, in `README.md`'s "Deploying products" section, and in Task 5 Step 7's end-to-end proof, all of which still describe the `sslip.io` form as the system's own default. Those are corrected alongside the supervisor-hostname work, which has to settle this question anyway.
+
+The agent's own recommendations — mkcert, lancert — are noted and rejected: both are local-development tooling for private IPs, and neither serves a public product. The finding's factual core is what matters here, not its advice.
 
 ## 5. The health gate
 

@@ -36,6 +36,10 @@ async function waitForWaiters(governor: Governor, count: number): Promise<void> 
   }
 }
 
+/** The clock `build` fixes below, so a test can place a snapshot before or after it. */
+const FIXED_NOW_MS = new Date("2026-08-26T12:00:00.000Z").getTime();
+const FIXED_NOW_SECONDS = Math.floor(FIXED_NOW_MS / 1000);
+
 function build(dataDir: string, now: () => Date = () => new Date("2026-08-26T12:00:00.000Z")) {
   return new Governor({
     dataDir, config: CONFIG, store: new RunStore(dataDir),
@@ -172,6 +176,82 @@ describe("Governor.admit", () => {
     await new RateLimitTracker(dir).record({ status: "rejected" });
     const result = await build(dir).admit(agent(), "trigger");
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("rate limit"), alert: true });
+  });
+
+  it("refuses once utilization crosses the pause threshold, even when status is only a warning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.97 });
+    const result = await build(dir).admit(agent(), "trigger");
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+  });
+
+  it("admits below the pause threshold, warning status and all", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.84 });
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  // A "rejected" snapshot refuses every run, and the only thing that writes a
+  // fresher snapshot is a run. So without an expiry the first rejection locks
+  // the system out permanently — which is exactly what happened on
+  // 2026-09-01: a snapshot whose own resetsAt had already passed kept
+  // refusing every dispatch hours later. recordRateLimitError's comment says
+  // its doubling cooldown is "consulted by future admit() calls"; it was not.
+  it("admits again once a rejected snapshot's cooldown has passed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "rejected", resetsAt: FIXED_NOW_SECONDS - 60 }, new Date(FIXED_NOW_MS - 60_000));
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  it("keeps refusing while a rejected snapshot's cooldown is still in the future", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "rejected", resetsAt: FIXED_NOW_SECONDS + 600 }, new Date(FIXED_NOW_MS));
+    expect(await build(dir).admit(agent(), "trigger")).toMatchObject({ kind: "refuse" });
+  });
+
+  it("admits again on a rejected snapshot too old to describe the present, cooldown or not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "rejected" }, new Date(FIXED_NOW_MS - 3 * 60 * 60 * 1000));
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  // The utilization gate deadlocks identically: a recorded 0.99 refuses every
+  // run, and no run can then record the reading that would clear it.
+  it("admits again on a stale high-utilization reading", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "allowed_warning", utilization: 0.99 },
+      new Date(FIXED_NOW_MS - 3 * 60 * 60 * 1000),
+    );
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  it("refuses a resume too, not only a fresh trigger — matching the adjacent rejected-status check's unconditional gating", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", utilization: 0.99 });
+    const result = await build(dir).admit(agent(), "resume");
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+  });
+
+  it("respects a configured rateLimitPauseThreshold instead of the built-in default", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 2\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\n  rateLimitPauseThreshold: 0.5\n  quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+    });
+    await new RateLimitTracker(dir).record({ status: "allowed", utilization: 0.6 });
+    const result = await governor.admit(agent(), "trigger");
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
+  });
+
+  it("admits when utilization is absent from the snapshot, even with a warning status (fails open on missing data)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning" });
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
   });
 
   it("admits when there is no rate-limit snapshot yet (fails open)", async () => {
@@ -314,6 +394,8 @@ describe("Governor.status", () => {
       maxConcurrent: 2,
       breakerEnabled: true,
       disabledAgents: [],
+      rateLimitUtilization: null,
+      rateLimitPauseThreshold: 0.95,
     });
   });
 

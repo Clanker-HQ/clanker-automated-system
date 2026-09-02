@@ -171,6 +171,13 @@ export class Orchestrator {
           status = "failed";
           error = event.message;
         }
+        // Recorded and reported like any other outcome, but deliberately NOT
+        // "failed": BreakerStore counts only failed/timeout, and a run stopped
+        // because its tools were broken says nothing about the agent.
+        if (event.type === "interrupted" && (status as RunStatus) !== "timeout") {
+          status = "interrupted";
+          error = event.reason;
+        }
         if (event.type === "denied" && (status as RunStatus) !== "timeout") {
           status = "denied";
           error = event.reason;

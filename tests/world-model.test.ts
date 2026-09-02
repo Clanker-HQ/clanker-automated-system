@@ -176,3 +176,61 @@ describe("WorldModel summaryForPrompt", () => {
     rmSync(f.dataDir, { recursive: true, force: true });
   });
 });
+
+// This digest is injected into every dispatched task and every cron run, and
+// every turn of a run resends it. "Bounded by construction" bounds how many
+// findings exist, not how long each conclusion is — without a cap, a few
+// verbose entries become a permanent per-turn tax on the whole system.
+describe("summaryForPrompt caps what each finding contributes", () => {
+  // Well past the 200-char budget, with a sentinel at the very end so the
+  // assertion cannot accidentally target text that fits inside it.
+  const longConclusion =
+    "This conclusion is deliberately far longer than any digest should carry. " +
+    "It rambles about rate limits, certificate pools, public suffix lists and " +
+    "several other things nobody needs repeated on every turn of every run. " +
+    "It keeps going well past any reasonable budget, and ends with SENTINEL_TAIL.";
+
+  it("truncates a long conclusion and marks that it was cut", async () => {
+    const f = fixture();
+    await f.world.writeFinding("verbose-topic", finding({ topic: "verbose-topic", conclusion: longConclusion }));
+
+    const summary = await f.world.summaryForPrompt();
+    expect(summary).toContain("verbose-topic");
+    expect(summary).not.toContain("SENTINEL_TAIL");
+    expect(summary).toContain("…");
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  it("says once that conclusions are abbreviated, so none reads as complete", async () => {
+    const f = fixture();
+    await f.world.writeFinding("verbose-topic", finding({ topic: "verbose-topic", conclusion: longConclusion }));
+
+    expect(await f.world.summaryForPrompt()).toContain("data/world/findings/");
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  it("leaves a short conclusion intact", async () => {
+    const f = fixture();
+    await f.world.writeFinding("brief-topic", finding({ topic: "brief-topic", conclusion: "Not worth pursuing." }));
+
+    const summary = await f.world.summaryForPrompt();
+    expect(summary).toContain("Not worth pursuing.");
+    expect(summary).not.toContain("…");
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  // Truncation is only ever applied to the injected digest; the source of
+  // truth must keep every word, or this becomes data loss rather than budget.
+  it("keeps the full conclusion in the findings file", async () => {
+    const f = fixture();
+    await f.world.writeFinding("verbose-topic", finding({ topic: "verbose-topic", conclusion: longConclusion }));
+
+    const onDisk = readFileSync(join(f.dataDir, "world", "findings", "verbose-topic.md"), "utf8");
+    expect(onDisk).toContain("SENTINEL_TAIL");
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+});

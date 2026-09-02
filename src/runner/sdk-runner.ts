@@ -21,6 +21,114 @@ import type { WorldModel } from "../world/world-model.js";
 import { resolveCredentials } from "./credentials.js";
 import type { RunContext, RunEvent, Runner } from "./types.js";
 
+/**
+ * A named subagent type registered on every query() call, for one reason:
+ * pr-reviewer is the only agent holding `Task`, and its prompt spawns up to
+ * four parallel sub-reviews (correctness, security, quality, claim-check).
+ * `agent.run.maxTurns` (below) is passed as the query()-level `maxTurns`
+ * option only — the SDK's own AgentDefinition type shows a subagent can
+ * carry its own separate `maxTurns`, and a Task call whose subagent_type
+ * matches nothing registered here falls back to the SDK's built-in
+ * "general-purpose" type, which this codebase does not bound at all. A
+ * review's real turn/token cost was therefore the top-level cap PLUS up to
+ * four uncapped sub-conversations. This registers a type pr-reviewer's
+ * prompt is told to name explicitly, capping each sub-review well below the
+ * top-level ceiling so the worst case (all four running) is a real number,
+ * not unbounded.
+ *
+ * `tools` is set for a second, independent reason: AgentDefinition.tools
+ * "inherits all tools from parent" when omitted, which would hand every
+ * sub-review the parent's mergePR/postReviewComment/Task tools too — a
+ * sub-review could merge the PR itself, or spawn further sub-reviews,
+ * bypassing the very "wait for every angle, then decide" flow the top-level
+ * prompt describes. Restricted to read/inspect tools only, matching what a
+ * focused review angle actually needs.
+ *
+ * Registered unconditionally rather than only for pr-reviewer: it is inert
+ * for any agent whose prompt never calls Task with this subagent_type, and
+ * conditioning it on the calling agent would be one more thing to keep in
+ * sync with allowedTools for no real benefit.
+ */
+const PR_REVIEW_SUBAGENT_TYPE = "pr-review-angle";
+const PR_REVIEW_SUBAGENT: {
+  description: string;
+  prompt: string;
+  tools: string[];
+  maxTurns: number;
+} = {
+  description:
+    "One bounded angle of review on a pull request already checked out in the workspace (correctness, security, code quality, or whether the diff does what it claims) — used by pr-reviewer to parallelize its own review.",
+  prompt:
+    "You are one focused sub-review of a larger pull-request review already underway. The task you were given names the specific angle to check. Investigate only that angle using the code already checked out in this workspace, and report concrete findings — or their deliberate absence — clearly back to the review that spawned you. You do not decide whether to merge and you have no way to: you never call mergePR or postReviewComment, and you cannot spawn further sub-reviews.",
+  tools: ["Read", "Grep", "Glob", "Bash"],
+  // Four of these can run in parallel; capped well below the top-level
+  // review's own maxTurns so the worst case stays bounded rather than open.
+  maxTurns: 20,
+};
+
+/**
+ * Keeps the pages `research` reads out of `research`'s own context.
+ *
+ * A run's cost is round trips multiplied by the context each one carries, and
+ * that context grows with every page read — so reading five sources inline
+ * means the fifth turn re-sends the first four pages, and so does every turn
+ * after it. A Task-spawned subagent runs in its OWN context window and returns
+ * only its final report, so the parent pays for the report and never for the
+ * reading. That is the same "summarise before continuing" the SDK's built-in
+ * compaction would do, except compaction only fires near the model's context
+ * limit — around 200k tokens — which a research run never approaches.
+ *
+ * `model` is the cheap one deliberately: reading a page and quoting it back is
+ * bulk work, while weighing sources against each other is where a research run
+ * actually goes wrong (see agents/research/prompt.md's "Proving a negative").
+ * The parent keeps the better model for that judgement.
+ *
+ * Bounded and tool-restricted for the reasons the PR sub-review above already
+ * documents: an unregistered Task type falls back to the SDK's uncapped
+ * "general-purpose" agent, and an AgentDefinition with `tools` omitted
+ * inherits the parent's entire toolset. `disallowedTools` strips every MCP
+ * tool — a reader must not record findings or queue tasks, and carrying
+ * schemas it can never call is exactly the per-turn weight this exists to
+ * avoid.
+ */
+const RESEARCH_SOURCE_SUBAGENT_TYPE = "research-source";
+const RESEARCH_SOURCE_SUBAGENT: {
+  description: string;
+  prompt: string;
+  tools: string[];
+  disallowedTools: string[];
+  model: string;
+  maxTurns: number;
+} = {
+  description:
+    "Reads a named set of web sources for one specific question and reports what they say, with direct quotes and URLs — used by research to keep page-reading out of its own context.",
+  prompt:
+    "You are reading sources for one specific question on behalf of a research run already underway. Read what the task names, plus anything it points you to, and report what each source actually says — a direct quote and the URL it came from, for every claim you pass back. Say plainly when a source does not answer the question, and say so too when a page was too large to read in full, naming what you did see: the run that spawned you cannot tell the difference between 'not there' and 'not visible to you' unless you tell it. Do not conclude and do not recommend. The run that spawned you weighs the evidence and decides; it needs your evidence, not your verdict.",
+  tools: ["WebSearch", "WebFetch"],
+  // Server-level spec: removes every tool from every MCP server at once, so
+  // this stays correct as servers are added.
+  disallowedTools: ["mcp__*"],
+  model: "haiku",
+  // Well under the parent's own budget: a reader that needs more than this is
+  // reading too much for one question, and four of these can run at once.
+  maxTurns: 8,
+};
+
+/**
+ * The only subagent types a `Task` call may name. Enforced in `canUseTool`,
+ * because an unregistered type silently becomes the SDK's uncapped
+ * general-purpose agent with the parent's own tools.
+ */
+const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGENT_TYPE, RESEARCH_SOURCE_SUBAGENT_TYPE]);
+
+/**
+ * Consecutive failing tool calls — with nothing succeeding in between — after
+ * which a run is stopped rather than left to retry until it exhausts its
+ * turns. Five, because four is still plausibly a stubborn-but-recoverable
+ * sequence while five with zero successes is a broken dependency.
+ */
+const MAX_CONSECUTIVE_TOOL_FAILURES = 5;
+
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -155,11 +263,34 @@ export function toRunEvents(message: unknown): RunEvent[] {
 
     case "result": {
       const usage = (m.usage as Record<string, unknown> | undefined) ?? {};
+      // The SDK's own type declarations (node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts,
+      // SDKResultSuccess) document `usage` as "MAIN AGENT LOOP ONLY ...
+      // per-turn in streaming-input sessions" and say to "prefer modelUsage
+      // for token/cost accounting" — modelUsage is "cumulative across
+      // turns", sharing total_cost_usd's lifecycle. Reading `usage` alone
+      // reports only the final turn's tokens next to a cost that correctly
+      // bills every turn: a 20-turn run recorded $0.56 next to 92 input
+      // tokens, a run that actually moved roughly half a million cumulative
+      // tokens. Sum every model's contribution — normally one, but a
+      // mid-run fallback adds a second key — rather than assuming exactly
+      // one. Falls back to `usage` when modelUsage is absent or every entry
+      // is zeroed, which the SDK's own docs say a crashed/startup-error
+      // result may do, and which an older SDK build predating the field
+      // also looks like.
+      const modelUsage = (m.modelUsage as Record<string, Record<string, unknown>> | undefined) ?? {};
+      let modelInputTokens = 0;
+      let modelOutputTokens = 0;
+      for (const entry of Object.values(modelUsage)) {
+        modelInputTokens += num(entry.inputTokens);
+        modelOutputTokens += num(entry.outputTokens);
+      }
+      const hasModelUsage = modelInputTokens > 0 || modelOutputTokens > 0;
+
       const events: RunEvent[] = [
         {
           type: "usage",
-          inputTokens: num(usage.input_tokens),
-          outputTokens: num(usage.output_tokens),
+          inputTokens: hasModelUsage ? modelInputTokens : num(usage.input_tokens),
+          outputTokens: hasModelUsage ? modelOutputTokens : num(usage.output_tokens),
           costUsd: num(m.total_cost_usd),
           durationMs: num(m.duration_ms),
         },
@@ -280,6 +411,51 @@ export class SdkRunner implements Runner {
       toolName: string,
       input: Record<string, unknown>,
     ): Promise<{ behavior: "allow" } | { behavior: "deny"; message: string; interrupt?: boolean }> => {
+      // `Task` carries no outward effect, so decide() below allows it — but
+      // the SDK falls back to its built-in "general-purpose" agent for any
+      // subagent_type it does not recognise, and that agent is uncapped and
+      // INHERITS THE PARENT'S TOOLS. Every bound the subagent definitions
+      // above place on a spawned agent — turns, tool list, model, no MCP
+      // access — is therefore only as strong as the type name being one this
+      // system actually registered. For `research`, whose missing `Read` is
+      // the only thing standing between a wildcard web grant and an
+      // exfiltration path, an unregistered type would hand back exactly the
+      // tool it was denied.
+      //
+      // Denied softly rather than aborting the run: naming the wrong type is
+      // a correctable mistake, and the message names the right ones.
+      if (toolName === "Task") {
+        // The SDK runs subagents in the BACKGROUND by default and notifies the
+        // parent when they finish. There is no "later" in this system: nothing
+        // is waiting to hand the agent other work, so a parent that dispatches
+        // and stops has simply ended its turn. The query then terminates and
+        // every call after it — the background subagent's included — fails on
+        // a closed stream. Seen on 2026-09-02: a reader returned ok in 10ms
+        // (launch acknowledged, not finished), a terminal result landed three
+        // seconds later, then five straight WebFetch failures at 8ms each,
+        // which reads as a network outage and is nothing of the kind.
+        if (input.run_in_background !== false) {
+          return {
+            behavior: "deny",
+            message:
+              "Pass run_in_background: false. Subagents default to running in the background, and this agent has " +
+              "nothing else to do while one runs — dispatching without waiting ends the turn and closes the stream " +
+              "the subagent itself is using. Several Task calls in ONE message still run in parallel.",
+          };
+        }
+
+        const requested = typeof input.subagent_type === "string" ? input.subagent_type : "";
+        if (!REGISTERED_SUBAGENT_TYPES.has(requested)) {
+          return {
+            behavior: "deny",
+            message:
+              `subagent_type "${requested || "(none given)"}" is not available here. Use one of: ` +
+              `${[...REGISTERED_SUBAGENT_TYPES].join(", ")}. The built-in general-purpose agent is ` +
+              `uncapped and inherits this agent's own tools, so it is never available.`,
+          };
+        }
+      }
+
       const decision = decide(agent, this.deps.grants, toolName, input);
       if (decision.kind === "allow") return { behavior: "allow" };
 
@@ -1008,6 +1184,10 @@ export class SdkRunner implements Runner {
         effort: agent.run.effort,
         maxTurns: agent.run.maxTurns,
         maxBudgetUsd: agent.run.maxBudgetUsd,
+        agents: {
+          [PR_REVIEW_SUBAGENT_TYPE]: PR_REVIEW_SUBAGENT,
+          [RESEARCH_SOURCE_SUBAGENT_TYPE]: RESEARCH_SOURCE_SUBAGENT,
+        },
         cwd: ctx.workspace,
         // Deliberately NOT passing `allowedTools`: the SDK auto-approves any
         // tool named there without ever consulting `canUseTool` (it only
@@ -1044,6 +1224,14 @@ export class SdkRunner implements Runner {
 
     let partial: PartialUsage = { inputTokens: 0, outputTokens: 0 };
     let sawTerminalUsage = false;
+    // Counted across ALL tools, with any success resetting it, rather than
+    // per-tool: the run this exists because of alternated WebFetch and
+    // WebSearch failures, so a per-tool counter would never have tripped.
+    // The reset is also what keeps this away from `builder`, whose red-green
+    // loop fails Bash on purpose — an Edit or Read between two failing test
+    // runs clears the count, so tripping it takes five consecutive failures
+    // with no tool succeeding at all, which is not a working loop by then.
+    let consecutiveToolFailures = 0;
 
     // Invariant: a message already pulled off the stream is NEVER discarded,
     // aborted or not — it may be the only place a run's token usage shows up.
@@ -1086,6 +1274,26 @@ export class SdkRunner implements Runner {
         const events = toRunEvents(message);
         if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
         yield* events;
+
+        for (const event of events) {
+          if (event.type !== "tool_result") continue;
+          consecutiveToolFailures = event.ok ? 0 : consecutiveToolFailures + 1;
+        }
+        if (consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+          // "interrupted", not "error": the agent did nothing wrong, and an
+          // "error" would count toward its circuit breaker — so three
+          // unrelated outages in a row would disable the agent until a human
+          // reset it. That is the same shape as the rate-limit deadlock: a
+          // transient external fault turned into a permanent lockout.
+          terminalEvent = {
+            type: "interrupted",
+            reason:
+              `Stopped after ${consecutiveToolFailures} consecutive tool failures with nothing succeeding in between. ` +
+              `The tools this run depends on are not working, and retrying a broken tool costs the same as using a working one.`,
+          };
+          controller.abort();
+          break;
+        }
 
         if (controller.signal.aborted) break;
       }

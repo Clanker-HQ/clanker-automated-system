@@ -2,6 +2,13 @@ governor:
   maxConcurrent: 2
   dailyBudgetUsd: 40
   pendingTimeoutHours: 24
+  # admit() refuses ALL new work — trigger or resume — once the account's
+  # rolling rate-limit window (see !status / data/state/rate-limit.json)
+  # reaches this fraction. Status alone ("allowed_warning" vs "rejected")
+  # isn't a usable signal on its own: the account can sit at
+  # allowed_warning for days while utilization keeps climbing, and nothing
+  # read the number at all until this field existed.
+  rateLimitPauseThreshold: 0.95
   # Local development: agents run at almost any hour; the window is nominal.
   quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
   # Production (VPS): agents work overnight, standing down while the owner

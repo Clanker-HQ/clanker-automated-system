@@ -1,9 +1,18 @@
+import { truncateForPrompt } from "../truncate.js";
 import { retrievalScore } from "./scoring.js";
 import { similarity } from "./similarity.js";
 import type { MemoryRecord } from "./types.js";
 
 /** Below this, a record is noise rather than context, and padding a prompt with noise costs tokens and attention. */
 const RELEVANCE_FLOOR = 0.2;
+
+/**
+ * `limit` bounds how many records are injected; nothing bounds how long each
+ * body is. This block is prepended to a dispatched agent's prompt and resent
+ * on every turn of the run, so one verbose record is paid for repeatedly. The
+ * full body stays in the memory log for `recallMemory`.
+ */
+const MAX_BODY_CHARS = 200;
 
 /**
  * Builds the "what do I already know about this?" block prepended to a
@@ -33,6 +42,8 @@ export function retrieveContext(
     .slice(0, opts.limit);
 
   if (scored.length === 0) return "";
-  const lines = scored.map((s) => `- (${s.record.kind}, ${s.record.ts.slice(0, 10)}) ${s.record.subject}: ${s.record.body}`);
+  const lines = scored.map(
+    (s) => `- (${s.record.kind}, ${s.record.ts.slice(0, 10)}) ${s.record.subject}: ${truncateForPrompt(s.record.body, MAX_BODY_CHARS)}`,
+  );
   return `\n\nWhat this system already knows about this area:\n${lines.join("\n")}`;
 }

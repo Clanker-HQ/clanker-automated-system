@@ -62,5 +62,10 @@ export function resolveGovernorSettings(config: Config, overrides: ConfigOverrid
     dailyBudgetUsd: overrides.dailyBudgetUsd ?? config.governor.dailyBudgetUsd,
     pendingTimeoutHours: config.governor.pendingTimeoutHours,
     quietHours: "quietHours" in overrides ? (overrides.quietHours ?? null) : config.governor.quietHours,
+    // No live override for this one: unlike budget/concurrency, there is no
+    // `!`-command for it, and none is added here — widening a safety
+    // threshold from Discord without a corresponding review step is exactly
+    // the kind of change this project reserves for a config.yaml edit.
+    rateLimitPauseThreshold: config.governor.rateLimitPauseThreshold,
   };
 }

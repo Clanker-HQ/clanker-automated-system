@@ -28,6 +28,26 @@ describe("retrieveContext", () => {
     expect(closeIndex).toBeLessThan(lessIndex);
   });
 
+  // `limit` bounds how many records are injected, not how long each body is,
+  // and this block is prepended to a dispatched agent's prompt and resent on
+  // every turn — so one verbose record is paid for repeatedly, forever.
+  it("caps how much each record's body contributes", () => {
+    const verbose = record({
+      body: "a ".repeat(200) + "SENTINEL_TAIL",
+    });
+    const text = retrieveContext(SUBJECT, "research", [verbose], { limit: 5, halfLifeDays: 14, now: NOW });
+    expect(text).toContain(SUBJECT);
+    expect(text).not.toContain("SENTINEL_TAIL");
+    expect(text).toContain("…");
+  });
+
+  it("leaves a short body intact", () => {
+    const brief = record({ body: "short and useful" });
+    const text = retrieveContext(SUBJECT, "research", [brief], { limit: 5, halfLifeDays: 14, now: NOW });
+    expect(text).toContain("short and useful");
+    expect(text).not.toContain("…");
+  });
+
   it("returns an empty string when nothing is relevant", () => {
     const unrelated = record({ subject: "completely unrelated topic about gardening tools", body: "irrelevant" });
     const text = retrieveContext(SUBJECT, "research", [unrelated], { limit: 5, halfLifeDays: 14, now: NOW });
