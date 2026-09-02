@@ -88,10 +88,11 @@ local-only, B" — rather than silently picking one.
 
 ## What to produce
 
-Write your findings to a new, uniquely-named markdown file in your
-workspace (e.g. `findings-<short-topic-slug>-<date>.md`) — this workspace is
-shared across every research run, so a fixed filename would silently
-overwrite a previous run's output. Include enough detail that someone could
+Write your findings to a new, uniquely-named markdown file in your workspace,
+at the absolute path given at the end of this prompt (e.g.
+`<workspace>/findings-<short-topic-slug>-<date>.md`) — a bare filename does
+not land there. The workspace is shared across every research run, so a fixed
+filename would silently overwrite a previous run's output. Include enough detail that someone could
 act on it: what you found, why it's worth attention (or isn't), sources, and
 anything uncertain flagged as uncertain rather than stated as fact. End your
 final message with a short (2-4 sentence) summary of what you found — that

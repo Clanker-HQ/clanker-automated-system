@@ -6,7 +6,7 @@ import { parseConfig } from "../src/config.js";
 import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { FakeOutcomeVerifier, type OutcomeVerifier } from "../src/control/outcome-verifier.js";
 import { Governor } from "../src/governor.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { Orchestrator, workspaceNote } from "../src/orchestrator.js";
 import { DiscordOutbox } from "../src/outbox/discord.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
@@ -15,7 +15,7 @@ import { BreakerStore } from "../src/state/breaker.js";
 import { RateLimitTracker } from "../src/state/rate-limit.js";
 import { FakeRunner } from "../src/runner/fake-runner.js";
 import type { FakeScript } from "../src/runner/fake-runner.js";
-import type { Runner } from "../src/runner/types.js";
+import type { RunContext, Runner } from "../src/runner/types.js";
 
 const CONFIG = parseConfig(
   "config.yaml",
@@ -446,7 +446,12 @@ describe("Orchestrator.executeRun", () => {
     const executeSpy = vi.spyOn(runner, "execute");
     await orchestrator.executeRun(agent);
     const ctxArg = executeSpy.mock.calls[0]![1] as { prompt: string };
-    expect(ctxArg.prompt).toBe("Do the thing.");
+    // The workspace note is appended to every run now. What this still guards
+    // — and the reason it stays an exact match — is that NOTHING ELSE is,
+    // when no promptContext was passed.
+    expect(ctxArg.prompt).toBe(`Do the thing.
+
+${workspaceNote(agent.workspace)}`);
   });
 
   it("refuses to resume a pending entry with no sessionId, without touching the runner", async () => {
@@ -727,7 +732,7 @@ describe("Orchestrator outcome verification", () => {
     await orchestrator.executeRun(agent);
 
     expect(verifier.calls).toHaveLength(1);
-    expect(verifier.calls[0]!.prompt).toBe("Do the thing.");
+    expect(verifier.calls[0]!.prompt).toContain("Do the thing.");
     expect(verifier.calls[0]!.summary).toBe("Done: wrote notes.");
     expect(verifier.calls[0]!.tail.join("\n")).toContain("starting");
   });
@@ -802,5 +807,48 @@ describe("Orchestrator outcome verification", () => {
     const { body } = postedCall(fetchImpl);
     expect(body.content).not.toContain("Verification");
     expect(body.content).not.toContain("did exactly what was asked");
+  });
+});
+
+// Every agent prompt says "your workspace", and until this landed nothing made
+// that true: the runner passes cwd: ctx.workspace to the SDK, but file tools
+// resolve a relative path against the PROCESS working directory. An agent told
+// to write "findings-x.md" put it in the repo root instead of its own
+// directory — observed 2026-09-02, and the reason an earlier run's output
+// landed in /tmp. The separation docs/decisions.md claims as the reason
+// per-run sandboxing was unnecessary only holds if agents know where to write.
+describe("Orchestrator workspace disclosure", () => {
+  function capturing(): { runner: Runner; seen: () => RunContext | undefined } {
+    let captured: RunContext | undefined;
+    return {
+      runner: {
+        // eslint-disable-next-line require-yield
+        async *execute(_agent: AgentDef, ctx: RunContext) {
+          captured = ctx;
+        },
+      } as unknown as Runner,
+      seen: () => captured,
+    };
+  }
+
+  it("gives the agent its workspace as an absolute path", async () => {
+    const { runner, seen } = capturing();
+    const { agent, orchestrator } = harness({ events: [] }, {}, runner);
+
+    await orchestrator.executeRun(agent);
+
+    expect(seen()?.prompt).toContain(agent.workspace);
+  });
+
+  it("keeps the agent's own prompt and any per-run context intact", async () => {
+    const { runner, seen } = capturing();
+    const { agent, orchestrator } = harness({ events: [] }, {}, runner);
+
+    await orchestrator.executeRun(agent, new Date(), "## Extra\n\nper-run context");
+
+    const prompt = seen()?.prompt ?? "";
+    expect(prompt).toContain("Do the thing.");
+    expect(prompt).toContain("per-run context");
+    expect(prompt).toContain(agent.workspace);
   });
 });

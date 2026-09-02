@@ -9,6 +9,33 @@ import type { RunContext, Runner } from "./runner/types.js";
 import type { ApprovedGrantsStore } from "./state/approved-grants.js";
 import type { BreakerStore } from "./state/breaker.js";
 
+/**
+ * Tells an agent, in its own prompt, exactly where its workspace is.
+ *
+ * Every agent prompt already says "your workspace", and nothing made that
+ * true. `SdkRunner` passes `cwd: ctx.workspace` to the SDK, but file tools
+ * resolve a RELATIVE path against the process working directory — so an agent
+ * asked to write `findings-x.md` put it in the repo root, and one that took
+ * "workspace" literally created a `workspace/` directory there. An earlier run
+ * wrote to `/tmp` for the same reason.
+ *
+ * That matters beyond tidiness: `docs/decisions.md` gives "agents separated by
+ * workspace directory" as a reason per-run container isolation was not needed.
+ * The separation only holds if agents know the path, so naming it here is what
+ * makes the claim true rather than aspirational.
+ *
+ * Appended by the orchestrator rather than written into each prompt.md so it
+ * cannot drift per agent, and so a self-built agent gets it automatically.
+ */
+export function workspaceNote(workspace: string): string {
+  return (
+    `Your workspace is \`${workspace}\`.\n\n` +
+    `Write every file you create there, using that absolute path. A bare or relative filename ` +
+    `does NOT land in your workspace — it lands wherever this process happens to be running, ` +
+    `which is not yours to write to.`
+  );
+}
+
 export class Orchestrator {
   private readonly runner: Runner;
   private readonly store: RunStore;
@@ -75,7 +102,9 @@ export class Orchestrator {
     try {
       const runId = newRunId(agent.name, now);
       const basePrompt = await readFile(agent.promptPath, "utf8");
-      const prompt = promptContext ? `${basePrompt}\n\n${promptContext}` : basePrompt;
+      const prompt = [basePrompt, promptContext, workspaceNote(agent.workspace)]
+        .filter((part): part is string => Boolean(part))
+        .join("\n\n");
       const result = await this.runAndRecord(agent, runId, { runId, workspace: agent.workspace, prompt });
       // Only a *trigger* feeds the breaker. A resume is a human deliberately
       // pushing an already-parked run forward, and Governor.admit already
