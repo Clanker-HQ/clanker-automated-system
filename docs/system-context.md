@@ -78,6 +78,38 @@ for this system — a new agent, a new tool, a new automation — default to
 `tier: autonomous` + `approval: auto` and no approval gate at all, unless
 the task explicitly calls for one.
 
+## Vendor and infrastructure choices already made
+
+These are live decisions, not open questions to re-derive from a fresh web
+search. If a source contradicts one of these, that's a reason to flag the
+conflict and say so — not to recommend switching.
+
+- **Payments: Stripe (Managed Payments), not Lemon Squeezy.**
+  `config.yaml`'s `revenue.provider: stripe` — Stripe acquired Lemon
+  Squeezy, and new merchant signups now land on Stripe Managed Payments,
+  not a standalone Lemon Squeezy account. `LemonSqueezyRevenueTransport`
+  (`src/control/lemonsqueezy-revenue-transport.ts`) exists only for an
+  account that predates the acquisition — do not recommend a fresh Lemon
+  Squeezy signup for a new product. Rationale: `docs/decisions.md`.
+- **Product source control: GitHub, org `AAS-Labs`.** Repo creation and
+  pushes for anything the system builds to sell go through `AAS-Labs/*`-
+  scoped grants backed by `GITHUB_PRODUCTS_TOKEN` — a separate GitHub
+  identity from the one this project's own infrastructure repo uses.
+- **This system's own control-plane host (the supervisor VPS) is not
+  rented yet.** The operator is deliberately not spending on hosting or a
+  domain until the system has proven itself running on `npm start`. When
+  it is rented, the operator's stated provider preference is Contabo —
+  this is not yet reflected in any design doc, since the deploy path
+  (`docs/superpowers/specs/2026-09-01-deploy-path-design.md`) is
+  deliberately host-agnostic. This is a different host from any
+  individual product's own hosting below; don't conflate the two when
+  reasoning about cost or provider choice.
+- **Per-product hosting is not fixed to one provider.** `research` picks
+  hosting per product based on that product's own traffic/cost shape —
+  e.g. pilot-01 (a stateless, low-traffic sync API) landed on Cloudflare
+  Workers + D1, not a VPS. Don't assume a new product should use the same
+  host as the supervisor above, or as any other product.
+
 ## Before proposing or designing something new
 
 Check `agents/*/agent.yaml` and `grants.yaml` first — the actual, current
