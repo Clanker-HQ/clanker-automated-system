@@ -67,14 +67,18 @@ describe("Governor.admit", () => {
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("STOP"), alert: false });
   });
 
-  it("refuses when the agent's breaker is tripped, with alert: true", async () => {
+  // alert: FALSE deliberately. This refusal is re-evaluated on every dispatch,
+  // so alerting here posted an identical "circuit breaker tripped" line to
+  // Discord once per refused trigger — a loop, once a task queue is involved.
+  // The Orchestrator announces the trip once, as the event it is.
+  it("refuses when the agent's breaker is tripped, without alerting each time", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const breaker = new BreakerStore(dir);
     await breaker.recordResult("smoke", "failed");
     await breaker.recordResult("smoke", "failed");
     await breaker.recordResult("smoke", "failed");
     const result = await build(dir).admit(agent(), "trigger");
-    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("breaker"), alert: true });
+    expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("breaker"), alert: false });
   });
 
   it("does not refuse a tripped breaker once overridden off", async () => {
