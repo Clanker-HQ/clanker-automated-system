@@ -119,6 +119,26 @@ export class GithubApiTransport implements GithubTransport {
     return { number: pr.number, url: pr.html_url };
   }
 
+  async createRepo(org: string, name: string, opts: { private: boolean; description?: string }): Promise<{ fullName: string; url: string }> {
+    const res = await this.fetchImpl(`https://api.github.com/orgs/${org}/repos`, {
+      method: "POST",
+      headers: { ...this.headers(), "content-type": "application/json" },
+      body: JSON.stringify({ name, private: opts.private, ...(opts.description !== undefined ? { description: opts.description } : {}) }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    // Checked against 201 specifically, not `res.ok` (any 2xx) — this is a
+    // new resource being created, so an unexpected-but-2xx response is worth
+    // surfacing rather than silently accepting. The response body is
+    // included verbatim (not swallowed into a generic message): the operator
+    // needs to know exactly what GitHub said went wrong.
+    if (res.status !== 201) {
+      const body = await res.text();
+      throw new Error(`GitHub API: failed to create repo ${org}/${name} (${res.status}): ${body}`);
+    }
+    const created = (await res.json()) as { full_name: string; html_url: string };
+    return { fullName: created.full_name, url: created.html_url };
+  }
+
   async getFileContent(repo: string, ref: string, path: string): Promise<string | null> {
     // Each segment is encoded individually rather than the whole path at once:
     // the "/" separators must stay literal for the Contents API, but anything

@@ -1267,4 +1267,101 @@ describe("SdkRunner GitHub PR tools", () => {
       expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/agent\/builder\//) }] });
     });
   });
+
+  describe("createRepo", () => {
+    const PROVISION_GRANT: Grant = {
+      id: "products-provision",
+      kind: "provision",
+      resource: "github-repo",
+      scope: "AAS-Labs",
+      limit: { perDay: 2 },
+      secret: "GITHUB_PRODUCTS_TOKEN",
+    };
+
+    function provisionedBuilder(grantRefs: string[] = ["products-provision"]) {
+      return { ...AGENT, name: "builder", tier: "autonomous", approval: "auto", grantRefs } as unknown as AgentDef;
+    }
+
+    interface CreateRepoParams {
+      options: {
+        mcpServers: {
+          githubPr?: {
+            instance: { _registeredTools: Record<string, { handler: (input: unknown) => Promise<unknown> }> };
+          };
+        };
+      };
+    }
+    function createRepoHandler(params: CreateRepoParams): (input: unknown) => Promise<unknown> {
+      return params.options.mcpServers.githubPr!.instance._registeredTools.createRepo!.handler;
+    }
+
+    it("creates a repo via GithubTransport when a provision grant covers the org", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("GITHUB_PRODUCTS_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [PROVISION_GRANT], pending: new PendingStore(dir), github });
+      await collect(runner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+
+      const result = await createRepoHandler(params)({ org: "AAS-Labs", name: "pilot-01", private: true, description: "First product." });
+
+      expect(github.createdRepos).toEqual([{ org: "AAS-Labs", name: "pilot-01", private: true, description: "First product." }]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Created AAS-Labs/pilot-01") }] });
+    });
+
+    it("refuses when no provision grant matches the target org, without calling GithubTransport", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [PROVISION_GRANT], pending: new PendingStore(dir), github });
+      await collect(runner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+
+      const result = await createRepoHandler(params)({ org: "SomeOtherOrg", name: "x", private: true });
+
+      expect(github.createdRepos).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/no grant authorises/i) }] });
+    });
+
+    it("refuses with a message naming the missing secret when GITHUB_PRODUCTS_TOKEN isn't set, without calling GithubTransport", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      // GITHUB_PRODUCTS_TOKEN deliberately left unset.
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [PROVISION_GRANT], pending: new PendingStore(dir), github });
+      await collect(runner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+
+      const result = await createRepoHandler(params)({ org: "AAS-Labs", name: "pilot-01", private: true });
+
+      expect(github.createdRepos).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("GITHUB_PRODUCTS_TOKEN") }] });
+    });
+
+    it("is registered for builder, and absent entirely for an agent the githubPr server never mounts for", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const github = new FakeGithubTransport();
+
+      const dirBuilder = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const builderRunner = new SdkRunner({ grants: [PROVISION_GRANT], pending: new PendingStore(dirBuilder), github });
+      await collect(builderRunner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+
+      const dirSmoke = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const smokeRunner = new SdkRunner({ grants: [], pending: new PendingStore(dirSmoke), github });
+      // AGENT.name is "smoke" — not in GITHUB_PR_AGENTS, so the whole
+      // githubPr server (createRepo included) is never mounted for it.
+      await collect(smokeRunner.execute(AGENT, CTX, new AbortController().signal));
+
+      const builderParams = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+      const smokeParams = queryMock.mock.calls[1]![0] as unknown as CreateRepoParams;
+      expect(builderParams.options.mcpServers.githubPr!.instance._registeredTools.createRepo).toBeDefined();
+      expect(smokeParams.options.mcpServers.githubPr).toBeUndefined();
+    });
+  });
 });

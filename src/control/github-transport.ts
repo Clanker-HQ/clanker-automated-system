@@ -18,6 +18,8 @@ export interface GithubTransport {
   /** Refuses (merged: false) rather than merging if the PR's current head has moved past expectedHeadSha. */
   mergePullRequest(repo: string, number: number, expectedHeadSha: string): Promise<MergeResult>;
   createPullRequest(repo: string, opts: { head: string; base: string; title: string; body: string }): Promise<{ number: number; url: string }>;
+  /** Creates a new repo under `org`. */
+  createRepo(org: string, name: string, opts: { private: boolean; description?: string }): Promise<{ fullName: string; url: string }>;
   /** Content of `path` at `ref` (a branch name or commit SHA), or null if it doesn't exist there. */
   getFileContent(repo: string, ref: string, path: string): Promise<string | null>;
   /** Every blob path under `pathPrefix` at `ref`, recursively. */
@@ -29,6 +31,7 @@ export class FakeGithubTransport implements GithubTransport {
   postedComments: { repo: string; number: number; body: string }[] = [];
   merged: { repo: string; number: number }[] = [];
   createdPullRequests: { repo: string; head: string; base: string; title: string; body: string }[] = [];
+  createdRepos: { org: string; name: string; private: boolean; description?: string }[] = [];
   private pulls = new Map<string, PullRequestInfo>();
   private files = new Map<string, string>();
   private nextPrNumber = 1;
@@ -85,5 +88,10 @@ export class FakeGithubTransport implements GithubTransport {
     this.createdPullRequests.push({ repo, ...opts });
     const number = this.nextPrNumber++;
     return { number, url: `https://github.com/${repo}/pull/${number}` };
+  }
+
+  async createRepo(org: string, name: string, opts: { private: boolean; description?: string }): Promise<{ fullName: string; url: string }> {
+    this.createdRepos.push({ org, name, ...opts });
+    return { fullName: `${org}/${name}`, url: `https://github.com/${org}/${name}` };
   }
 }
