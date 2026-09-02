@@ -149,6 +149,27 @@ const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGE
 const GITHUB_PR_AGENTS: ReadonlySet<string> = new Set(["builder", "pr-reviewer", "repair"]);
 
 /**
+ * Agents whose own prompt.md references at least one taskQueue tool -- grep
+ * every agents/*\/prompt.md for queueTask/listMyTasks/recentFailures/
+ * recallMemory to keep this in sync. builder, pr-reviewer, repair, and
+ * e2e-approval-test reference none of them: they build/review/repair tasks
+ * already assigned to them rather than discovering or tracking their own,
+ * so mounting this server for them paid four tool schemas' worth of
+ * per-turn weight for a capability they structurally never call into.
+ * Gated the same way githubPr is -- by agent name, not by narrowing what
+ * the server offers the agents that actually use it (see the per-tool
+ * exclusions for research below, which this allowlist does not replace).
+ */
+const TASK_QUEUE_AGENTS: ReadonlySet<string> = new Set([
+  "research",
+  "improvement-scout",
+  "opportunity-scout",
+  "dependency-scout",
+  "overseer",
+  "cleanup-scout",
+]);
+
+/**
  * Consecutive failing tool calls — with nothing succeeding in between — after
  * which a run is stopped rather than left to retry until it exhausts its
  * turns. Five, because four is still plausibly a stubborn-but-recoverable
@@ -611,15 +632,18 @@ export class SdkRunner implements Runner {
     });
 
     // Only registered when systemContext was actually loaded (src/index.ts
-    // reads docs/system-context.md at boot) — tests/scripts that don't wire
-    // it in simply don't see this tool, same pattern as taskQueue below.
+    // reads docs/system-context.md at boot) AND the running agent is
+    // "research" — every other agent either holds Read (and so has no need
+    // for this) or, if it doesn't, never calls this tool from its own
+    // prompt (grep every agents/*/prompt.md to confirm), so mounting it for
+    // them paid a full tool schema for nothing they could call.
     // Exists specifically for agents like `research` that hold no `Read`
     // tool at all (a deliberate restriction: research also holds a broad
     // web-read grant, and Read + broad outbound access would be a plain
     // exfiltration path) — this hands back a fixed, curated string with no
     // path argument, so it can't be turned into an arbitrary file read.
     const systemContext = this.deps.systemContext;
-    const systemContextServer = systemContext
+    const systemContextServer = systemContext && agent.name === "research"
       ? createSdkMcpServer({
           name: "systemContext",
           tools: [
@@ -881,7 +905,7 @@ export class SdkRunner implements Runner {
      * gating the whole server on both, the way it did before this tool
      * existed.
      */
-    const taskQueueServer = tasksDep
+    const taskQueueServer = tasksDep && TASK_QUEUE_AGENTS.has(agent.name)
       ? createSdkMcpServer({
           name: "taskQueue",
           tools: [
