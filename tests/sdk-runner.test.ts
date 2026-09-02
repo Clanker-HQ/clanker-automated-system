@@ -85,7 +85,7 @@ describe("toRunEvents", () => {
       duration_ms: 500,
     });
     expect(events).toEqual([
-      { type: "usage", inputTokens: 12, outputTokens: 4, costUsd: 0.03, durationMs: 500 },
+      { type: "usage", inputTokens: 12, outputTokens: 4, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.03, durationMs: 500 },
     ]);
   });
 
@@ -100,7 +100,7 @@ describe("toRunEvents", () => {
     });
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual({
-      type: "usage", inputTokens: 5, outputTokens: 1, costUsd: 1, durationMs: 200,
+      type: "usage", inputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 1, durationMs: 200,
     });
     expect(events[1]!.type).toBe("error");
     expect((events[1] as { message: string }).message).toContain("error_max_budget_usd");
@@ -139,7 +139,7 @@ describe("toRunEvents", () => {
   it("defaults every usage field to 0 when usage is absent from a result message", () => {
     const events = toRunEvents({ type: "result", subtype: "success", is_error: false });
     expect(events).toEqual([
-      { type: "usage", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
+      { type: "usage", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 0 },
     ]);
   });
 
@@ -169,8 +169,19 @@ describe("toRunEvents", () => {
       total_cost_usd: 0.5556445,
       duration_ms: 120718,
     });
+    // The cache counts were in this fixture from the start and were simply
+    // never read: `inputTokens` is UNCACHED input only, so summing it alone
+    // reported 480k for a run that actually moved 900k. The rolling
+    // rate-limit window is what constrains this system, and re-reading a
+    // cached prefix spends it too.
     expect(events[0]).toEqual({
-      type: "usage", inputTokens: 480000, outputTokens: 4562, costUsd: 0.5556445, durationMs: 120718,
+      type: "usage",
+      inputTokens: 480000,
+      outputTokens: 4562,
+      cacheReadTokens: 400000,
+      cacheCreationTokens: 20000,
+      costUsd: 0.5556445,
+      durationMs: 120718,
     });
   });
 
@@ -200,7 +211,7 @@ describe("toRunEvents", () => {
       duration_ms: 4200,
     });
     expect(events[0]).toEqual({
-      type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200,
+      type: "usage", inputTokens: 11, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.002, durationMs: 4200,
     });
   });
 
@@ -215,7 +226,7 @@ describe("toRunEvents", () => {
       duration_ms: 4200,
     });
     expect(events[0]).toEqual({
-      type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200,
+      type: "usage", inputTokens: 11, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.002, durationMs: 4200,
     });
   });
 

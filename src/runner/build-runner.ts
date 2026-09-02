@@ -51,7 +51,7 @@ export function buildRunner(
     return new FakeRunner({
       events: [
         { type: "assistant", text: "Fake run: the pipeline is working." },
-        { type: "usage", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 1 },
+        { type: "usage", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 1 },
       ],
     });
   }

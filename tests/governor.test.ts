@@ -143,7 +143,7 @@ describe("Governor.admit", () => {
     vi.setSystemTime(new Date("2026-08-26T08:00:00.000Z"));
     try {
       const writer = await runStore.open(newRunId("smoke", new Date("2026-08-26T08:00:00.000Z")), "smoke");
-      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 10, durationMs: 1 });
+      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 10, durationMs: 1 });
       await writer.close({ status: "success", summary: "" });
     } finally {
       vi.useRealTimers();
@@ -163,7 +163,7 @@ describe("Governor.admit", () => {
     vi.setSystemTime(new Date("2026-08-25T08:00:00.000Z"));
     try {
       const writer = await runStore.open(newRunId("smoke", new Date("2026-08-25T08:00:00.000Z")), "smoke");
-      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 10, durationMs: 1 });
+      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 10, durationMs: 1 });
       await writer.close({ status: "success", summary: "" });
     } finally {
       vi.useRealTimers();
@@ -412,7 +412,7 @@ describe("Governor.status", () => {
     vi.setSystemTime(new Date("2026-08-26T08:00:00.000Z"));
     try {
       const writer = await runStore.open(newRunId("smoke", new Date("2026-08-26T08:00:00.000Z")), "smoke");
-      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 3, durationMs: 1 });
+      await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 3, durationMs: 1 });
       await writer.close({ status: "success", summary: "" });
     } finally {
       vi.useRealTimers();

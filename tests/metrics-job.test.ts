@@ -37,7 +37,7 @@ async function recordRun(store: RunStore, at: Date, agent: string, costUsd: numb
   vi.setSystemTime(at);
   try {
     const writer = await store.open(newRunId(agent, at), agent);
-    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd, durationMs: 1 });
+    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd, durationMs: 1 });
     const result = await writer.close({ status: "success", summary: "" });
     if (verifiedOutcome) await store.recordVerification(result.runId, verifiedOutcome);
   } finally {

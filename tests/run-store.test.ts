@@ -47,7 +47,7 @@ describe("RunStore", () => {
 
     await writer.append({
       type: "usage",
-      inputTokens: 10, outputTokens: 5, costUsd: 0.002, durationMs: 1200,
+      inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.002, durationMs: 1200,
     });
     const result = await writer.close({ status: "success", summary: "done" });
 
@@ -116,7 +116,7 @@ describe("RunStore", () => {
     // Segment 1: runs, accrues usage and a tool call, then parks.
     const first = await store.open(runId, "smoke");
     await first.append({ type: "tool_use", name: "Bash" });
-    await first.append({ type: "usage", inputTokens: 100, outputTokens: 20, costUsd: 0.01, durationMs: 500 });
+    await first.append({ type: "usage", inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.01, durationMs: 500 });
     const firstResult = await first.close({ status: "parked", summary: "" });
 
     // A real wall-clock gap between the park and the resume (e.g. a human
@@ -129,7 +129,7 @@ describe("RunStore", () => {
     // more usage before closing for good.
     const second = await store.open(runId, "smoke");
     await second.append({ type: "tool_use", name: "Read" });
-    await second.append({ type: "usage", inputTokens: 40, outputTokens: 10, costUsd: 0.005, durationMs: 300 });
+    await second.append({ type: "usage", inputTokens: 40, outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.005, durationMs: 300 });
     const result = await second.close({ status: "success", summary: "done" });
 
     // The final result must be the SUM of both segments, not just segment 2.

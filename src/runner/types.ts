@@ -4,7 +4,20 @@ export type RunEvent =
   | { type: "assistant"; text: string }
   | { type: "tool_use"; name: string }
   | { type: "tool_result"; name: string; ok: boolean }
-  | { type: "usage"; inputTokens: number; outputTokens: number; costUsd: number; durationMs: number }
+  /**
+   * `inputTokens` is UNCACHED input only. The cached prefix is re-read on
+   * every turn and counted separately — leaving it out under-reports the
+   * traffic a run actually moves against the rolling rate-limit window.
+   */
+  | {
+      type: "usage";
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      costUsd: number;
+      durationMs: number;
+    }
   | { type: "error"; message: string }
   /**
    * The run was stopped by the system because its environment stopped working

@@ -26,7 +26,7 @@ async function recordRun(store: RunStore, at: Date, status: "success" | "failed"
   vi.setSystemTime(at);
   try {
     const writer = await store.open(newRunId("smoke", at), "smoke");
-    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd, durationMs: 1 });
+    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd, durationMs: 1 });
     await writer.close({ status, summary: "" });
   } finally {
     vi.useRealTimers();

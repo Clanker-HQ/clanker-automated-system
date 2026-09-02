@@ -318,7 +318,7 @@ describe("SdkRunner query options", () => {
     expect(events).toEqual([
       { type: "assistant", text: "working" },
       { type: "tool_use", name: "Read" },
-      { type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200 },
+      { type: "usage", inputTokens: 11, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.002, durationMs: 4200 },
     ]);
   });
 
@@ -347,7 +347,7 @@ describe("SdkRunner query options", () => {
     const { events } = await run([RESULT_MESSAGE, { type: "assistant", message: { content: "later" } }], controller.signal);
 
     expect(events).toEqual([
-      { type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200 },
+      { type: "usage", inputTokens: 11, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.002, durationMs: 4200 },
     ]);
   });
 
@@ -381,6 +381,7 @@ describe("SdkRunner query options", () => {
         type: "usage",
         inputTokens: 1399,
         outputTokens: 1019,
+        cacheReadTokens: 0, cacheCreationTokens: 0,
         costUsd: estimateCostUsd("claude-haiku-4-5", 1399, 1019),
         durationMs: 0,
       },

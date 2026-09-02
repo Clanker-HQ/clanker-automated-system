@@ -178,6 +178,8 @@ export function estimateCostUsd(model: string, inputTokens: number, outputTokens
 export interface PartialUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 /**
@@ -197,6 +199,8 @@ export function accumulateUsage(existing: PartialUsage, message: unknown): Parti
   return {
     inputTokens: existing.inputTokens + num(usage.input_tokens),
     outputTokens: existing.outputTokens + num(usage.output_tokens),
+    cacheReadTokens: existing.cacheReadTokens + num(usage.cache_read_input_tokens),
+    cacheCreationTokens: existing.cacheCreationTokens + num(usage.cache_creation_input_tokens),
   };
 }
 
@@ -277,12 +281,23 @@ export function toRunEvents(message: unknown): RunEvent[] {
       // is zeroed, which the SDK's own docs say a crashed/startup-error
       // result may do, and which an older SDK build predating the field
       // also looks like.
+      // ModelUsage carries FOUR token counts, not two: inputTokens is only the
+      // UNCACHED input. Summing the first two alone reported 515,212 input for
+      // a run whose cache reads and cache writes went unrecorded entirely — so
+      // the one number anybody tuned against was a fraction of the traffic,
+      // and every estimate made from it was wrong. The rolling rate-limit
+      // window is what actually constrains this system, so what it costs to
+      // re-read a cached prefix is exactly the thing worth seeing.
       const modelUsage = (m.modelUsage as Record<string, Record<string, unknown>> | undefined) ?? {};
       let modelInputTokens = 0;
       let modelOutputTokens = 0;
+      let modelCacheReadTokens = 0;
+      let modelCacheCreationTokens = 0;
       for (const entry of Object.values(modelUsage)) {
         modelInputTokens += num(entry.inputTokens);
         modelOutputTokens += num(entry.outputTokens);
+        modelCacheReadTokens += num(entry.cacheReadInputTokens);
+        modelCacheCreationTokens += num(entry.cacheCreationInputTokens);
       }
       const hasModelUsage = modelInputTokens > 0 || modelOutputTokens > 0;
 
@@ -291,6 +306,10 @@ export function toRunEvents(message: unknown): RunEvent[] {
           type: "usage",
           inputTokens: hasModelUsage ? modelInputTokens : num(usage.input_tokens),
           outputTokens: hasModelUsage ? modelOutputTokens : num(usage.output_tokens),
+          // Falls back to the terminal `usage` block's own cache fields when
+          // modelUsage is absent, the same way the two counts above do.
+          cacheReadTokens: hasModelUsage ? modelCacheReadTokens : num(usage.cache_read_input_tokens),
+          cacheCreationTokens: hasModelUsage ? modelCacheCreationTokens : num(usage.cache_creation_input_tokens),
           costUsd: num(m.total_cost_usd),
           durationMs: num(m.duration_ms),
         },
@@ -1222,7 +1241,7 @@ export class SdkRunner implements Runner {
       },
     });
 
-    let partial: PartialUsage = { inputTokens: 0, outputTokens: 0 };
+    let partial: PartialUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     let sawTerminalUsage = false;
     // Counted across ALL tools, with any success resetting it, rather than
     // per-tool: the run this exists because of alternated WebFetch and
@@ -1332,6 +1351,8 @@ export class SdkRunner implements Runner {
           type: "usage",
           inputTokens: partial.inputTokens,
           outputTokens: partial.outputTokens,
+          cacheReadTokens: partial.cacheReadTokens,
+          cacheCreationTokens: partial.cacheCreationTokens,
           costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
           durationMs: 0,
         };

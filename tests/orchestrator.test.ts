@@ -120,7 +120,7 @@ describe("Orchestrator.executeRun", () => {
     const { agent, orchestrator, dataDir, fetchImpl } = harness({
       events: [
         { type: "assistant", text: "Done: wrote notes." },
-        { type: "usage", inputTokens: 100, outputTokens: 20, costUsd: 0.001, durationMs: 900 },
+        { type: "usage", inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.001, durationMs: 900 },
       ],
     });
 
@@ -201,7 +201,7 @@ describe("Orchestrator.executeRun", () => {
           if (signal.aborted) return resolve();
           signal.addEventListener("abort", () => resolve(), { once: true });
         });
-        yield { type: "usage", inputTokens: 40, outputTokens: 9, costUsd: 0.02, durationMs: 60 };
+        yield { type: "usage", inputTokens: 40, outputTokens: 9, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.02, durationMs: 60 };
         yield {
           type: "error",
           message: 'SDK run ended with subtype "error_during_execution" (is_error=true)',
@@ -314,7 +314,7 @@ describe("Orchestrator.executeRun", () => {
     const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
     const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
     const orchestrator = new Orchestrator({
-      runner: new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] }),
+      runner: new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 1 }] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
       approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
@@ -382,7 +382,7 @@ describe("Orchestrator.executeRun", () => {
   it("resumeRun asks the governor with kind 'resume' and calls the runner with the session id", async () => {
     const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
     const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
-    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] });
+    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 1 }] });
     const executeSpy = vi.spyOn(runner, "execute");
     const orchestrator = new Orchestrator({
       runner, store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
@@ -407,7 +407,7 @@ describe("Orchestrator.executeRun", () => {
     const orchestrator = new Orchestrator({
       runner: new FakeRunner({ events: [
         { type: "rate_limit_event", status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.91 },
-        { type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 },
+        { type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 1 },
       ] }),
       store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
       outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
@@ -558,7 +558,7 @@ describe("Orchestrator's onParked announcement hook", () => {
  */
 describe("Orchestrator.resumeRun grant approval persistence", () => {
   it("persists an approved grant and forwards it in the resumed run's RunContext", async () => {
-    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] });
+    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 1 }] });
     const executeSpy = vi.spyOn(runner, "execute");
     const { agent, orchestrator, approvedGrants } = harness({ events: [] }, {}, runner);
 
@@ -578,7 +578,7 @@ describe("Orchestrator.resumeRun grant approval persistence", () => {
   // — proof that approvals accumulate across multiple park/resume cycles
   // within one run, not just the most recent one.
   it("accumulates approvals across sequential resumes of the same run", async () => {
-    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 }] });
+    const runner = new FakeRunner({ events: [{ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 1 }] });
     const executeSpy = vi.spyOn(runner, "execute");
     const { agent, orchestrator, approvedGrants } = harness({ events: [] }, {}, runner);
 
