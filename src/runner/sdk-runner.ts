@@ -122,6 +122,33 @@ const RESEARCH_SOURCE_SUBAGENT: {
 const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGENT_TYPE, RESEARCH_SOURCE_SUBAGENT_TYPE]);
 
 /**
+ * Agents whose own prompt.md actually calls a githubPr tool (mergePR,
+ * postReviewComment, pushBranch, or openPR) — grep `agents/*\/prompt.md` for
+ * those names to keep this in sync as prompts change.
+ *
+ * Every other agent this system runs (research, the scouts, overseer) never
+ * references any of these tools, so mounting the server for them bought
+ * nothing: `githubPrServer` used to be built whenever `this.deps.github` was
+ * present at all, a constructor-level dependency shared by every agent this
+ * one SdkRunner instance runs, not a per-agent decision — so an agent that
+ * will never call mergePR still paid its and its three siblings' tool
+ * schemas (mergePR's description alone runs several hundred characters,
+ * before its zod-derived JSON schema) on every single turn it made, for a
+ * tool it structurally could never have used (no grant, no mention in its
+ * own prompt).
+ *
+ * This is a narrower mechanism than an earlier, reverted attempt at gating
+ * this same server: gating it on GRANT possession would also have hidden
+ * `postReviewComment` and `openPR` — both explicitly "Never gated" by
+ * design in their own tool descriptions — from any agent that needs to
+ * comment or open a PR without holding a merge grant. Keying the gate on
+ * the agent's NAME instead leaves both ungated tools available to every
+ * agent whose prompt was ever going to call them, and simply never offers
+ * the server to one that wasn't.
+ */
+const GITHUB_PR_AGENTS: ReadonlySet<string> = new Set(["builder", "pr-reviewer", "repair"]);
+
+/**
  * Consecutive failing tool calls — with nothing succeeding in between — after
  * which a run is stopped rather than left to retry until it exhausts its
  * turns. Five, because four is still plausibly a stubborn-but-recoverable
@@ -570,8 +597,11 @@ export class SdkRunner implements Runner {
       : undefined;
 
     // The githubPr MCP server, only registered when a GithubTransport
-    // dependency was provided (agents that don't touch GitHub never see it).
-    // It now hosts four tools, not just mergePR:
+    // dependency was provided AND the running agent is one that actually
+    // calls one of its tools (see GITHUB_PR_AGENTS above) — agents that
+    // don't touch GitHub never see it, and never pay its schemas' per-turn
+    // weight for tools they hold no grant for and never call. It now hosts
+    // four tools, not just mergePR:
     //   - mergePR — the one gated by all three checks described below.
     //   - postReviewComment — ungated; commenting has no outward consequence
     //     beyond ordinary communication.
@@ -615,7 +645,7 @@ export class SdkRunner implements Runner {
     //      gap between the fetch above and the merge call).
     const github = this.deps.github;
     const gitPusher = this.deps.gitPusher;
-    const githubPrServer = github
+    const githubPrServer = github && GITHUB_PR_AGENTS.has(agent.name)
       ? createSdkMcpServer({
           name: "githubPr",
           tools: [
@@ -938,11 +968,20 @@ export class SdkRunner implements Runner {
                   ),
                 ]
               : []),
-            tool(
-              "listMyTasks",
-              "List the tasks you've queued yourself via queueTask, most recent first — use this before proposing new work so you don't repeat an idea you already queued.",
-              {},
-              async () => {
+            // research is a pure web-research specialist, categorically
+            // different from the self-improving scouts and overseer these
+            // three tools exist for — its own prompt.md calls queueTask
+            // and nothing else on this server. Excluding it here doesn't
+            // touch the "available at every tier" design the rest of this
+            // server keeps (see the doc comment above): every other agent
+            // with tasksDep wired in still gets them exactly as before.
+            ...(agent.name !== "research"
+              ? [
+                  tool(
+                    "listMyTasks",
+                    "List the tasks you've queued yourself via queueTask, most recent first — use this before proposing new work so you don't repeat an idea you already queued.",
+                    {},
+                    async () => {
                 const mine = (await tasksDep.list())
                   .filter((t) => t.createdBy === `agent:${agent.name}`)
                   .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -978,7 +1017,9 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: JSON.stringify(top, null, 2) }] };
               },
             ),
-            ...(memoryDep && memoryConfigDep?.enabled
+                ]
+              : []),
+            ...(memoryDep && memoryConfigDep?.enabled && agent.name !== "research"
               ? [
                   tool(
                     "recallMemory",
@@ -1008,51 +1049,70 @@ export class SdkRunner implements Runner {
      * same pattern as `taskQueueServer` above: not registered at all when the
      * dependency isn't wired in, rather than registered-but-erroring.
      */
-    const worldModelServer = worldDep
-      ? createSdkMcpServer({
-          name: "worldModel",
-          tools: [
-            tool(
-              "recordFinding",
-              "Record what you concluded about a topic in the shared world model, so other agents see it before repeating the same research. Call this at the end of every run, INCLUDING when the conclusion is that something is not worth pursuing and why — a recorded dead end is what stops the same ground being covered again in three months.",
-              {
-                topic: z.string().min(1).max(200),
-                conclusion: z.string().min(1),
-                confidence: z.enum(["low", "medium", "high"]),
-                sources: z.array(z.string()).default([]),
-              },
-              async ({ topic, conclusion, confidence, sources }) => {
-                await worldDep.writeFinding(topic, {
-                  topic,
-                  conclusion,
-                  confidence,
-                  sources,
-                  updatedAt: new Date().toISOString(),
-                });
-                return { content: [{ type: "text" as const, text: `Recorded finding for "${topic}".` }] };
-              },
-            ),
-            tool(
-              "updatePortfolioEntry",
-              "Replace this product's entry in the shared portfolio — its status, next review date, the bar it must clear, running cost, and leading-indicator notes. Replaces the whole entry (not a merge), so pass every field even when only one changed.",
-              {
-                slug: z.string().min(1).max(200),
-                purpose: z.string().min(1),
-                status: z.enum(["building", "live", "paused", "killed"]),
-                nextReviewAt: z.string().min(1),
-                bar: z.string().min(1),
-                monthlyCostUsd: z.number().nonnegative(),
-                notes: z.array(z.string()).default([]),
-                extensionCount: z.number().int().nonnegative().default(0),
-              },
-              async (entry) => {
-                await worldDep.upsertPortfolioEntry(entry);
-                return { content: [{ type: "text" as const, text: `Updated portfolio entry "${entry.slug}".` }] };
-              },
-            ),
-          ],
-        })
-      : undefined;
+    // recordFinding and updatePortfolioEntry each go to exactly one agent —
+    // research's prompt.md is the only one that ever calls recordFinding,
+    // and updatePortfolioEntry is a product-portfolio concept only
+    // overseer's prompt touches (grep every agents/*/prompt.md to confirm).
+    // Unlike taskQueue above, this server makes no "every tier" claim, so
+    // each tool — and the server itself, when an agent calls neither — is
+    // scoped to its one real caller rather than mounted for everyone with
+    // `worldDep` wired in.
+    const RECORD_FINDING_AGENTS: ReadonlySet<string> = new Set(["research"]);
+    const UPDATE_PORTFOLIO_ENTRY_AGENTS: ReadonlySet<string> = new Set(["overseer"]);
+    const worldModelServer =
+      worldDep && (RECORD_FINDING_AGENTS.has(agent.name) || UPDATE_PORTFOLIO_ENTRY_AGENTS.has(agent.name))
+        ? createSdkMcpServer({
+            name: "worldModel",
+            tools: [
+              ...(RECORD_FINDING_AGENTS.has(agent.name)
+                ? [
+                    tool(
+                      "recordFinding",
+                      "Record what you concluded about a topic in the shared world model, so other agents see it before repeating the same research. Call this at the end of every run, INCLUDING when the conclusion is that something is not worth pursuing and why — a recorded dead end is what stops the same ground being covered again in three months.",
+                      {
+                        topic: z.string().min(1).max(200),
+                        conclusion: z.string().min(1),
+                        confidence: z.enum(["low", "medium", "high"]),
+                        sources: z.array(z.string()).default([]),
+                      },
+                      async ({ topic, conclusion, confidence, sources }) => {
+                        await worldDep.writeFinding(topic, {
+                          topic,
+                          conclusion,
+                          confidence,
+                          sources,
+                          updatedAt: new Date().toISOString(),
+                        });
+                        return { content: [{ type: "text" as const, text: `Recorded finding for "${topic}".` }] };
+                      },
+                    ),
+                  ]
+                : []),
+              ...(UPDATE_PORTFOLIO_ENTRY_AGENTS.has(agent.name)
+                ? [
+                    tool(
+                      "updatePortfolioEntry",
+                      "Replace this product's entry in the shared portfolio — its status, next review date, the bar it must clear, running cost, and leading-indicator notes. Replaces the whole entry (not a merge), so pass every field even when only one changed.",
+                      {
+                        slug: z.string().min(1).max(200),
+                        purpose: z.string().min(1),
+                        status: z.enum(["building", "live", "paused", "killed"]),
+                        nextReviewAt: z.string().min(1),
+                        bar: z.string().min(1),
+                        monthlyCostUsd: z.number().nonnegative(),
+                        notes: z.array(z.string()).default([]),
+                        extensionCount: z.number().int().nonnegative().default(0),
+                      },
+                      async (entry) => {
+                        await worldDep.upsertPortfolioEntry(entry);
+                        return { content: [{ type: "text" as const, text: `Updated portfolio entry "${entry.slug}".` }] };
+                      },
+                    ),
+                  ]
+                : []),
+            ],
+          })
+        : undefined;
 
     const ExpectationCheckSchema = z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("netIncomeUsd"), atLeast: z.number() }).strict(),

@@ -146,7 +146,7 @@ describe("SdkRunner worldModel tools", () => {
     const world = new WorldModel(dataDir);
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world });
-    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as WorldToolParams;
     const handler = params.options.mcpServers.worldModel!.instance!._registeredTools.updatePortfolioEntry!.handler;
 
@@ -182,7 +182,7 @@ describe("SdkRunner worldModel tools", () => {
     const world = new WorldModel(dataDir);
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world });
-    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as WorldToolParams;
     const handler = params.options.mcpServers.worldModel!.instance!._registeredTools.updatePortfolioEntry!.handler;
 
@@ -241,7 +241,7 @@ describe("SdkRunner worldModel tools", () => {
     const world = new WorldModel(dataDir);
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world });
-    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as WorldToolParams;
 
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -267,6 +267,55 @@ describe("SdkRunner worldModel tools", () => {
     expect(result.isError).toBe(true);
     expect(await world.readPortfolio()).toEqual([]);
     await client.close();
+  });
+
+  // recordFinding and updatePortfolioEntry each go to exactly one agent —
+  // research is the only prompt.md that ever calls recordFinding, and
+  // updatePortfolioEntry is a product-portfolio concept only overseer's
+  // prompt touches. Unlike taskQueue (which deliberately keeps
+  // listMyTasks/recentFailures broadly available — see its own doc
+  // comment), worldModelServer makes no "every tier" claim, so both tools
+  // are scoped to their one real caller.
+  it("does not register updatePortfolioEntry for research", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-world-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const world = new WorldModel(dataDir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+
+    expect(params.options.mcpServers.worldModel!.instance!._registeredTools.recordFinding).toBeDefined();
+    expect(params.options.mcpServers.worldModel!.instance!._registeredTools.updatePortfolioEntry).toBeUndefined();
+  });
+
+  it("does not register recordFinding for overseer", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-world-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const world = new WorldModel(dataDir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world });
+    await collect(runner.execute(OVERSEER_AGENT, OVERSEER_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+
+    expect(params.options.mcpServers.worldModel!.instance!._registeredTools.updatePortfolioEntry).toBeDefined();
+    expect(params.options.mcpServers.worldModel!.instance!._registeredTools.recordFinding).toBeUndefined();
+  });
+
+  it("does not mount the worldModel server at all for an agent that calls neither tool, even when world is wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-world-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const world = new WorldModel(dataDir);
+    const scout = { ...AGENT, name: "opportunity-scout" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), world });
+    await collect(runner.execute(scout, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+
+    expect(params.options.mcpServers.worldModel).toBeUndefined();
   });
 });
 

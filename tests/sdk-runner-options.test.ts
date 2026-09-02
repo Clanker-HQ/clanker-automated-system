@@ -620,8 +620,13 @@ describe("SdkRunner grant enforcement", () => {
 });
 
 describe("SdkRunner GitHub PR tools", () => {
+  // name: "builder" deliberately, not the shared AGENT's "smoke" — the
+  // githubPr server is now only mounted for agents whose own prompt calls
+  // one of its tools (see GITHUB_PR_AGENTS in sdk-runner.ts), and "smoke" is
+  // not one of them. These tests are about the tools themselves, so the
+  // fixture needs a name the mount actually fires for.
   function granted() {
-    return { ...AGENT, tier: "autonomous", approval: "auto", grantRefs: ["infra-repo"] } as unknown as AgentDef;
+    return { ...AGENT, name: "builder", tier: "autonomous", approval: "auto", grantRefs: ["infra-repo"] } as unknown as AgentDef;
   }
   const GITHUB_PR_GRANT: Grant = { id: "infra-repo", kind: "github-pr", repos: ["owner/repo"], secret: "X" };
 
@@ -656,6 +661,48 @@ describe("SdkRunner GitHub PR tools", () => {
     await collect(new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github }).execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as { options: { mcpServers: Record<string, unknown> } };
     expect(params.options.mcpServers.githubPr).toBeDefined();
+  });
+
+  // The MCP server's tool schemas (mergePR's description alone runs several
+  // hundred characters, before its zod-derived JSON schema) are sent to the
+  // model on EVERY turn, whether or not it ever calls them — that's per-turn
+  // token weight, not a permission decision (decide()'s grant check already
+  // gates the CALL; this is about whether the SCHEMA is even offered).
+  // research holds no github-pr grant, never merges/comments/pushes/opens a
+  // PR, and its prompt.md never mentions any of these tools — so mounting
+  // this server for it pays that weight on every one of its turns for
+  // nothing it can ever legitimately use. This is a different mechanism from
+  // the earlier, reverted attempt at gating this server: that one is
+  // documented (see sdk-runner.ts) as keyed off grant possession, which
+  // would have also hidden the two deliberately ungated tools
+  // (postReviewComment, openPR) from an agent that holds no merge grant but
+  // still needs to comment. This gate is keyed off the agent's NAME instead
+  // (an explicit allowlist of agents whose own prompt actually calls one of
+  // these tools — see GITHUB_PR_AGENTS), so an ungated tool stays available
+  // to every agent that was ever going to call it, and is simply never
+  // offered to one that wasn't.
+  it("does not mount the githubPr MCP server for an agent whose prompt never calls its tools, even when GithubTransport is provided", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    // AGENT.name is "smoke" — not in GITHUB_PR_AGENTS.
+    await collect(new SdkRunner({ grants: [], pending: new PendingStore(dir), github }).execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as { options: { mcpServers: Record<string, unknown> } };
+    expect(params.options.mcpServers.githubPr).toBeUndefined();
+  });
+
+  it("mounts the githubPr MCP server for every agent whose prompt actually calls one of its tools", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const github = new FakeGithubTransport();
+    for (const name of ["builder", "pr-reviewer", "repair"]) {
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const agent = { ...AGENT, name } as unknown as AgentDef;
+      await collect(new SdkRunner({ grants: [], pending: new PendingStore(dir), github }).execute(agent, CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as { options: { mcpServers: Record<string, unknown> } };
+      expect(params.options.mcpServers.githubPr, `expected githubPr to be mounted for "${name}"`).toBeDefined();
+    }
   });
 
   it("merges when the repo is granted, the SHA matches, and the path isn't excluded", async () => {
@@ -863,7 +910,7 @@ describe("SdkRunner GitHub PR tools", () => {
     const github = new FakeGithubTransport();
     github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
-    const notAuto = { ...AGENT, tier: "autonomous", approval: "notify", grantRefs: ["infra-repo"] } as unknown as AgentDef;
+    const notAuto = { ...AGENT, name: "builder", tier: "autonomous", approval: "notify", grantRefs: ["infra-repo"] } as unknown as AgentDef;
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
     await collect(runner.execute(notAuto, CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;

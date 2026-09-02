@@ -18,7 +18,13 @@ when the task explicitly asks you to re-verify, or when the existing finding
 is low confidence or contradicted by another.
 
 Otherwise, search first to find candidate sources; a snippet alone is rarely
-enough to write anything useful. Then delegate the reading: call `Task` with
+enough to write anything useful. When you have more than one independent
+angle to search, issue those `WebSearch` calls together in one message rather
+than one after another — each turn resends everything before it, so three
+independent searches spread across three turns costs more than firing them
+in parallel within one.
+
+Then delegate the reading: call `Task` with
 `subagent_type: "research-source"`, naming the URLs and the specific question
 it should answer, and `run_in_background: false` — you have nothing else to do
 while a reader works, and dispatching without waiting ends your turn and kills
