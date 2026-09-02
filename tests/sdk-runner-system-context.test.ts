@@ -83,4 +83,25 @@ describe("SdkRunner systemContext tool", () => {
 
     expect(result).toMatchObject({ content: [{ type: "text", text: "## What this system is\n\nA primer.\n" }] });
   });
+
+  // research is the only agent that holds no Read tool (see the doc comment
+  // on systemContextServer in sdk-runner.ts) and the only one whose prompt
+  // ever calls this tool (grep every agents/*\/prompt.md to confirm) — every
+  // other agent paid this schema's per-turn weight for a tool it could never
+  // use, for the same reason githubPr was scoped to the agents that actually
+  // call it.
+  it("is not registered for an agent other than research, even when systemContext is wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const notResearch = { ...AGENT, name: "opportunity-scout" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({
+      grants: [],
+      pending: new PendingStore(dir),
+      systemContext: "## What this system is\n\nA primer.\n",
+    });
+    await collect(runner.execute(notResearch, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as SystemContextParams;
+    expect(params.options.mcpServers.systemContext).toBeUndefined();
+  });
 });

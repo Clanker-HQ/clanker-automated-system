@@ -630,3 +630,45 @@ describe("SdkRunner taskQueue tools excluded for research", () => {
     expect(registered.recallMemory).toBeUndefined();
   });
 });
+
+// builder, pr-reviewer, repair, and e2e-approval-test reference NONE of
+// this server's tools in their own prompt.md -- unlike research (queueTask)
+// or the scouts/overseer (queueTask, listMyTasks, ...), there's nothing
+// "available at every tier" for these four to use, so the whole server is
+// dead weight for them: four tool schemas paid on every turn for a
+// capability their prompt never calls into. Gated the same way githubPr is
+// -- an explicit allowlist of agents whose own prompt actually references
+// something on this server -- rather than excluding tools one at a time.
+describe("SdkRunner taskQueue server not mounted for agents that never reference it", () => {
+  it.each(["builder", "pr-reviewer", "repair", "e2e-approval-test"])(
+    "does not mount taskQueue for %s, even with tasks/wake/memory all wired in",
+    async (name) => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const tasks = new TaskStore(dir);
+      const wake = vi.fn().mockResolvedValue(undefined);
+      const memory = new MemoryStore(dir);
+      const agent = { ...AGENT, name } as unknown as AgentDef;
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, memory, memoryConfig });
+      await collect(runner.execute(agent, CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+      expect(params.options.mcpServers.taskQueue).toBeUndefined();
+    },
+  );
+
+  it.each(["research", "improvement-scout", "opportunity-scout", "dependency-scout", "overseer", "cleanup-scout"])(
+    "still mounts taskQueue for %s",
+    async (name) => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const tasks = new TaskStore(dir);
+      const agent = { ...AGENT, name } as unknown as AgentDef;
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+      await collect(runner.execute(agent, CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+      expect(params.options.mcpServers.taskQueue).toBeDefined();
+    },
+  );
+});
