@@ -83,6 +83,15 @@ export class Governor {
   private activeSlots = 0;
   private readonly waiters: Array<() => void> = [];
   private consecutiveRateLimitErrors = 0;
+  /**
+   * recordedAt of the last rate-limit snapshot a refusal has already alerted
+   * on — see the alert:false comments below. In-memory only: a restart
+   * re-alerts once for a still-stale snapshot, same posture as
+   * consecutiveRateLimitErrors above.
+   */
+  private lastAlertedRateLimitAt: string | null = null;
+  /** Calendar day (per spentToday's own timezone rule) the budget-reached alert last fired for. */
+  private lastAlertedBudgetDay: string | null = null;
 
   constructor(opts: {
     dataDir: string; config: Config; store: RunStore; overrides: ConfigOverridesStore;
@@ -136,14 +145,27 @@ export class Governor {
 
     const spentToday = await this.spentToday(settings, now);
     if (spentToday >= settings.dailyBudgetUsd) {
-      return { kind: "refuse", reason: `daily budget reached ($${spentToday.toFixed(2)} of $${settings.dailyBudgetUsd})`, alert: true };
+      // alert only the first time THIS day crosses the budget — like the
+      // breaker check above, this is a STATE re-checked on every dispatch for
+      // the rest of the day, so alerting unconditionally reposted the same
+      // "daily budget reached" line to Discord once per refused trigger.
+      const today = startOfDay(now, settings.quietHours?.timezone ?? "UTC");
+      const alert = this.lastAlertedBudgetDay !== today;
+      this.lastAlertedBudgetDay = today;
+      return { kind: "refuse", reason: `daily budget reached ($${spentToday.toFixed(2)} of $${settings.dailyBudgetUsd})`, alert };
     }
 
     // Only a snapshot that still describes the present may refuse anything —
     // see currentRateLimit. A stale one is discarded rather than obeyed.
     const snapshot = currentRateLimit(await this.rateLimits.read(), now);
     if (snapshot?.status === "rejected") {
-      return { kind: "refuse", reason: `rate limit currently rejected (as of ${snapshot.recordedAt})`, alert: true };
+      // alert only the first time THIS snapshot is seen refusing — see the
+      // pause-threshold check below, which shares the same reasoning and the
+      // same lastAlertedRateLimitAt marker (one shared "have we already told
+      // Discord about the rate-limit state as of this recordedAt" flag).
+      const alert = this.lastAlertedRateLimitAt !== snapshot.recordedAt;
+      this.lastAlertedRateLimitAt = snapshot.recordedAt;
+      return { kind: "refuse", reason: `rate limit currently rejected (as of ${snapshot.recordedAt})`, alert };
     }
     // Utilization can climb toward 1.0 for days under "allowed_warning"
     // before the API ever starts rejecting — the check above alone means
@@ -156,10 +178,18 @@ export class Governor {
     // fresh trigger, unlike the breaker/disabled-agent checks earlier in
     // this function, which a resume deliberately bypasses.
     if (snapshot?.utilization !== undefined && snapshot.utilization >= settings.rateLimitPauseThreshold) {
+      // Same STATE-vs-EVENT reasoning as the "rejected" branch above, and the
+      // same marker: this is re-checked on every dispatch, and utilization
+      // can sit above threshold for hours — a dispatcher tick (or a queued
+      // task) firing every 30s reposted this exact line to Discord for as
+      // long as it stayed there. One alert per distinct snapshot; `!status`
+      // shows the current utilization thereafter.
+      const alert = this.lastAlertedRateLimitAt !== snapshot.recordedAt;
+      this.lastAlertedRateLimitAt = snapshot.recordedAt;
       return {
         kind: "refuse",
         reason: `rate limit utilization ${(snapshot.utilization * 100).toFixed(0)}% has reached the pause threshold (${(settings.rateLimitPauseThreshold * 100).toFixed(0)}%, as of ${snapshot.recordedAt})`,
-        alert: true,
+        alert,
       };
     }
 
