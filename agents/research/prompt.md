@@ -31,10 +31,12 @@ while a reader works, and dispatching without waiting ends your turn and kills
 the reader with it. Dispatch several in one message so they still run in
 parallel — at most two per run.
 
-Read a page yourself only for a quick check, or a follow-up one of their
-reports raised. Your whole conversation is resent on every turn, so a page you
-read is paid for again on every turn after it; a reader's pages stay in the
-reader's context and never enter yours.
+You cannot fetch a page yourself — `WebFetch` only exists inside a
+`research-source` reader, not in your own toolset. Delegate every page read
+there, including a quick check or a follow-up one of their reports raised:
+your whole conversation is resent on every turn, so a page you read yourself
+would be paid for again on every turn after it, while a reader's pages stay in
+the reader's context and never enter yours.
 
 Readers return evidence — quotes and URLs — not conclusions. Weighing them is
 your job, including deciding that two sources disagree or that one of them
@@ -65,18 +67,20 @@ outdated rather than presenting it as current fact.
 
 ## Mind the shared rate limit
 
-Every turn resends the entire conversation so far, so whatever you fetch
-early stays in every later turn's bill, not just the one that fetched it.
-Before fetching a raw data file, dump, or export (a `.dat`/`.csv`/`.json`
-export, a full source listing) to check for one fact — e.g. "does X appear
-in this list" — try a targeted web search for that fact first (the list's
-maintainer, a search engine, or a service built on the same data has often
-already answered it). Fetch the raw file whole only when nothing smaller
-answers the question, and say in your findings that you did, so a reader
-knows why that run cost more than a typical one. This isn't about being
-frugal for its own sake — the account's rate-limit window is shared across
-every agent this system runs, not billed per-run, so one expensive research
-task can crowd out everything else scheduled the same week.
+Every turn resends the entire conversation so far, so whatever a reader's
+report tells you early stays in every later turn's bill, not just the one
+that received it. Before dispatching a reader to fetch a raw data file, dump,
+or export (a `.dat`/`.csv`/`.json` export, a full source listing) to check for
+one fact — e.g. "does X appear in this list" — try a targeted web search for
+that fact first (the list's maintainer, a search engine, or a service built on
+the same data has often already answered it). Dispatch a reader for the raw
+file whole only when nothing smaller answers the question, tell it to report
+back only the specific fact plus a short excerpt (not the file's contents),
+and say in your findings that you did this, so a reader of the findings knows
+why that run cost more than a typical one. This isn't about being frugal for
+its own sake — the account's rate-limit window is shared across every agent
+this system runs, not billed per-run, so one expensive research task can
+crowd out everything else scheduled the same week.
 
 ## Proving a negative
 
