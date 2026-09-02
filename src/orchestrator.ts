@@ -36,6 +36,15 @@ export function workspaceNote(workspace: string): string {
   );
 }
 
+/**
+ * Whether a run's error came from the subscription's rate limit rather than
+ * from anything the agent did. Shared by the status classification and the
+ * governor's backoff so the two can never disagree about what counts.
+ */
+function isRateLimitError(message: string): boolean {
+  return message.includes("rate_limit");
+}
+
 export class Orchestrator {
   private readonly runner: Runner;
   private readonly store: RunStore;
@@ -111,7 +120,24 @@ export class Orchestrator {
       // skips the breaker check entirely for kind === "resume" — counting its
       // outcome here would let the operator's own intervention trip the very
       // switch that gates automatic runs.
-      await this.breaker.recordResult(agent.name, result.status);
+      //
+      // Read the prior state first so the trip can be announced exactly once,
+      // as the event it is. Governor.admit's own refusal is deliberately
+      // silent (alert: false): it fires on every subsequent dispatch, and with
+      // a queue of pending tasks that turned one tripped breaker into an
+      // endless stream of identical Discord messages describing a state
+      // nobody had changed.
+      const wasTripped = await this.breaker.isTripped(agent.name);
+      const breakerState = await this.breaker.recordResult(agent.name, result.status);
+      if (!wasTripped && breakerState.disabledAt) {
+        await this.outbox
+          .postAlert(
+            agent.outbox.discord,
+            `⛔ **${agent.name}** disabled: circuit breaker tripped after ${breakerState.consecutiveFailures} consecutive failures. ` +
+              `No further runs will start until you clear it with \`!enable ${agent.name}\`.`,
+          )
+          .catch((err: unknown) => console.error(`[orchestrator] failed to announce breaker trip for ${agent.name}`, err));
+      }
       return result;
     } finally {
       this.governor.releaseSlot();
@@ -197,7 +223,14 @@ export class Orchestrator {
         // (SdkRunner maps the last message it pulled so the run's cost
         // accounting is not lost) — that must not re-label the run "failed".
         if (event.type === "error" && (status as RunStatus) !== "timeout") {
-          status = "failed";
+          // A rate-limited run is the environment saying "not now", not the
+          // agent failing at its task — so it is "interrupted", which
+          // BreakerStore's FAILURE_STATUSES deliberately excludes. Recorded as
+          // "failed" it took three limit hits to disable an agent that had
+          // done nothing wrong, and every dispatch afterwards re-posted
+          // "circuit breaker tripped" to Discord. Same reasoning as the
+          // tool-failure stop in sdk-runner.ts.
+          status = isRateLimitError(event.message) ? "interrupted" : "failed";
           error = event.message;
         }
         // Recorded and reported like any other outcome, but deliberately NOT
@@ -232,14 +265,24 @@ export class Orchestrator {
         // Feed the governor's shared rate-limit snapshot live, from every
         // run's stream, not only the triggering agent's own admission check
         // — it's one subscription-wide limit (spec §4.5).
+        // Both governor calls below are side-channel bookkeeping, and neither
+        // may decide this run's outcome: they sit inside the same try as the
+        // event loop, so a throw here lands in the catch and relabels an
+        // already-classified run "failed". A rate-limited run classified as
+        // "interrupted" two lines earlier became "failed" again for exactly
+        // that reason, which then fed the agent's circuit breaker.
         if (event.type === "rate_limit_event") {
-          await this.governor.recordRateLimit({
-            status: event.status, rateLimitType: event.rateLimitType,
-            utilization: event.utilization, resetsAt: event.resetsAt,
-          });
+          await this.governor
+            .recordRateLimit({
+              status: event.status, rateLimitType: event.rateLimitType,
+              utilization: event.utilization, resetsAt: event.resetsAt,
+            })
+            .catch((err: unknown) => console.error("[orchestrator] failed to record rate-limit snapshot", err));
         }
-        if (event.type === "error" && event.message.includes("rate_limit")) {
-          await this.governor.recordRateLimitError();
+        if (event.type === "error" && isRateLimitError(event.message)) {
+          await this.governor
+            .recordRateLimitError()
+            .catch((err: unknown) => console.error("[orchestrator] failed to record rate-limit backoff", err));
         }
       }
     } catch (thrown) {

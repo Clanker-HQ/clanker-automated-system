@@ -97,7 +97,12 @@ function harness(
       sleep: async () => {},
     }),
     dataDir,
-    governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
+    governor: {
+      admit: vi.fn().mockResolvedValue({ kind: "admit" }),
+      releaseSlot: vi.fn(),
+      recordRateLimit: vi.fn().mockResolvedValue(undefined),
+      recordRateLimitError: vi.fn().mockResolvedValue(undefined),
+    } as never,
     breaker: new BreakerStore(dataDir),
     approvedGrants,
     ...(verifier ? { verifier } : {}),
@@ -262,7 +267,12 @@ describe("Orchestrator.executeRun", () => {
       store: new RunStore(dataDir),
       outbox,
       dataDir,
-      governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
+      governor: {
+      admit: vi.fn().mockResolvedValue({ kind: "admit" }),
+      releaseSlot: vi.fn(),
+      recordRateLimit: vi.fn().mockResolvedValue(undefined),
+      recordRateLimitError: vi.fn().mockResolvedValue(undefined),
+    } as never,
       breaker: new BreakerStore(dataDir),
       approvedGrants: new ApprovedGrantsStore(dataDir),
     });
@@ -491,7 +501,12 @@ describe("Orchestrator's onParked announcement hook", () => {
       store: new RunStore(dataDir),
       outbox: { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() } as never,
       dataDir,
-      governor: { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() } as never,
+      governor: {
+      admit: vi.fn().mockResolvedValue({ kind: "admit" }),
+      releaseSlot: vi.fn(),
+      recordRateLimit: vi.fn().mockResolvedValue(undefined),
+      recordRateLimitError: vi.fn().mockResolvedValue(undefined),
+    } as never,
       breaker: new BreakerStore(dataDir),
       approvedGrants: new ApprovedGrantsStore(dataDir),
       ...(onParked ? { onParked } : {}),
@@ -850,5 +865,67 @@ describe("Orchestrator workspace disclosure", () => {
     expect(prompt).toContain("Do the thing.");
     expect(prompt).toContain("per-run context");
     expect(prompt).toContain(agent.workspace);
+  });
+});
+
+// Hitting the subscription's rate limit is the environment saying "not now",
+// not the agent failing at its task. It was recorded as "failed", which
+// BreakerStore counts — so three limit hits in a row disabled the agent, and
+// every subsequent dispatch re-posted "circuit breaker tripped" to Discord.
+// With a queue of pending tasks that is a loop, and none of it was research's
+// fault. Same shape as the tool-failure fix: classify, don't blame.
+describe("Orchestrator rate-limit classification", () => {
+  it("records a rate-limited run as interrupted, not failed", async () => {
+    const { agent, orchestrator, store } = harness({
+      events: [{ type: "error", message: "assistant message reported error: rate_limit" }],
+    });
+
+    const result = await orchestrator.executeRun(agent);
+
+    expect(result?.status).toBe("interrupted");
+    expect((await store.listRecent(5))[0]?.status).toBe("interrupted");
+  });
+
+  it("does not let repeated rate limits trip the agent's breaker", async () => {
+    const { agent, orchestrator, dataDir } = harness({
+      events: [{ type: "error", message: "assistant message reported error: rate_limit" }],
+    });
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+
+    expect(await new BreakerStore(dataDir).isTripped(agent.name)).toBe(false);
+  });
+
+  it("still records a genuine failure as failed", async () => {
+    const { agent, orchestrator } = harness({
+      events: [{ type: "error", message: "TypeError: cannot read property of undefined" }],
+    });
+
+    expect((await orchestrator.executeRun(agent))?.status).toBe("failed");
+  });
+});
+
+// The breaker refusal used to alert on EVERY refused trigger. With a queue of
+// pending tasks that is a loop: the same "circuit breaker tripped" line posted
+// to Discord over and over, describing a state rather than reporting an event.
+// Announce the trip once, when it happens, and say how to clear it.
+describe("Orchestrator breaker announcement", () => {
+  it("announces the trip once, when the breaker actually trips", async () => {
+    const { agent, orchestrator, dataDir, fetchImpl } = harness({
+      events: [{ type: "error", message: "TypeError: boom" }],
+    });
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    const before = fetchImpl.mock.calls.length;
+    await orchestrator.executeRun(agent);
+
+    expect(await new BreakerStore(dataDir).isTripped(agent.name)).toBe(true);
+    const posted = fetchImpl.mock.calls.slice(before).map((c) => JSON.parse(String(c[1]!.body)).content as string);
+    const trip = posted.filter((t) => /circuit breaker/i.test(t));
+    expect(trip).toHaveLength(1);
+    expect(trip[0]).toContain("!enable smoke");
   });
 });
