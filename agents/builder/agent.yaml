@@ -22,7 +22,7 @@ permissions:
 
 tier: autonomous
 approval: auto
-grantRefs: [builder-push]
+grantRefs: [builder-push, products-provision, products-push]
 
 outbox:
   discord: ops

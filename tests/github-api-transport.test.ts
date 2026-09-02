@@ -190,6 +190,56 @@ describe("GithubApiTransport.createPullRequest", () => {
   });
 });
 
+describe("GithubApiTransport.createRepo", () => {
+  it("posts to the org repos endpoint and returns the created repo's full name and url on 201", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeResponse({ status: 201, json: { full_name: "AAS-Labs/pilot-01", html_url: "https://github.com/AAS-Labs/pilot-01" } }),
+    ) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    const repo = await t.createRepo("AAS-Labs", "pilot-01", { private: true, description: "First product." });
+
+    expect(repo).toEqual({ fullName: "AAS-Labs/pilot-01", url: "https://github.com/AAS-Labs/pilot-01" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.github.com/orgs/AAS-Labs/repos",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ name: "pilot-01", private: true, description: "First product." }),
+      }),
+    );
+  });
+
+  it("omits description from the body when none is given", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeResponse({ status: 201, json: { full_name: "AAS-Labs/pilot-01", html_url: "https://github.com/AAS-Labs/pilot-01" } }),
+    ) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    await t.createRepo("AAS-Labs", "pilot-01", { private: false });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.github.com/orgs/AAS-Labs/repos",
+      expect.objectContaining({ body: JSON.stringify({ name: "pilot-01", private: false }) }),
+    );
+  });
+
+  it("throws with the response status and body when GitHub rejects the creation", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeResponse({ ok: false, status: 422, text: '{"message":"name already exists on this account"}' }),
+    ) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    await expect(t.createRepo("AAS-Labs", "pilot-01", { private: true })).rejects.toThrow(/422/);
+    await expect(t.createRepo("AAS-Labs", "pilot-01", { private: true })).rejects.toThrow(/already exists/);
+  });
+
+  it("treats any status other than 201 as failure, even a 200", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: true, status: 200, text: "unexpected" })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.createRepo("AAS-Labs", "pilot-01", { private: true })).rejects.toThrow(/200/);
+  });
+});
+
 describe("GithubApiTransport.getFileContent", () => {
   it("decodes base64 content from the Contents API", async () => {
     const fetchImpl = vi.fn(async () =>

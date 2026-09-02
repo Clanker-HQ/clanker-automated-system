@@ -274,6 +274,27 @@ describe("detectOutwardEffect", () => {
   });
 });
 
+describe("detectOutwardEffect: createRepo", () => {
+  it("reports a provision effect keyed by the org, not the repo name", () => {
+    const effect = detectOutwardEffect("createRepo", { org: "AAS-Labs", name: "pilot-01" });
+    expect(effect).toEqual({
+      kind: "provision",
+      description: "create repo AAS-Labs/pilot-01",
+      target: "AAS-Labs",
+    });
+  });
+
+  it("returns null when org is missing or not a string", () => {
+    expect(detectOutwardEffect("createRepo", { name: "pilot-01" })).toBeNull();
+    expect(detectOutwardEffect("createRepo", { org: 1, name: "pilot-01" })).toBeNull();
+  });
+
+  it("returns null when name is missing or not a string", () => {
+    expect(detectOutwardEffect("createRepo", { org: "AAS-Labs" })).toBeNull();
+    expect(detectOutwardEffect("createRepo", { org: "AAS-Labs", name: 1 })).toBeNull();
+  });
+});
+
 describe("detectOutwardEffect: pushBranch", () => {
   it("reports a git-push effect carrying the branch", () => {
     const effect = detectOutwardEffect("pushBranch", { repo: "owner/repo", branch: "agent/builder/add-x" });

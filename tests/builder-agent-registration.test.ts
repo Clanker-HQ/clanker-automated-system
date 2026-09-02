@@ -26,7 +26,7 @@ describe("builder agent registration against the real repo config", () => {
       trigger: { type: "dispatched" },
       tier: "autonomous",
       approval: "auto",
-      grantRefs: ["builder-push"],
+      grantRefs: ["builder-push", "products-provision", "products-push"],
     });
   });
 });

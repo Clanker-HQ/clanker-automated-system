@@ -95,3 +95,29 @@ grants:
     remote: "AAS-Labs/*"
     branches: ["agent/builder/*"]
     secret: GITHUB_PRODUCTS_TOKEN
+
+  # Backs agents/builder's grantRefs — the createRepo tool's grant.
+  # ProvisionGrant.resource "github-repo" has been in the schema since it was
+  # written, with nothing ever producing an OutwardEffect that matched it
+  # until createRepo (src/runner/sdk-runner.ts); this is that grant. Reuses
+  # GITHUB_PRODUCTS_TOKEN rather than adding a new credential — the same
+  # token already backs products-repo and products-push above, and its own
+  # comment already documents it as verified able to create (and delete)
+  # repos in AAS-Labs and structurally unable to reach anywhere else.
+  # `scope: "AAS-Labs"` matches exactly, not "AAS-Labs/*": createRepo's
+  # detectOutwardEffect case reports the effect target as the bare org (not
+  # "org/name") — the repo doesn't exist yet to have a path of its own — and
+  # matchGrant's provision case runs `scope` through globMatch against that
+  # target, so an exact org string is what actually matches here.
+  # `limit.perDay: 2` is deliberately low: a runaway repo-creation loop is a
+  # real failure mode worth bounding on paper, even though nothing in this
+  # codebase counts uses against a provision grant's limit yet (see README's
+  # documented caveat) — the real backstop today is that every repo this
+  # creates still needs a human-reviewable PR (via pushBranch/openPR, gated
+  # separately by products-push) before anything meaningful lands in it.
+  - id: products-provision
+    kind: provision
+    resource: github-repo
+    scope: "AAS-Labs"
+    limit: { perDay: 2 }
+    secret: GITHUB_PRODUCTS_TOKEN

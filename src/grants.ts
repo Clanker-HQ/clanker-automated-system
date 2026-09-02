@@ -224,6 +224,18 @@ export function detectOutwardEffect(toolName: string, input: Record<string, unkn
     return { kind: "git-push", description: `push ${branch} to ${repo}`, target: repo, branch };
   }
 
+  // Only reachable via the createRepo tool handler's own direct decide() call
+  // (src/runner/sdk-runner.ts), same as mergePR/pushBranch above. Keyed by
+  // the org alone (not "org/name") — the repo doesn't exist yet to have a
+  // path of its own, and a provision grant's `scope` bounds which org an
+  // agent may create repos in.
+  if (toolName === "createRepo") {
+    const org = typeof input.org === "string" ? input.org : "";
+    const name = typeof input.name === "string" ? input.name : "";
+    if (!org || !name) return null;
+    return { kind: "provision", description: `create repo ${org}/${name}`, target: org };
+  }
+
   return null;
 }
 

@@ -10,6 +10,15 @@ The task's request is appended to this prompt. It names the repo to change
 or too vague to act on safely, say so in your final message rather than
 guessing at a repo or improvising scope.
 
+If the task is about a product with no repo yet — nothing in the world
+model or the task itself points to an existing `owner/repo` for it — call
+`createRepo` first to create one, then proceed as below against the repo
+you just created. Only ever pass `AAS-Labs` as the org: the grant behind
+`createRepo` is scoped there and nowhere else, so naming any other org just
+fails. Don't guess a name from thin air either — use the product's slug (as
+recorded in the world model, if one exists) so the repo, the portfolio
+entry, and any later deploy config all agree on the same name.
+
 ## How to work
 
 1. Your workspace may still hold files from a previous run — this directory

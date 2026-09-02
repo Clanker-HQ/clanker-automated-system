@@ -50,6 +50,15 @@ describe("FakeGithubTransport", () => {
     expect(t.merged).toEqual([]);
   });
 
+  it("records a created repo and returns its full name and url", async () => {
+    const t = new FakeGithubTransport();
+
+    const result = await t.createRepo("AAS-Labs", "pilot-01", { private: true, description: "First product." });
+
+    expect(t.createdRepos).toEqual([{ org: "AAS-Labs", name: "pilot-01", private: true, description: "First product." }]);
+    expect(result).toEqual({ fullName: "AAS-Labs/pilot-01", url: "https://github.com/AAS-Labs/pilot-01" });
+  });
+
   it("records a created pull request and returns an incrementing fake number/url", async () => {
     const t = new FakeGithubTransport();
 

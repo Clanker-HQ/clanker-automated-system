@@ -123,8 +123,9 @@ const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGE
 
 /**
  * Agents whose own prompt.md actually calls a githubPr tool (mergePR,
- * postReviewComment, pushBranch, or openPR) — grep `agents/*\/prompt.md` for
- * those names to keep this in sync as prompts change.
+ * postReviewComment, createRepo, pushBranch, or openPR) — grep
+ * `agents/*\/prompt.md` for those names to keep this in sync as prompts
+ * change.
  *
  * Every other agent this system runs (research, the scouts, overseer) never
  * references any of these tools, so mounting the server for them bought
@@ -662,10 +663,20 @@ export class SdkRunner implements Runner {
     // calls one of its tools (see GITHUB_PR_AGENTS above) — agents that
     // don't touch GitHub never see it, and never pay its schemas' per-turn
     // weight for tools they hold no grant for and never call. It now hosts
-    // four tools, not just mergePR:
+    // five tools, not just mergePR:
     //   - mergePR — the one gated by all three checks described below.
     //   - postReviewComment — ungated; commenting has no outward consequence
     //     beyond ordinary communication.
+    //   - createRepo — the first step before pushBranch/openPR can be used
+    //     for a product with no repo yet. No unconditional gate the way
+    //     pushBranch's branch-namespace check is: a provision grant's
+    //     `scope` (the org) is the only real boundary here, since there is
+    //     no equivalent excluded/protected set for repo names, and the
+    //     backing token's own reach is already structurally confined to one
+    //     org (see grants.yaml's products-provision comment). Gated the same
+    //     two-step way as pushBranch otherwise: decide()/detectOutwardEffect/
+    //     matchGrant, then the matched grant is looked up directly for its
+    //     secret.
     //   - pushBranch — registered only when `gitPusher` is also present (only
     //     `builder` holds both dependencies today). Its own two gates run in
     //     the same unconditional, order-matters style as mergePR's: (1) an
@@ -789,6 +800,58 @@ export class SdkRunner implements Runner {
               async ({ repo, number, body }) => {
                 await github.postReviewComment(repo, number, body);
                 return { content: [{ type: "text" as const, text: `Comment posted on ${repo}#${number}.` }] };
+              },
+            ),
+            tool(
+              "createRepo",
+              "Create a new GitHub repository for a product this system is building. Use this before pushBranch/openPR when the task names a product with no repo yet — those tools require a repo that already exists. Only succeeds when a provision grant covers the target org.",
+              {
+                org: z.string().min(1).regex(/^[\w.-]+$/, "must be a valid GitHub org/user login"),
+                name: z.string().min(1).regex(/^[\w.-]+$/, "must be a valid GitHub repo name"),
+                private: z.boolean(),
+                description: z.string().optional(),
+              },
+              async ({ org, name, private: isPrivate, description }) => {
+                // Gate — does this agent hold a provision grant covering this org?
+                const decision = decide(agent, this.deps.grants, "createRepo", { org, name });
+                if (decision.kind !== "allow") {
+                  const text =
+                    decision.kind === "park"
+                      ? `Refused: creating a repo in "${org}" requires human approval of grant "${decision.grantRef}", which this tool cannot wait for.`
+                      : `Refused: no grant authorises creating a repo in "${org}".`;
+                  return { content: [{ type: "text" as const, text }] };
+                }
+
+                // decide()'s "allow" carries no grantRef (only "park" does), so
+                // the matched Grant is looked up directly here via matchGrant —
+                // this is the one spot this tool needs the grant object itself
+                // (for its `secret`), not just the yes/no decision.
+                const effect = detectOutwardEffect("createRepo", { org, name })!;
+                const relevantGrants = this.deps.grants.filter((g) => agent.grantRefs.includes(g.id));
+                const grant = matchGrant(relevantGrants, effect);
+                const token = grant ? process.env[grant.secret] : undefined;
+                if (!grant || !token) {
+                  return {
+                    content: [
+                      { type: "text" as const, text: `Refused: grant "${grant?.id}" has no ${grant?.secret} set.` },
+                    ],
+                  };
+                }
+
+                try {
+                  const created = await github.createRepo(org, name, { private: isPrivate, description });
+                  return { content: [{ type: "text" as const, text: `Created ${created.fullName} at ${created.url}.` }] };
+                } catch (error) {
+                  // Unlike pushBranch's GitPusher error, GithubApiTransport's
+                  // thrown Error never embeds the token (it goes in a header,
+                  // not a credential-bearing URL) — safe to surface verbatim,
+                  // and the operator needs to know exactly what GitHub said.
+                  return {
+                    content: [
+                      { type: "text" as const, text: `Refused: repo creation failed — ${error instanceof Error ? error.message : String(error)}` },
+                    ],
+                  };
+                }
               },
             ),
             ...(gitPusher
