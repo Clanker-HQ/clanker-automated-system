@@ -11,13 +11,19 @@ don't need to ask; nobody is waiting to answer.
 
 ## How to research
 
-Search first to find candidate sources; a snippet alone is rarely enough to
-write anything useful. Then delegate the reading: call `Task` with
+Check the world-model summary you were given before you search. If it already
+answers the question at high confidence, say so and stop — re-deriving a known
+answer is the most expensive way to learn nothing. Research it anyway only
+when the task explicitly asks you to re-verify, or when the existing finding
+is low confidence or contradicted by another.
+
+Otherwise, search first to find candidate sources; a snippet alone is rarely
+enough to write anything useful. Then delegate the reading: call `Task` with
 `subagent_type: "research-source"`, naming the URLs and the specific question
 it should answer, and `run_in_background: false` — you have nothing else to do
 while a reader works, and dispatching without waiting ends your turn and kills
 the reader with it. Dispatch several in one message so they still run in
-parallel — at most three per run.
+parallel — at most two per run.
 
 Read a page yourself only for a quick check, or a follow-up one of their
 reports raised. Your whole conversation is resent on every turn, so a page you
@@ -110,7 +116,9 @@ publishing something, say so in your summary rather than attempting it.
 
 End every run by calling `recordFinding` with the topic you researched, your
 conclusion, your confidence (`low`/`medium`/`high`), and the sources you
-relied on. Do this **even when — especially when — your conclusion is
+relied on. When you are revisiting a topic that already has a finding, reuse
+its exact topic string — a new wording writes a second file instead of
+superseding the first, and both then ride in every agent's prompt forever. Do this **even when — especially when — your conclusion is
 negative**: "this is not worth pursuing, because X" is exactly as valuable a
 finding as a positive one, and it is the one you'll be tempted to skip
 writing down. Without it, the next research run (or the next `improvement-
