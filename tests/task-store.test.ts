@@ -122,11 +122,30 @@ describe("TaskStore", () => {
     void low;
     expect((await s.nextPending())?.id).toBe(high.id);
 
-    const s2 = store();
-    const first = await s2.create({ text: "first", createdBy: "discord:owner", priority: 50 });
-    const second = await s2.create({ text: "second", createdBy: "discord:owner", priority: 50 });
-    void second;
-    expect((await s2.nextPending())?.id).toBe(first.id);
+    // The tie-break itself only exercises what it claims to when `first` and
+    // `second` actually land in different milliseconds: nextPending's sort
+    // falls back to createdAt.localeCompare, and on an exact tie a stable
+    // sort just preserves list()'s own order -- which is readdir() order,
+    // not creation order (see task-store.ts#list). Two back-to-back creates
+    // with no delay can land in the same millisecond, especially on a fast
+    // CI runner, making this assertion flip on readdir()'s arbitrary
+    // ordering instead of testing the tie-break at all. Faking the clock and
+    // advancing it between creates guarantees a real, distinct createdAt for
+    // each -- the same fix already applied to this exact failure mode in
+    // tests/sdk-runner-queue-task.test.ts's listMyTasks tests.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
+    let first: Task, second: Task;
+    try {
+      const s2 = store();
+      first = await s2.create({ text: "first", createdBy: "discord:owner", priority: 50 });
+      vi.advanceTimersByTime(1000);
+      second = await s2.create({ text: "second", createdBy: "discord:owner", priority: 50 });
+      void second;
+      expect((await s2.nextPending())?.id).toBe(first.id);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("nextPending skips ids in the exclude set", async () => {
