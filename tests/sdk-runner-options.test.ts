@@ -39,6 +39,7 @@ interface QueryParams {
     tools: string[];
     permissionMode: string;
     settingSources: unknown[];
+    settings?: { autoCompactWindow?: number; promptCacheTtl?: string; subagentPromptCacheTtl?: string };
     env: Record<string, string>;
     abortController: AbortController;
     agents?: Record<
@@ -318,7 +319,7 @@ describe("SdkRunner query options", () => {
     expect(events).toEqual([
       { type: "assistant", text: "working" },
       { type: "tool_use", name: "Read" },
-      { type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200 },
+      { type: "usage", inputTokens: 11, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.002, durationMs: 4200 },
     ]);
   });
 
@@ -347,7 +348,7 @@ describe("SdkRunner query options", () => {
     const { events } = await run([RESULT_MESSAGE, { type: "assistant", message: { content: "later" } }], controller.signal);
 
     expect(events).toEqual([
-      { type: "usage", inputTokens: 11, outputTokens: 3, costUsd: 0.002, durationMs: 4200 },
+      { type: "usage", inputTokens: 11, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.002, durationMs: 4200 },
     ]);
   });
 
@@ -381,6 +382,7 @@ describe("SdkRunner query options", () => {
         type: "usage",
         inputTokens: 1399,
         outputTokens: 1019,
+        cacheReadTokens: 0, cacheCreationTokens: 0,
         costUsd: estimateCostUsd("claude-haiku-4-5", 1399, 1019),
         durationMs: 0,
       },
@@ -413,6 +415,50 @@ describe("SdkRunner query options", () => {
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     await collect(new SdkRunner().execute(bare, CTX, new AbortController().signal));
     expect((queryMock.mock.calls[0]![0] as QueryParams).options.tools).toEqual([]);
+  });
+
+  // research's own conversation is what's resent on every turn — the
+  // dominant cost this whole file exists to bound, bigger than any of the
+  // schema trims above. A lower autoCompactWindow makes the SDK's own
+  // auto-compaction fire before the default ~200k-token ceiling, summarizing
+  // older search/read content instead of dragging it through every
+  // remaining turn. Scoped to research alone: this is a NEW kind of change
+  // from the schema trims — it can lose fidelity in older conversation
+  // content, and no other agent's workflow (builder's red-green loop,
+  // pr-reviewer's fan-out) has been checked against that risk.
+  it("sets a lower autoCompactWindow for research, so auto-compaction fires well before the default ~200k-token ceiling", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const research = { ...AGENT, name: "research" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(new SdkRunner().execute(research, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueryParams;
+    expect(params.options.settings?.autoCompactWindow).toBeGreaterThan(0);
+    expect(params.options.settings?.autoCompactWindow).toBeLessThan(100_000);
+  });
+
+  // Verified against the SDK's own resolution function (grep the installed
+  // @anthropic-ai/claude-agent-sdk-win32-x64 bundle for "FORCE_PROMPT_CACHING_5M"):
+  // absent an explicit override, the cache TTL is 5 minutes, full stop — the
+  // "1 hour on a subscription" line in the settings.promptCacheTtl doc string
+  // does not match what the resolver actually checks (an ENABLE_PROMPT_CACHING_1H
+  // env var this repo never sets), and the sibling subagentPromptCacheTtl
+  // field's own doc string ("Unset = automatic (5 minutes unless
+  // ENABLE_PROMPT_CACHING_1H=1)") says so plainly. 5 minutes is long enough
+  // for the turn-to-turn gaps a healthy run actually has (single-digit
+  // seconds, per the real transcript), but not for a pause this system is
+  // specifically exposed to: a governor-paced retry or rate-limit backoff
+  // longer than 5 minutes would cold-cache the very next turn, right when
+  // the account is already under the most strain. Explicitly requesting the
+  // 1-hour TTL removes that risk with no content-fidelity cost (unlike
+  // autoCompactWindow), so it applies to every agent, not just research.
+  it("requests the 1-hour cache TTL for every agent, not just research", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { params } = await run([RESULT_MESSAGE]);
+    expect(params.options.settings?.promptCacheTtl).toBe("1h");
+    expect(params.options.settings?.subagentPromptCacheTtl).toBe("1h");
+    // Confirms this is the "smoke" agent, not research — autoCompactWindow
+    // must stay scoped to research alone.
+    expect(params.options.settings?.autoCompactWindow).toBeUndefined();
   });
 });
 
@@ -619,8 +665,13 @@ describe("SdkRunner grant enforcement", () => {
 });
 
 describe("SdkRunner GitHub PR tools", () => {
+  // name: "builder" deliberately, not the shared AGENT's "smoke" — the
+  // githubPr server is now only mounted for agents whose own prompt calls
+  // one of its tools (see GITHUB_PR_AGENTS in sdk-runner.ts), and "smoke" is
+  // not one of them. These tests are about the tools themselves, so the
+  // fixture needs a name the mount actually fires for.
   function granted() {
-    return { ...AGENT, tier: "autonomous", approval: "auto", grantRefs: ["infra-repo"] } as unknown as AgentDef;
+    return { ...AGENT, name: "builder", tier: "autonomous", approval: "auto", grantRefs: ["infra-repo"] } as unknown as AgentDef;
   }
   const GITHUB_PR_GRANT: Grant = { id: "infra-repo", kind: "github-pr", repos: ["owner/repo"], secret: "X" };
 
@@ -655,6 +706,48 @@ describe("SdkRunner GitHub PR tools", () => {
     await collect(new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github }).execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as { options: { mcpServers: Record<string, unknown> } };
     expect(params.options.mcpServers.githubPr).toBeDefined();
+  });
+
+  // The MCP server's tool schemas (mergePR's description alone runs several
+  // hundred characters, before its zod-derived JSON schema) are sent to the
+  // model on EVERY turn, whether or not it ever calls them — that's per-turn
+  // token weight, not a permission decision (decide()'s grant check already
+  // gates the CALL; this is about whether the SCHEMA is even offered).
+  // research holds no github-pr grant, never merges/comments/pushes/opens a
+  // PR, and its prompt.md never mentions any of these tools — so mounting
+  // this server for it pays that weight on every one of its turns for
+  // nothing it can ever legitimately use. This is a different mechanism from
+  // the earlier, reverted attempt at gating this server: that one is
+  // documented (see sdk-runner.ts) as keyed off grant possession, which
+  // would have also hidden the two deliberately ungated tools
+  // (postReviewComment, openPR) from an agent that holds no merge grant but
+  // still needs to comment. This gate is keyed off the agent's NAME instead
+  // (an explicit allowlist of agents whose own prompt actually calls one of
+  // these tools — see GITHUB_PR_AGENTS), so an ungated tool stays available
+  // to every agent that was ever going to call it, and is simply never
+  // offered to one that wasn't.
+  it("does not mount the githubPr MCP server for an agent whose prompt never calls its tools, even when GithubTransport is provided", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const github = new FakeGithubTransport();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    // AGENT.name is "smoke" — not in GITHUB_PR_AGENTS.
+    await collect(new SdkRunner({ grants: [], pending: new PendingStore(dir), github }).execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as { options: { mcpServers: Record<string, unknown> } };
+    expect(params.options.mcpServers.githubPr).toBeUndefined();
+  });
+
+  it("mounts the githubPr MCP server for every agent whose prompt actually calls one of its tools", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const github = new FakeGithubTransport();
+    for (const name of ["builder", "pr-reviewer", "repair"]) {
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const agent = { ...AGENT, name } as unknown as AgentDef;
+      await collect(new SdkRunner({ grants: [], pending: new PendingStore(dir), github }).execute(agent, CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as { options: { mcpServers: Record<string, unknown> } };
+      expect(params.options.mcpServers.githubPr, `expected githubPr to be mounted for "${name}"`).toBeDefined();
+    }
   });
 
   it("merges when the repo is granted, the SHA matches, and the path isn't excluded", async () => {
@@ -862,7 +955,7 @@ describe("SdkRunner GitHub PR tools", () => {
     const github = new FakeGithubTransport();
     github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
-    const notAuto = { ...AGENT, tier: "autonomous", approval: "notify", grantRefs: ["infra-repo"] } as unknown as AgentDef;
+    const notAuto = { ...AGENT, name: "builder", tier: "autonomous", approval: "notify", grantRefs: ["infra-repo"] } as unknown as AgentDef;
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
     await collect(runner.execute(notAuto, CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;

@@ -601,3 +601,32 @@ describe("SdkRunner recallMemory tool", () => {
     expect(result.content[0]!.text).toBe("Nothing recorded on this subject yet.");
   });
 });
+
+// research is a pure web-research specialist, categorically different from
+// the self-improving scouts/overseer these three tools exist for — its own
+// prompt.md calls queueTask and nothing else on this server. Excluding it
+// from the other three doesn't touch the "available at every tier" design
+// the rest of this server keeps (see the doc comment on taskQueueServer in
+// sdk-runner.ts): every other agent with tasksDep wired in is unaffected —
+// the tests above, which all use AGENT ("opportunity-scout"), prove that.
+describe("SdkRunner taskQueue tools excluded for research", () => {
+  const RESEARCH_AGENT = { ...AGENT, name: "research" } as unknown as AgentDef;
+
+  it("still registers queueTask for research, but not listMyTasks, recentFailures, or recallMemory", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const memory = new MemoryStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, memory, memoryConfig });
+    await collect(runner.execute(RESEARCH_AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const registered = params.options.mcpServers.taskQueue!.instance!._registeredTools;
+
+    expect(registered.queueTask).toBeDefined();
+    expect(registered.listMyTasks).toBeUndefined();
+    expect(registered.recentFailures).toBeUndefined();
+    expect(registered.recallMemory).toBeUndefined();
+  });
+});

@@ -110,7 +110,11 @@ export class Governor {
     // "resume ignores it" carve-out to preserve since a resume already ignores
     // the breaker unconditionally.
     if (kind === "trigger" && overrides.breakerEnabled !== false && (await this.breaker.isTripped(agent.name))) {
-      return { kind: "refuse", reason: `circuit breaker tripped for "${agent.name}" (3 consecutive failures)`, alert: true };
+      // alert: false — this is a STATE, not an event, and it is re-checked on
+      // every dispatch. Alerting here posted the same line to Discord once per
+      // refused trigger, which with a task queue is a loop. The trip itself is
+      // announced once by the Orchestrator, and `!status` shows it thereafter.
+      return { kind: "refuse", reason: `circuit breaker tripped for "${agent.name}" (3 consecutive failures)`, alert: false };
     }
 
     // A manual `!disable <agent>` kill-switch: like the breaker check above,

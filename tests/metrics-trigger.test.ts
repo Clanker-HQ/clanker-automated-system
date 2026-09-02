@@ -36,7 +36,7 @@ async function recordNotAchievedRun(store: RunStore, at: Date, agent: string) {
   vi.setSystemTime(at);
   try {
     const writer = await store.open(newRunId(agent, at), agent);
-    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0.1, durationMs: 1 });
+    await writer.append({ type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.1, durationMs: 1 });
     const result = await writer.close({ status: "success", summary: "" });
     await store.recordVerification(result.runId, NOT_ACHIEVED);
   } finally {

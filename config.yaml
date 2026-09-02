@@ -1,5 +1,13 @@
 governor:
-  maxConcurrent: 2
+  # 2 -> 1 (2026-09-02). The binding constraint is the subscription's rolling
+  # rate-limit window, not money, and concurrency sets how fast that window is
+  # spent. The first overseer cycle queued three research tasks; two ran at
+  # once and exhausted a five-hour window within minutes. Serial runs consume
+  # the same total but spread it, and — the part concurrency actually broke —
+  # they let the rate-limit snapshot update BETWEEN runs, so the utilization
+  # gate below can act on a fresh reading instead of admitting several runs
+  # that all passed the same stale one.
+  maxConcurrent: 1
   dailyBudgetUsd: 40
   pendingTimeoutHours: 24
   # admit() refuses ALL new work — trigger or resume — once the account's
@@ -8,7 +16,13 @@ governor:
   # isn't a usable signal on its own: the account can sit at
   # allowed_warning for days while utilization keeps climbing, and nothing
   # read the number at all until this field existed.
-  rateLimitPauseThreshold: 0.95
+  # 0.95 -> 0.80 (2026-09-02). 0.95 leaves no room to stop: a single research
+  # run moves enough of the window that the account can go from under the
+  # threshold to rejected without any reading in between, because the snapshot
+  # only refreshes when a run reports one. Stopping at 0.80 leaves roughly one
+  # run's worth of headroom, which is what makes this a brake rather than a
+  # record of having already hit the wall.
+  rateLimitPauseThreshold: 0.80
   # Local development: agents run at almost any hour; the window is nominal.
   quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
   # Production (VPS): agents work overnight, standing down while the owner

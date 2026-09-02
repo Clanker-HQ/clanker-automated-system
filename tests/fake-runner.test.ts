@@ -18,7 +18,7 @@ describe("FakeRunner", () => {
       events: [
         { type: "assistant", text: "thinking" },
         { type: "tool_use", name: "Write" },
-        { type: "usage", inputTokens: 1, outputTokens: 2, costUsd: 0.01, durationMs: 5 },
+        { type: "usage", inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.01, durationMs: 5 },
       ],
     });
     const events = await drain(runner.execute(AGENT, CTX, new AbortController().signal));

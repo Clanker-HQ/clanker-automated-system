@@ -122,12 +122,68 @@ const RESEARCH_SOURCE_SUBAGENT: {
 const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGENT_TYPE, RESEARCH_SOURCE_SUBAGENT_TYPE]);
 
 /**
+ * Agents whose own prompt.md actually calls a githubPr tool (mergePR,
+ * postReviewComment, pushBranch, or openPR) — grep `agents/*\/prompt.md` for
+ * those names to keep this in sync as prompts change.
+ *
+ * Every other agent this system runs (research, the scouts, overseer) never
+ * references any of these tools, so mounting the server for them bought
+ * nothing: `githubPrServer` used to be built whenever `this.deps.github` was
+ * present at all, a constructor-level dependency shared by every agent this
+ * one SdkRunner instance runs, not a per-agent decision — so an agent that
+ * will never call mergePR still paid its and its three siblings' tool
+ * schemas (mergePR's description alone runs several hundred characters,
+ * before its zod-derived JSON schema) on every single turn it made, for a
+ * tool it structurally could never have used (no grant, no mention in its
+ * own prompt).
+ *
+ * This is a narrower mechanism than an earlier, reverted attempt at gating
+ * this same server: gating it on GRANT possession would also have hidden
+ * `postReviewComment` and `openPR` — both explicitly "Never gated" by
+ * design in their own tool descriptions — from any agent that needs to
+ * comment or open a PR without holding a merge grant. Keying the gate on
+ * the agent's NAME instead leaves both ungated tools available to every
+ * agent whose prompt was ever going to call them, and simply never offers
+ * the server to one that wasn't.
+ */
+const GITHUB_PR_AGENTS: ReadonlySet<string> = new Set(["builder", "pr-reviewer", "repair"]);
+
+/**
  * Consecutive failing tool calls — with nothing succeeding in between — after
  * which a run is stopped rather than left to retry until it exhausts its
  * turns. Five, because four is still plausibly a stubborn-but-recoverable
  * sequence while five with zero successes is a broken dependency.
  */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 5;
+
+/**
+ * Overrides the SDK's default auto-compaction ceiling (the model's context
+ * limit, ~200k tokens for Sonnet -- see settings.autoCompactWindow in
+ * node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts) for research only.
+ *
+ * research's own accumulated conversation -- not the fixed per-turn baseline
+ * the other constants in this file bound -- is the dominant term in what a
+ * run costs: every turn resends everything before it, so content added at
+ * turn 3 is paid for again on every one of the ~20 turns after it. A 200k
+ * ceiling never engages for a run whose peak context lands around 75-85k
+ * tokens (back-computed from a verified $1.02/515k-token run), so today
+ * research pays that full quadratic cost with no relief.
+ *
+ * 60,000 is a first, deliberately moderate cut: high enough to preserve most
+ * of the "search and dispatch readers" phase (see prompt.md) before the
+ * "synthesize and write" phase begins, low enough to plausibly fire at least
+ * once on a normal run and trim the tail that phase boundary creates. This
+ * is the one change in this file that can lose fidelity in older
+ * conversation content (compaction summarizes; it does not just drop
+ * redundant filler), which is exactly the axis agents/research/prompt.md's
+ * "Proving a negative" section is written to protect -- so it is scoped to
+ * research alone, not applied system-wide, and its actual effect (does the
+ * SDK's own compact_boundary event even fire, and does the run's summary
+ * still hold up) needs to be read off the next real run via the "compacted"
+ * RunEvent this same change adds observability for (see toRunEvents' "system"
+ * case), not assumed from this reasoning alone.
+ */
+const RESEARCH_AUTO_COMPACT_WINDOW = 60_000;
 
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -178,6 +234,8 @@ export function estimateCostUsd(model: string, inputTokens: number, outputTokens
 export interface PartialUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 /**
@@ -197,6 +255,8 @@ export function accumulateUsage(existing: PartialUsage, message: unknown): Parti
   return {
     inputTokens: existing.inputTokens + num(usage.input_tokens),
     outputTokens: existing.outputTokens + num(usage.output_tokens),
+    cacheReadTokens: existing.cacheReadTokens + num(usage.cache_read_input_tokens),
+    cacheCreationTokens: existing.cacheCreationTokens + num(usage.cache_creation_input_tokens),
   };
 }
 
@@ -277,12 +337,23 @@ export function toRunEvents(message: unknown): RunEvent[] {
       // is zeroed, which the SDK's own docs say a crashed/startup-error
       // result may do, and which an older SDK build predating the field
       // also looks like.
+      // ModelUsage carries FOUR token counts, not two: inputTokens is only the
+      // UNCACHED input. Summing the first two alone reported 515,212 input for
+      // a run whose cache reads and cache writes went unrecorded entirely — so
+      // the one number anybody tuned against was a fraction of the traffic,
+      // and every estimate made from it was wrong. The rolling rate-limit
+      // window is what actually constrains this system, so what it costs to
+      // re-read a cached prefix is exactly the thing worth seeing.
       const modelUsage = (m.modelUsage as Record<string, Record<string, unknown>> | undefined) ?? {};
       let modelInputTokens = 0;
       let modelOutputTokens = 0;
+      let modelCacheReadTokens = 0;
+      let modelCacheCreationTokens = 0;
       for (const entry of Object.values(modelUsage)) {
         modelInputTokens += num(entry.inputTokens);
         modelOutputTokens += num(entry.outputTokens);
+        modelCacheReadTokens += num(entry.cacheReadInputTokens);
+        modelCacheCreationTokens += num(entry.cacheCreationInputTokens);
       }
       const hasModelUsage = modelInputTokens > 0 || modelOutputTokens > 0;
 
@@ -291,6 +362,10 @@ export function toRunEvents(message: unknown): RunEvent[] {
           type: "usage",
           inputTokens: hasModelUsage ? modelInputTokens : num(usage.input_tokens),
           outputTokens: hasModelUsage ? modelOutputTokens : num(usage.output_tokens),
+          // Falls back to the terminal `usage` block's own cache fields when
+          // modelUsage is absent, the same way the two counts above do.
+          cacheReadTokens: hasModelUsage ? modelCacheReadTokens : num(usage.cache_read_input_tokens),
+          cacheCreationTokens: hasModelUsage ? modelCacheCreationTokens : num(usage.cache_creation_input_tokens),
           costUsd: num(m.total_cost_usd),
           durationMs: num(m.duration_ms),
         },
@@ -321,6 +396,14 @@ export function toRunEvents(message: unknown): RunEvent[] {
       if (typeof info.utilization === "number") (event as Record<string, unknown>).utilization = info.utilization;
       if (typeof info.resetsAt === "number") (event as Record<string, unknown>).resetsAt = info.resetsAt;
       return [event];
+    }
+
+    case "system": {
+      if (m.subtype !== "compact_boundary") return [];
+      const meta = (m.compact_metadata as Record<string, unknown> | undefined) ?? {};
+      const trigger = meta.trigger === "manual" ? "manual" : "auto";
+      const postTokens = typeof meta.post_tokens === "number" ? meta.post_tokens : undefined;
+      return [{ type: "compacted", trigger, preTokens: num(meta.pre_tokens), postTokens }];
     }
 
     default:
@@ -551,8 +634,11 @@ export class SdkRunner implements Runner {
       : undefined;
 
     // The githubPr MCP server, only registered when a GithubTransport
-    // dependency was provided (agents that don't touch GitHub never see it).
-    // It now hosts four tools, not just mergePR:
+    // dependency was provided AND the running agent is one that actually
+    // calls one of its tools (see GITHUB_PR_AGENTS above) — agents that
+    // don't touch GitHub never see it, and never pay its schemas' per-turn
+    // weight for tools they hold no grant for and never call. It now hosts
+    // four tools, not just mergePR:
     //   - mergePR — the one gated by all three checks described below.
     //   - postReviewComment — ungated; commenting has no outward consequence
     //     beyond ordinary communication.
@@ -596,7 +682,7 @@ export class SdkRunner implements Runner {
     //      gap between the fetch above and the merge call).
     const github = this.deps.github;
     const gitPusher = this.deps.gitPusher;
-    const githubPrServer = github
+    const githubPrServer = github && GITHUB_PR_AGENTS.has(agent.name)
       ? createSdkMcpServer({
           name: "githubPr",
           tools: [
@@ -919,11 +1005,20 @@ export class SdkRunner implements Runner {
                   ),
                 ]
               : []),
-            tool(
-              "listMyTasks",
-              "List the tasks you've queued yourself via queueTask, most recent first — use this before proposing new work so you don't repeat an idea you already queued.",
-              {},
-              async () => {
+            // research is a pure web-research specialist, categorically
+            // different from the self-improving scouts and overseer these
+            // three tools exist for — its own prompt.md calls queueTask
+            // and nothing else on this server. Excluding it here doesn't
+            // touch the "available at every tier" design the rest of this
+            // server keeps (see the doc comment above): every other agent
+            // with tasksDep wired in still gets them exactly as before.
+            ...(agent.name !== "research"
+              ? [
+                  tool(
+                    "listMyTasks",
+                    "List the tasks you've queued yourself via queueTask, most recent first — use this before proposing new work so you don't repeat an idea you already queued.",
+                    {},
+                    async () => {
                 const mine = (await tasksDep.list())
                   .filter((t) => t.createdBy === `agent:${agent.name}`)
                   .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -959,7 +1054,9 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: JSON.stringify(top, null, 2) }] };
               },
             ),
-            ...(memoryDep && memoryConfigDep?.enabled
+                ]
+              : []),
+            ...(memoryDep && memoryConfigDep?.enabled && agent.name !== "research"
               ? [
                   tool(
                     "recallMemory",
@@ -989,51 +1086,70 @@ export class SdkRunner implements Runner {
      * same pattern as `taskQueueServer` above: not registered at all when the
      * dependency isn't wired in, rather than registered-but-erroring.
      */
-    const worldModelServer = worldDep
-      ? createSdkMcpServer({
-          name: "worldModel",
-          tools: [
-            tool(
-              "recordFinding",
-              "Record what you concluded about a topic in the shared world model, so other agents see it before repeating the same research. Call this at the end of every run, INCLUDING when the conclusion is that something is not worth pursuing and why — a recorded dead end is what stops the same ground being covered again in three months.",
-              {
-                topic: z.string().min(1).max(200),
-                conclusion: z.string().min(1),
-                confidence: z.enum(["low", "medium", "high"]),
-                sources: z.array(z.string()).default([]),
-              },
-              async ({ topic, conclusion, confidence, sources }) => {
-                await worldDep.writeFinding(topic, {
-                  topic,
-                  conclusion,
-                  confidence,
-                  sources,
-                  updatedAt: new Date().toISOString(),
-                });
-                return { content: [{ type: "text" as const, text: `Recorded finding for "${topic}".` }] };
-              },
-            ),
-            tool(
-              "updatePortfolioEntry",
-              "Replace this product's entry in the shared portfolio — its status, next review date, the bar it must clear, running cost, and leading-indicator notes. Replaces the whole entry (not a merge), so pass every field even when only one changed.",
-              {
-                slug: z.string().min(1).max(200),
-                purpose: z.string().min(1),
-                status: z.enum(["building", "live", "paused", "killed"]),
-                nextReviewAt: z.string().min(1),
-                bar: z.string().min(1),
-                monthlyCostUsd: z.number().nonnegative(),
-                notes: z.array(z.string()).default([]),
-                extensionCount: z.number().int().nonnegative().default(0),
-              },
-              async (entry) => {
-                await worldDep.upsertPortfolioEntry(entry);
-                return { content: [{ type: "text" as const, text: `Updated portfolio entry "${entry.slug}".` }] };
-              },
-            ),
-          ],
-        })
-      : undefined;
+    // recordFinding and updatePortfolioEntry each go to exactly one agent —
+    // research's prompt.md is the only one that ever calls recordFinding,
+    // and updatePortfolioEntry is a product-portfolio concept only
+    // overseer's prompt touches (grep every agents/*/prompt.md to confirm).
+    // Unlike taskQueue above, this server makes no "every tier" claim, so
+    // each tool — and the server itself, when an agent calls neither — is
+    // scoped to its one real caller rather than mounted for everyone with
+    // `worldDep` wired in.
+    const RECORD_FINDING_AGENTS: ReadonlySet<string> = new Set(["research"]);
+    const UPDATE_PORTFOLIO_ENTRY_AGENTS: ReadonlySet<string> = new Set(["overseer"]);
+    const worldModelServer =
+      worldDep && (RECORD_FINDING_AGENTS.has(agent.name) || UPDATE_PORTFOLIO_ENTRY_AGENTS.has(agent.name))
+        ? createSdkMcpServer({
+            name: "worldModel",
+            tools: [
+              ...(RECORD_FINDING_AGENTS.has(agent.name)
+                ? [
+                    tool(
+                      "recordFinding",
+                      "Record what you concluded about a topic in the shared world model, so other agents see it before repeating the same research. Call this at the end of every run, INCLUDING when the conclusion is that something is not worth pursuing and why — a recorded dead end is what stops the same ground being covered again in three months.",
+                      {
+                        topic: z.string().min(1).max(200),
+                        conclusion: z.string().min(1),
+                        confidence: z.enum(["low", "medium", "high"]),
+                        sources: z.array(z.string()).default([]),
+                      },
+                      async ({ topic, conclusion, confidence, sources }) => {
+                        await worldDep.writeFinding(topic, {
+                          topic,
+                          conclusion,
+                          confidence,
+                          sources,
+                          updatedAt: new Date().toISOString(),
+                        });
+                        return { content: [{ type: "text" as const, text: `Recorded finding for "${topic}".` }] };
+                      },
+                    ),
+                  ]
+                : []),
+              ...(UPDATE_PORTFOLIO_ENTRY_AGENTS.has(agent.name)
+                ? [
+                    tool(
+                      "updatePortfolioEntry",
+                      "Replace this product's entry in the shared portfolio — its status, next review date, the bar it must clear, running cost, and leading-indicator notes. Replaces the whole entry (not a merge), so pass every field even when only one changed.",
+                      {
+                        slug: z.string().min(1).max(200),
+                        purpose: z.string().min(1),
+                        status: z.enum(["building", "live", "paused", "killed"]),
+                        nextReviewAt: z.string().min(1),
+                        bar: z.string().min(1),
+                        monthlyCostUsd: z.number().nonnegative(),
+                        notes: z.array(z.string()).default([]),
+                        extensionCount: z.number().int().nonnegative().default(0),
+                      },
+                      async (entry) => {
+                        await worldDep.upsertPortfolioEntry(entry);
+                        return { content: [{ type: "text" as const, text: `Updated portfolio entry "${entry.slug}".` }] };
+                      },
+                    ),
+                  ]
+                : []),
+            ],
+          })
+        : undefined;
 
     const ExpectationCheckSchema = z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("netIncomeUsd"), atLeast: z.number() }).strict(),
@@ -1207,6 +1323,22 @@ export class SdkRunner implements Runner {
         tools: agent.permissions.allowedTools,
         permissionMode: "default",
         settingSources: [],
+        // Explicitly request the 1-hour cache TTL rather than relying on
+        // the SDK's own default: absent this, the resolver falls back to 5
+        // minutes unless ENABLE_PROMPT_CACHING_1H is set in the environment
+        // (nothing in this repo sets it) -- verified against the installed
+        // SDK's own resolution function, not just its (inconsistent) doc
+        // string. 5 minutes is long enough for a healthy run's own
+        // turn-to-turn gaps, but not for a governor-paced retry or
+        // rate-limit backoff longer than that -- exactly the condition this
+        // system is built around, and exactly when a cold cache costs the
+        // most. No content-fidelity risk (unlike autoCompactWindow below),
+        // so this applies to every agent, not just research.
+        settings: {
+          promptCacheTtl: "1h",
+          subagentPromptCacheTtl: "1h",
+          ...(agent.name === "research" ? { autoCompactWindow: RESEARCH_AUTO_COMPACT_WINDOW } : {}),
+        },
         env: childEnv,
         abortController: controller,
         canUseTool,
@@ -1222,7 +1354,7 @@ export class SdkRunner implements Runner {
       },
     });
 
-    let partial: PartialUsage = { inputTokens: 0, outputTokens: 0 };
+    let partial: PartialUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     let sawTerminalUsage = false;
     // Counted across ALL tools, with any success resetting it, rather than
     // per-tool: the run this exists because of alternated WebFetch and
@@ -1332,6 +1464,8 @@ export class SdkRunner implements Runner {
           type: "usage",
           inputTokens: partial.inputTokens,
           outputTokens: partial.outputTokens,
+          cacheReadTokens: partial.cacheReadTokens,
+          cacheCreationTokens: partial.cacheCreationTokens,
           costUsd: estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens),
           durationMs: 0,
         };
