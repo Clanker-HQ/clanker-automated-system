@@ -119,6 +119,27 @@ const DETAIL_INSTRUCTION =
 const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
 const MAX_RETRIES = RETRY_BACKOFF_MS.length;
 
+/**
+ * Caps cumulative spend across not-achieved retries at this multiple of the
+ * agent's own per-run `maxBudgetUsd`, independent of MAX_RETRIES.
+ *
+ * Unlike a genuine failure (which usually fails fast, cheaply), a
+ * not-achieved verdict only fires after a run finished clean — the full run
+ * cost was already paid before the retry decision is even made. Each retry
+ * is a cold restart (no session resume, see SdkRunner/Orchestrator), so it
+ * pays that full cost again. A task whose OutcomeVerifier bar no single
+ * run's turn/budget ceiling can clear (e.g. "verify N candidates with
+ * primary-source rigor" against a budget that only covers one) will get the
+ * same verdict on every attempt for the same structural reason, so
+ * MAX_RETRIES alone guarantees exactly 4x the spend of one run before
+ * accepting the same outcome anyway — observed on real tasks (see
+ * research/token-budget's follow-on investigation) burning $1.72 then $0.44
+ * across two cold attempts, both graded not-achieved for the same
+ * uncovered-scope reason. 2x gives a genuinely flaky or narrowly-short run a
+ * second full attempt, while stopping well short of paying for all 4.
+ */
+const RETRY_COST_CAP_MULTIPLIER = 2;
+
 function specialistsOf(agents: AgentDef[]): Specialist[] {
   return agents
     .filter((a) => a.enabled && a.trigger.type === "dispatched")
@@ -299,26 +320,39 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       // treated the same as a real failure: back off and retry, up to
       // MAX_RETRIES, sharing the same counter/schedule a genuine failure
       // uses, rather than marking it "done" and counting on a human to
-      // notice the ⚠️ in !runs/the digest.
+      // notice the ⚠️ in !runs/the digest. Bounded a second, independent way
+      // by cumulative spend (see RETRY_COST_CAP_MULTIPLIER): retry count
+      // alone can't tell "worth one more try" apart from "this run's own
+      // cost already shows another cold attempt isn't worth it".
       const previousRetries = task.retryCount ?? 0;
-      if (previousRetries < MAX_RETRIES) {
+      const spentSoFar = (task.spentUsd ?? 0) + (result.costUsd ?? 0);
+      const costCapUsd = agent.run.maxBudgetUsd * RETRY_COST_CAP_MULTIPLIER;
+      const withinCostCap = spentSoFar < costCapUsd;
+      if (previousRetries < MAX_RETRIES && withinCostCap) {
         const delayMs = RETRY_BACKOFF_MS[previousRetries]!;
         console.log(
           `[dispatcher] task ${task.id} succeeded but was graded not-achieved (${result.verifiedOutcome.reason}); ` +
-            `retrying in ${delayMs / 1000}s (attempt ${previousRetries + 1}/${MAX_RETRIES})`,
+            `retrying in ${delayMs / 1000}s (attempt ${previousRetries + 1}/${MAX_RETRIES}, spent $${spentSoFar.toFixed(2)} of a $${costCapUsd.toFixed(2)} retry cap)`,
         );
         await deps.tasks.update(task.id, {
           status: "pending",
           retryCount: previousRetries + 1,
+          spentUsd: spentSoFar,
           startedAt: undefined,
           nextRetryAt: new Date(now().getTime() + delayMs).toISOString(),
           lastVerificationReason: result.verifiedOutcome.reason,
         });
         return { ran: true, taskId: task.id, deferred: true };
       }
-      // Retries exhausted — accept it rather than looping forever, but say so
-      // plainly: a human reading the channel must not read "done" as "confirmed
-      // correct" after every automatic attempt still missed the objective.
+      // Retries exhausted, OR another cold attempt would spend more than this
+      // task's own retry cap allows — accept it rather than looping forever
+      // or paying for a repeat that keeps hitting the same resource wall, but
+      // say so plainly: a human reading the channel must not read "done" as
+      // "confirmed correct" after every automatic attempt still missed the
+      // objective.
+      const stopReason = withinCostCap
+        ? `done after ${MAX_RETRIES} retries`
+        : `stopped early: cumulative spend $${spentSoFar.toFixed(2)} reached the $${costCapUsd.toFixed(2)} retry cap`;
       await deps.tasks.update(task.id, {
         status: "done",
         finishedAt: now().toISOString(),
@@ -326,7 +360,7 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       });
       await notifyBestEffort(
         deps,
-        `⚠️ Task \`${task.id}\` done after ${MAX_RETRIES} retries, still graded not-achieved ` +
+        `⚠️ Task \`${task.id}\` ${stopReason}, still graded not-achieved ` +
           `(${result.verifiedOutcome.reason}): ${result.summary}`,
       );
       await rememberBestEffort(deps, {

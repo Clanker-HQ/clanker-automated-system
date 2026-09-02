@@ -10,6 +10,17 @@ export interface VerificationInput {
   summary: string;
   /** The last few transcript lines, for a call that needs more than the summary alone. */
   tail: string[];
+  /**
+   * The run's actual cost/turns against its own ceiling (agent.run.maxBudgetUsd/
+   * maxTurns) — lets a verifier tell "stopped honestly at the resource wall,
+   * exactly as its own prompt permits" apart from "gave up early with plenty
+   * of room left". Optional: a caller with no budget concept (or a test) can
+   * omit these and get today's budget-blind grading.
+   */
+  costUsd?: number;
+  maxBudgetUsd?: number;
+  turns?: number;
+  maxTurns?: number;
 }
 
 /**

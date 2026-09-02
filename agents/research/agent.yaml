@@ -32,7 +32,13 @@ run:
   # subscription billed differently, and isn't the thing actually at risk).
   # 24 still comfortably covers the one real run measured so far (20 turns,
   # 11 WebSearch + 7 WebFetch, achieved its objective) with headroom, while
-  # capping how many times a single expensive turn can be re-paid for.
+  # capping how many times a single expensive turn can be re-paid for. That
+  # run's 7 direct WebFetch calls were the norm, not the exception, until
+  # WebFetch was removed from this agent's own allowedTools below — a single
+  # Task dispatch to research-source now absorbs what used to be several
+  # direct-fetch turns, so 24 should cover more real work than it used to,
+  # not less. Revisit against real runs once some exist under the new tool
+  # list rather than assuming this reasoning still holds unchanged.
   maxTurns: 24
   timeoutMinutes: 20
   maxBudgetUsd: 2.00
@@ -46,13 +52,31 @@ permissions:
   # web and writes its findings out. If a future edit seems to need `Read`,
   # narrow the grant first.
   #
-  # `Task` does not weaken that: canUseTool refuses any subagent_type this
-  # system has not registered, so the only agent this can spawn is
-  # `research-source` — WebSearch/WebFetch only, no MCP tools, no Read, and
-  # no Task of its own. Without that check the SDK would fall back to its
-  # built-in general-purpose agent, which is uncapped and inherits this
-  # agent's tools.
-  allowedTools: [WebSearch, WebFetch, Write, Task]
+  # `WebFetch` is deliberately absent too, and must stay absent. prompt.md
+  # tells this agent to delegate page-reading to a `research-source` subagent
+  # specifically so full pages never enter ITS OWN context — every turn
+  # resends the whole conversation, so a page read directly is paid for again
+  # on every turn after it, while a reader's pages stay in the reader's
+  # context and never enter this one. That instruction turned out to be
+  # advisory only: real runs show it calling WebFetch directly 7-30+ times
+  # per run against 0-6 Task dispatches to research-source — one measured run
+  # made 74 direct WebSearch/WebFetch calls against 2 delegated ones and cost
+  # $1.72 on 643K largely-uncached input tokens (see the research/token-budget
+  # follow-on investigation). Removing the tool from this agent's own list
+  # makes delegation the only way to read a page at all, rather than a
+  # preference the model was free to skip. `research-source`'s own
+  # `tools: ["WebSearch", "WebFetch"]` (RESEARCH_SOURCE_SUBAGENT in
+  # src/runner/sdk-runner.ts) is a SEPARATE list scoped to that subagent
+  # type, so it keeps WebFetch regardless of what this agent's own
+  # permissions say.
+  #
+  # `Task` does not weaken either restriction: canUseTool refuses any
+  # subagent_type this system has not registered, so the only agent this can
+  # spawn is `research-source` — WebSearch/WebFetch only, no MCP tools, no
+  # Read, and no Task of its own. Without that check the SDK would fall back
+  # to its built-in general-purpose agent, which is uncapped and inherits
+  # this agent's tools.
+  allowedTools: [WebSearch, Write, Task]
   disallowedTools: []
 
 # `autonomous`, not `granted`, because only `tier: autonomous` + `approval: auto`
