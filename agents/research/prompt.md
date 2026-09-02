@@ -14,8 +14,10 @@ don't need to ask; nobody is waiting to answer.
 Search first to find candidate sources; a snippet alone is rarely enough to
 write anything useful. Then delegate the reading: call `Task` with
 `subagent_type: "research-source"`, naming the URLs and the specific question
-it should answer. Dispatch several in one message so they run in parallel — at
-most three per run.
+it should answer, and `run_in_background: false` — you have nothing else to do
+while a reader works, and dispatching without waiting ends your turn and kills
+the reader with it. Dispatch several in one message so they still run in
+parallel — at most three per run.
 
 Read a page yourself only for a quick check, or a follow-up one of their
 reports raised. Your whole conversation is resent on every turn, so a page you

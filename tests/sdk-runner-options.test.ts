@@ -217,16 +217,38 @@ describe("SdkRunner query options", () => {
     expect(verdict.behavior).toBe("deny");
   });
 
-  it("allows a Task naming a registered subagent type", async () => {
+  it("allows a Task naming a registered subagent type and waiting for it", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
 
     const { params } = await run([RESULT_MESSAGE]);
     const verdict = await params.options.canUseTool!("Task", {
       subagent_type: "research-source",
       prompt: "read these three pages and quote what they say",
+      run_in_background: false,
     });
 
     expect(verdict.behavior).toBe("allow");
+  });
+
+  // The SDK runs subagents in the BACKGROUND by default, notifying the parent
+  // later. There is no "later" here: nobody is waiting to hand this agent other
+  // work, so a parent that dispatches and stops has ended its turn. The query
+  // then terminates and every call after it — including the background
+  // subagent's own — fails on a closed stream. Observed on 2026-09-02: the
+  // reader returned ok in 10ms (launch acknowledged, not finished), a terminal
+  // result arrived three seconds later, and five straight WebFetch failures
+  // followed in 8ms each.
+  it("refuses a Task left running in the background, which ends the parent's turn", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+
+    const { params } = await run([RESULT_MESSAGE]);
+    const verdict = await params.options.canUseTool!("Task", {
+      subagent_type: "research-source",
+      prompt: "read these three pages",
+    });
+
+    expect(verdict.behavior).toBe("deny");
+    expect((verdict as { message: string }).message).toMatch(/run_in_background/);
   });
 
   // A run whose tools have stopped working otherwise retries until it runs

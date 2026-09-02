@@ -425,6 +425,25 @@ export class SdkRunner implements Runner {
       // Denied softly rather than aborting the run: naming the wrong type is
       // a correctable mistake, and the message names the right ones.
       if (toolName === "Task") {
+        // The SDK runs subagents in the BACKGROUND by default and notifies the
+        // parent when they finish. There is no "later" in this system: nothing
+        // is waiting to hand the agent other work, so a parent that dispatches
+        // and stops has simply ended its turn. The query then terminates and
+        // every call after it — the background subagent's included — fails on
+        // a closed stream. Seen on 2026-09-02: a reader returned ok in 10ms
+        // (launch acknowledged, not finished), a terminal result landed three
+        // seconds later, then five straight WebFetch failures at 8ms each,
+        // which reads as a network outage and is nothing of the kind.
+        if (input.run_in_background !== false) {
+          return {
+            behavior: "deny",
+            message:
+              "Pass run_in_background: false. Subagents default to running in the background, and this agent has " +
+              "nothing else to do while one runs — dispatching without waiting ends the turn and closes the stream " +
+              "the subagent itself is using. Several Task calls in ONE message still run in parallel.",
+          };
+        }
+
         const requested = typeof input.subagent_type === "string" ? input.subagent_type : "";
         if (!REGISTERED_SUBAGENT_TYPES.has(requested)) {
           return {
