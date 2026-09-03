@@ -334,7 +334,7 @@
     const { portfolio, shelf, findings } = await res.json();
 
     document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
-      <tr><td>${escapeHtml(p.slug)}</td><td>${p.status}</td><td>${p.nextReviewAt}</td><td>$${p.monthlyCostUsd}</td></tr>
+      <tr><td>${escapeHtml(p.slug)}</td><td>${p.status}</td><td>${escapeHtml(String(p.nextReviewAt))}</td><td>$${p.monthlyCostUsd}</td></tr>
     `).join("") || `<tr><td colspan="4">none</td></tr>`;
 
     document.getElementById("world-shelf-list").innerHTML = shelf.length
