@@ -164,91 +164,122 @@
   }
 
   async function loadStatus() {
-    const res = await fetch("/api/status");
-    if (!res.ok) return;
-    const s = await res.json();
-    document.getElementById("status-state").textContent = s.stopped ? "STOPPED" : "running";
-    document.getElementById("status-budget").textContent = `$${s.spentTodayUsd.toFixed(2)} of $${s.dailyBudgetUsd}`;
-    document.getElementById("status-concurrency").textContent = s.maxConcurrent;
-    document.getElementById("status-quiet").textContent = s.quietHours
-      ? `${s.quietHours.from}-${s.quietHours.to} ${s.quietHours.timezone}${s.quietHoursActive ? " (active)" : ""}`
-      : "off";
-    document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
-    document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
-    document.getElementById("status-ratelimit").textContent = s.rateLimitUtilization === null
-      ? "no reading yet"
-      : `${Math.round(s.rateLimitUtilization * 100)}% (pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%)`;
-    const c = s.taskCounts;
-    document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
+    try {
+      const res = await fetch("/api/status");
+      if (!res.ok) return;
+      const s = await res.json();
+      document.getElementById("status-state").textContent = s.stopped ? "STOPPED" : "running";
+      document.getElementById("status-budget").textContent = `$${s.spentTodayUsd.toFixed(2)} of $${s.dailyBudgetUsd}`;
+      document.getElementById("status-concurrency").textContent = s.maxConcurrent;
+      document.getElementById("status-quiet").textContent = s.quietHours
+        ? `${s.quietHours.from}-${s.quietHours.to} ${s.quietHours.timezone}${s.quietHoursActive ? " (active)" : ""}`
+        : "off";
+      document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
+      document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
+      document.getElementById("status-ratelimit").textContent = s.rateLimitUtilization === null
+        ? "no reading yet"
+        : `${Math.round(s.rateLimitUtilization * 100)}% (pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%)`;
+      const c = s.taskCounts;
+      document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
   }
   loaders.status = loadStatus;
 
   function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  async function post(url, body) {
+    try {
+      const res = await fetch(url, { method: "POST", headers: body ? { "content-type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || `Request failed (${res.status})`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      alert(`Network error: ${err.message || err}`);
+      return false;
+    }
   }
 
   async function loadTasks() {
-    const res = await fetch("/api/tasks");
-    if (!res.ok) return;
-    const tasks = await res.json();
-    const body = document.getElementById("tasks-body");
-    body.innerHTML = tasks.map((t) => `
-      <tr>
-        <td>${t.status}</td>
-        <td>${t.priority}</td>
-        <td>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</td>
-        <td>
-          ${t.status === "failed" ? `<button class="action" data-retry="${t.id}">Retry</button>` : ""}
-          ${t.status === "pending" ? `<button class="action danger" data-cancel="${t.id}">Cancel</button>` : ""}
-        </td>
-      </tr>
-    `).join("");
+    try {
+      const res = await fetch("/api/tasks");
+      if (!res.ok) return;
+      const tasks = await res.json();
+      const body = document.getElementById("tasks-body");
+      body.innerHTML = tasks.map((t) => `
+        <tr>
+          <td>${t.status}</td>
+          <td>${t.priority}</td>
+          <td>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</td>
+          <td>
+            ${t.status === "failed" ? `<button class="action" data-retry="${t.id}">Retry</button>` : ""}
+            ${t.status === "pending" ? `<button class="action danger" data-cancel="${t.id}">Cancel</button>` : ""}
+          </td>
+        </tr>
+      `).join("");
 
-    for (const btn of body.querySelectorAll("[data-retry]")) {
-      btn.addEventListener("click", async () => {
-        await fetch(`/api/tasks/${btn.dataset.retry}/retry`, { method: "POST" });
-        loadTasks();
-      });
-    }
-    for (const btn of body.querySelectorAll("[data-cancel]")) {
-      btn.addEventListener("click", async () => {
-        await fetch(`/api/tasks/${btn.dataset.cancel}/cancel`, { method: "POST" });
-        loadTasks();
-      });
+      for (const btn of body.querySelectorAll("[data-retry]")) {
+        btn.addEventListener("click", async () => {
+          await post(`/api/tasks/${btn.dataset.retry}/retry`);
+          loadTasks();
+        });
+      }
+      for (const btn of body.querySelectorAll("[data-cancel]")) {
+        btn.addEventListener("click", async () => {
+          await post(`/api/tasks/${btn.dataset.cancel}/cancel`);
+          loadTasks();
+        });
+      }
+    } catch (err) {
+      console.error("[dashboard]", err);
     }
   }
   loaders.tasks = loadTasks;
 
   async function loadRuns() {
-    const res = await fetch("/api/runs?limit=20");
-    if (!res.ok) return;
-    const runs = await res.json();
-    const body = document.getElementById("runs-body");
-    body.innerHTML = runs.map((r) => `
-      <tr>
-        <td>${escapeHtml(r.runId)}</td>
-        <td>${r.status}${r.verifiedOutcome && r.verifiedOutcome.verdict !== "achieved" ? ` (${r.verifiedOutcome.verdict})` : ""}</td>
-        <td>$${r.costUsd.toFixed(4)}</td>
-        <td><button class="action" data-detail="${r.runId}">View</button></td>
-      </tr>
-    `).join("");
+    try {
+      const res = await fetch("/api/runs?limit=20");
+      if (!res.ok) return;
+      const runs = await res.json();
+      const body = document.getElementById("runs-body");
+      body.innerHTML = runs.map((r) => `
+        <tr>
+          <td>${escapeHtml(r.runId)}</td>
+          <td>${r.status}${r.verifiedOutcome && r.verifiedOutcome.verdict !== "achieved" ? ` (${r.verifiedOutcome.verdict})` : ""}</td>
+          <td>$${r.costUsd.toFixed(4)}</td>
+          <td><button class="action" data-detail="${r.runId}">View</button></td>
+        </tr>
+      `).join("");
 
-    for (const btn of body.querySelectorAll("[data-detail]")) {
-      btn.addEventListener("click", async () => {
-        const detailRes = await fetch(`/api/runs/${btn.dataset.detail}`);
-        if (!detailRes.ok) return;
-        const detail = await detailRes.json();
-        const lines = detail.transcript.map((line) => {
+      for (const btn of body.querySelectorAll("[data-detail]")) {
+        btn.addEventListener("click", async () => {
           try {
-            const event = JSON.parse(line);
-            return `[${event.at}] ${event.type}: ${event.text ?? JSON.stringify(event)}`;
-          } catch {
-            return line;
+            const detailRes = await fetch(`/api/runs/${btn.dataset.detail}`);
+            if (!detailRes.ok) return;
+            const detail = await detailRes.json();
+            const lines = detail.transcript.map((line) => {
+              try {
+                const event = JSON.parse(line);
+                return `[${event.at}] ${event.type}: ${event.text ?? JSON.stringify(event)}`;
+              } catch {
+                return line;
+              }
+            });
+            document.getElementById("run-detail-body").textContent = `${detail.summary}\n\n${lines.join("\n")}`;
+            document.getElementById("run-detail").hidden = false;
+          } catch (err) {
+            console.error("[dashboard]", err);
           }
         });
-        document.getElementById("run-detail-body").textContent = `${detail.summary}\n\n${lines.join("\n")}`;
-        document.getElementById("run-detail").hidden = false;
-      });
+      }
+    } catch (err) {
+      console.error("[dashboard]", err);
     }
   }
   loaders.runs = loadRuns;
@@ -260,118 +291,132 @@
     if (!text) return;
     const body = { text };
     if (priorityEl.value) body.priority = Number(priorityEl.value);
-    const res = await fetch("/api/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (res.ok) {
+    if (await post("/api/tasks", body)) {
       textEl.value = "";
       priorityEl.value = "";
-    } else {
-      const err = await res.json().catch(() => ({}));
-      alert(err.error || "Failed to create task");
     }
     loadTasks();
   });
 
   async function loadConfig() {
-    const res = await fetch("/api/config");
-    if (!res.ok) return;
-    const { resolved } = await res.json();
-    document.getElementById("config-state").textContent = resolved.stopped ? "STOPPED" : "running";
-    document.getElementById("config-budget").value = resolved.dailyBudgetUsd;
-    document.getElementById("config-concurrency").value = resolved.maxConcurrent;
-    if (resolved.quietHours) {
-      document.getElementById("config-quiet-from").value = resolved.quietHours.from;
-      document.getElementById("config-quiet-to").value = resolved.quietHours.to;
-      document.getElementById("config-quiet-tz").value = resolved.quietHours.timezone;
+    try {
+      const res = await fetch("/api/config");
+      if (!res.ok) return;
+      const { resolved } = await res.json();
+      document.getElementById("config-state").textContent = resolved.stopped ? "STOPPED" : "running";
+      const budgetEl = document.getElementById("config-budget");
+      if (document.activeElement !== budgetEl) budgetEl.value = resolved.dailyBudgetUsd;
+      const concurrencyEl = document.getElementById("config-concurrency");
+      if (document.activeElement !== concurrencyEl) concurrencyEl.value = resolved.maxConcurrent;
+      if (resolved.quietHours) {
+        const fromEl = document.getElementById("config-quiet-from");
+        if (document.activeElement !== fromEl) fromEl.value = resolved.quietHours.from;
+        const toEl = document.getElementById("config-quiet-to");
+        if (document.activeElement !== toEl) toEl.value = resolved.quietHours.to;
+        const tzEl = document.getElementById("config-quiet-tz");
+        if (document.activeElement !== tzEl) tzEl.value = resolved.quietHours.timezone;
+      }
+      const breakerEl = document.getElementById("config-breaker");
+      if (document.activeElement !== breakerEl) breakerEl.checked = resolved.breakerEnabled;
+      document.getElementById("config-disabled-list").textContent = resolved.disabledAgents.length
+        ? `Disabled: ${resolved.disabledAgents.join(", ")}` : "No agents disabled";
+    } catch (err) {
+      console.error("[dashboard]", err);
     }
-    document.getElementById("config-breaker").checked = resolved.breakerEnabled;
-    document.getElementById("config-disabled-list").textContent = resolved.disabledAgents.length
-      ? `Disabled: ${resolved.disabledAgents.join(", ")}` : "No agents disabled";
   }
   loaders.config = loadConfig;
 
   document.getElementById("config-stop").addEventListener("click", async () => {
-    await fetch("/api/stop", { method: "POST" });
+    await post("/api/stop");
     loadConfig();
   });
   document.getElementById("config-resume").addEventListener("click", async () => {
-    await fetch("/api/resume", { method: "POST" });
+    await post("/api/resume");
     loadConfig();
   });
   document.getElementById("config-budget-save").addEventListener("click", async () => {
     const value = Number(document.getElementById("config-budget").value);
-    await fetch("/api/config/budget", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value }) });
+    await post("/api/config/budget", { value });
     loadConfig();
   });
   document.getElementById("config-concurrency-save").addEventListener("click", async () => {
     const value = Number(document.getElementById("config-concurrency").value);
-    await fetch("/api/config/concurrency", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value }) });
+    await post("/api/config/concurrency", { value });
     loadConfig();
   });
   document.getElementById("config-quiet-save").addEventListener("click", async () => {
     const from = document.getElementById("config-quiet-from").value;
     const to = document.getElementById("config-quiet-to").value;
     const timezone = document.getElementById("config-quiet-tz").value;
-    await fetch("/api/config/quiet-hours", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from, to, timezone }) });
+    await post("/api/config/quiet-hours", { from, to, timezone });
     loadConfig();
   });
   document.getElementById("config-quiet-off").addEventListener("click", async () => {
-    await fetch("/api/config/quiet-hours", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ off: true }) });
+    await post("/api/config/quiet-hours", { off: true });
     loadConfig();
   });
   document.getElementById("config-breaker").addEventListener("change", async (e) => {
-    await fetch("/api/config/breaker", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: e.target.checked }) });
+    await post("/api/config/breaker", { enabled: e.target.checked });
     loadConfig();
   });
   document.getElementById("config-agent-disable").addEventListener("click", async () => {
     const name = document.getElementById("config-agent-name").value.trim();
     if (!name) return;
-    await fetch(`/api/agents/${encodeURIComponent(name)}/disable`, { method: "POST" });
+    await post(`/api/agents/${encodeURIComponent(name)}/disable`);
     loadConfig();
   });
   document.getElementById("config-agent-enable").addEventListener("click", async () => {
     const name = document.getElementById("config-agent-name").value.trim();
     if (!name) return;
-    await fetch(`/api/agents/${encodeURIComponent(name)}/enable`, { method: "POST" });
+    await post(`/api/agents/${encodeURIComponent(name)}/enable`);
     loadConfig();
   });
 
   async function loadWorld() {
-    const res = await fetch("/api/world");
-    if (!res.ok) return;
-    const { portfolio, shelf, findings } = await res.json();
+    try {
+      const res = await fetch("/api/world");
+      if (!res.ok) return;
+      const { portfolio, shelf, findings } = await res.json();
 
-    document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
-      <tr><td>${escapeHtml(p.slug)}</td><td>${p.status}</td><td>${escapeHtml(String(p.nextReviewAt))}</td><td>$${p.monthlyCostUsd}</td></tr>
-    `).join("") || `<tr><td colspan="4">none</td></tr>`;
+      document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
+        <tr><td>${escapeHtml(p.slug)}</td><td>${p.status}</td><td>${escapeHtml(p.nextReviewAt)}</td><td>$${p.monthlyCostUsd}</td></tr>
+      `).join("") || `<tr><td colspan="4">none</td></tr>`;
 
-    document.getElementById("world-shelf-list").innerHTML = shelf.length
-      ? shelf.map((s) => `<li>${escapeHtml(s.summary)} — <em>${escapeHtml(s.reason)}</em></li>`).join("")
-      : "<li>none</li>";
+      document.getElementById("world-shelf-list").innerHTML = shelf.length
+        ? shelf.map((s) => `<li>${escapeHtml(s.summary)} — <em>${escapeHtml(s.reason)}</em></li>`).join("")
+        : "<li>none</li>";
 
-    document.getElementById("world-findings-list").innerHTML = findings.length
-      ? findings.map((f) => `
-          <div class="row" style="align-items:flex-start;">
-            <strong>${escapeHtml(f.topic)}</strong> (${f.confidence}):&nbsp;${escapeHtml(f.conclusion)}
-          </div>
-        `).join("")
-      : "<p>none</p>";
+      document.getElementById("world-findings-list").innerHTML = findings.length
+        ? findings.map((f) => `
+            <div class="row" style="align-items:flex-start;">
+              <strong>${escapeHtml(f.topic)}</strong> (${f.confidence}):&nbsp;${escapeHtml(f.conclusion)}
+            </div>
+          `).join("")
+        : "<p>none</p>";
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
   }
   loaders.world = loadWorld;
 
   async function loadMetrics() {
-    const res = await fetch("/api/metrics?days=30");
-    if (!res.ok) return;
-    const snapshots = await res.json();
-    const body = document.getElementById("metrics-body");
-    body.innerHTML = snapshots.slice().reverse().map((m) => `
-      <tr>
-        <td>${m.computedAt.slice(0, 10)}</td>
-        <td>$${m.netIncomeUsd.toFixed(2)}${m.revenueUnavailable ? " (unavailable)" : ""}</td>
-        <td>${m.notAchievedRate === null ? "—" : `${Math.round(m.notAchievedRate * 100)}%`}</td>
-        <td>${m.costPerCompletedTaskUsd === null ? "—" : `$${m.costPerCompletedTaskUsd.toFixed(2)}`}</td>
-        <td>${m.noveltySharePercent === null ? "—" : `${Math.round(m.noveltySharePercent)}%`}</td>
-      </tr>
-    `).join("") || `<tr><td colspan="5">no snapshots yet</td></tr>`;
+    try {
+      const res = await fetch("/api/metrics?days=30");
+      if (!res.ok) return;
+      const snapshots = await res.json();
+      const body = document.getElementById("metrics-body");
+      body.innerHTML = snapshots.slice().reverse().map((m) => `
+        <tr>
+          <td>${m.computedAt.slice(0, 10)}</td>
+          <td>$${m.netIncomeUsd.toFixed(2)}${m.revenueUnavailable ? " (unavailable)" : ""}</td>
+          <td>${m.notAchievedRate === null ? "—" : `${Math.round(m.notAchievedRate * 100)}%`}</td>
+          <td>${m.costPerCompletedTaskUsd === null ? "—" : `$${m.costPerCompletedTaskUsd.toFixed(2)}`}</td>
+          <td>${m.noveltySharePercent === null ? "—" : `${Math.round(m.noveltySharePercent)}%`}</td>
+        </tr>
+      `).join("") || `<tr><td colspan="5">no snapshots yet</td></tr>`;
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
   }
   loaders.metrics = loadMetrics;
 
