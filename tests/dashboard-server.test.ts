@@ -133,3 +133,59 @@ describe("GET /api/tasks/:id", () => {
     expect(result.status).toBe(404);
   });
 });
+
+describe("POST /api/tasks", () => {
+  it("creates a task and wakes the dispatcher", async () => {
+    const deps = testDeps();
+    let woken = false;
+    deps.dispatcher = { wake: async () => { woken = true; } };
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/tasks", query: new URLSearchParams(), authHeader: AUTH,
+      body: JSON.stringify({ text: "look into X" }),
+    });
+    expect(result.status).toBe(201);
+    expect(JSON.parse(result.body).text).toBe("look into X");
+    expect(woken).toBe(true);
+  });
+
+  it("rejects empty text", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/tasks", query: new URLSearchParams(), authHeader: AUTH, body: JSON.stringify({ text: "  " }),
+    });
+    expect(result.status).toBe(400);
+  });
+});
+
+describe("POST /api/tasks/:id/retry", () => {
+  it("requeues a failed task", async () => {
+    const deps = testDeps();
+    const task = await deps.tasks.create({ text: "x", createdBy: "test" });
+    await deps.tasks.update(task.id, { status: "failed", failureReason: "boom" });
+    const result = await server(deps).handleRequest({
+      method: "POST", path: `/api/tasks/${task.id}/retry`, query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body).status).toBe("pending");
+  });
+
+  it("refuses to retry a task that isn't failed", async () => {
+    const deps = testDeps();
+    const task = await deps.tasks.create({ text: "x", createdBy: "test" });
+    const result = await server(deps).handleRequest({
+      method: "POST", path: `/api/tasks/${task.id}/retry`, query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(400);
+  });
+});
+
+describe("POST /api/tasks/:id/cancel", () => {
+  it("removes a pending task", async () => {
+    const deps = testDeps();
+    const task = await deps.tasks.create({ text: "x", createdBy: "test" });
+    const result = await server(deps).handleRequest({
+      method: "POST", path: `/api/tasks/${task.id}/cancel`, query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    expect(await deps.tasks.get(task.id)).toBeNull();
+  });
+});

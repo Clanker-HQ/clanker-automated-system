@@ -8,6 +8,7 @@ import type { BreakerStore } from "../state/breaker.js";
 import type { MetricsStore } from "../state/metrics-store.js";
 import type { WorldModel } from "../world/world-model.js";
 import type { TaskStore } from "./task-store.js";
+import { MAX_TASK_TEXT_LENGTH } from "./task-store.js";
 import { resolveTaskByPrefix } from "./resolve-task.js";
 
 export interface DashboardDeps {
@@ -117,6 +118,58 @@ export class DashboardServer {
         const resolved = await resolveTaskByPrefix(this.deps.tasks, taskDetailMatch[1]!);
         if ("error" in resolved) return json(resolved.notFound ? 404 : 409, { error: resolved.error });
         return json(200, resolved.task);
+      }
+
+      if (req.method === "POST" && req.path === "/api/tasks") {
+        let payload: { text?: unknown; priority?: unknown; wantsDetail?: unknown };
+        try {
+          payload = JSON.parse(req.body) as typeof payload;
+        } catch {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        const text = typeof payload.text === "string" ? payload.text.trim() : "";
+        if (!text) return json(400, { error: "text is required" });
+        if (text.length > MAX_TASK_TEXT_LENGTH) {
+          return json(400, { error: `text is ${text.length} characters, over the ${MAX_TASK_TEXT_LENGTH}-character limit` });
+        }
+        const task = await this.deps.tasks.create({
+          text,
+          createdBy: "dashboard",
+          ...(typeof payload.priority === "number" ? { priority: payload.priority } : {}),
+          ...(payload.wantsDetail === true ? { wantsDetail: true } : {}),
+        });
+        void this.deps.dispatcher.wake().catch((err: unknown) => {
+          console.error(`[dashboard] dispatcher wake failed after creating task ${task.id}`, err);
+        });
+        return json(201, task);
+      }
+
+      const taskRetryMatch = req.path.match(/^\/api\/tasks\/([^/]+)\/retry$/);
+      if (req.method === "POST" && taskRetryMatch) {
+        const resolved = await resolveTaskByPrefix(this.deps.tasks, taskRetryMatch[1]!);
+        if ("error" in resolved) return json(resolved.notFound ? 404 : 409, { error: resolved.error });
+        if (resolved.task.status !== "failed") {
+          return json(400, { error: `Task is ${resolved.task.status}, not failed — nothing to retry.` });
+        }
+        const updated = await this.deps.tasks.update(resolved.task.id, {
+          status: "pending", failureReason: undefined, finishedAt: undefined, startedAt: undefined,
+          retryCount: undefined, nextRetryAt: undefined,
+        });
+        void this.deps.dispatcher.wake().catch((err: unknown) => {
+          console.error(`[dashboard] dispatcher wake failed after retrying task ${updated.id}`, err);
+        });
+        return json(200, updated);
+      }
+
+      const taskCancelMatch = req.path.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
+      if (req.method === "POST" && taskCancelMatch) {
+        const resolved = await resolveTaskByPrefix(this.deps.tasks, taskCancelMatch[1]!);
+        if ("error" in resolved) return json(resolved.notFound ? 404 : 409, { error: resolved.error });
+        if (resolved.task.status !== "pending") {
+          return json(400, { error: `Task is ${resolved.task.status}, not pending — can't cancel it.` });
+        }
+        await this.deps.tasks.remove(resolved.task.id);
+        return json(200, { id: resolved.task.id });
       }
 
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };
