@@ -12,6 +12,25 @@ import { truncateForPrompt } from "../truncate.js";
  */
 const MAX_CONCLUSION_CHARS = 200;
 
+/**
+ * How many findings get their full (truncated) conclusion in the digest; the
+ * rest fall back to `topic (confidence)` with no conclusion text. Unlike
+ * MAX_CONCLUSION_CHARS, which bounds one finding, nothing used to bound how
+ * MANY findings exist — a research or improvement-scout run that keeps
+ * finding new topics grew this section forever. Every topic still appears
+ * past the cap (see the sort below and the topic-only fallback) so a research
+ * agent, which holds no `Read` tool and sees only this digest, can still
+ * recognize a topic as already covered and reuse its exact topic string
+ * instead of quietly re-researching it into a duplicate finding. Ranking by
+ * confidence first means what gets dropped to topic-only is exactly the
+ * low-confidence findings research's own prompt already tells it to
+ * re-verify regardless — so the conclusion text lost there was never load-
+ * bearing for the "stop, this is answered" decision in the first place.
+ */
+const MAX_FULL_FINDINGS = 40;
+
+const CONFIDENCE_RANK: Record<Finding["confidence"], number> = { high: 2, medium: 1, low: 0 };
+
 export interface PortfolioEntry {
   slug: string;
   purpose: string;
@@ -221,9 +240,22 @@ export class WorldModel {
       // One note for the whole section rather than a marker per line: this
       // text is itself paid for on every turn of every run.
       lines.push("(conclusions abbreviated — full text in data/world/findings/)");
+      const ranked = [...findings].sort((a, b) => {
+        const byConfidence = CONFIDENCE_RANK[b.confidence] - CONFIDENCE_RANK[a.confidence];
+        return byConfidence !== 0 ? byConfidence : b.updatedAt.localeCompare(a.updatedAt);
+      });
+      if (ranked.length > MAX_FULL_FINDINGS) {
+        lines.push(
+          `(${ranked.length - MAX_FULL_FINDINGS} lower-confidence/older findings below show topic only — every topic still appears, so a matching topic string still supersedes instead of duplicating)`,
+        );
+      }
       lines.push(
-        findings
-          .map((f) => `- ${f.topic} (confidence: ${f.confidence}): ${truncateForPrompt(f.conclusion, MAX_CONCLUSION_CHARS)}`)
+        ranked
+          .map((f, i) =>
+            i < MAX_FULL_FINDINGS
+              ? `- ${f.topic} (confidence: ${f.confidence}): ${truncateForPrompt(f.conclusion, MAX_CONCLUSION_CHARS)}`
+              : `- ${f.topic} (confidence: ${f.confidence})`,
+          )
           .join("\n"),
       );
     } else {

@@ -235,6 +235,62 @@ describe("summaryForPrompt caps what each finding contributes", () => {
   });
 });
 
+// The count of findings was previously unbounded: every topic ever recorded
+// got a full conclusion in the digest forever. research holds no `Read` tool
+// (see agents/research/prompt.md), so it can only ever see what's in this
+// digest — a cap that dropped a topic entirely would cause a real
+// re-research, not just a token saving. These tests pin the actual contract:
+// every topic still appears, only the conclusion text for lower-priority
+// findings is dropped.
+describe("summaryForPrompt caps how many findings show a full conclusion", () => {
+  it("keeps every topic visible even once findings exceed the full-conclusion cap", async () => {
+    const f = fixture();
+    for (let i = 0; i < 45; i++) {
+      await f.world.writeFinding(
+        `topic-${i}`,
+        finding({ topic: `topic-${i}`, confidence: "low", updatedAt: `2026-01-${String((i % 28) + 1).padStart(2, "0")}T00:00:00.000Z` }),
+      );
+    }
+
+    const summary = await f.world.summaryForPrompt();
+    for (let i = 0; i < 45; i++) {
+      expect(summary).toContain(`topic-${i}`);
+    }
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  it("keeps the full conclusion for a high-confidence finding while dropping conclusion text for excess low-confidence ones", async () => {
+    const f = fixture();
+    await f.world.writeFinding("keeper", finding({ topic: "keeper", confidence: "high", conclusion: "This must survive the cap." }));
+    for (let i = 0; i < 45; i++) {
+      await f.world.writeFinding(
+        `filler-${i}`,
+        finding({ topic: `filler-${i}`, confidence: "low", conclusion: "Filler conclusion text that should get dropped once past the cap." }),
+      );
+    }
+
+    const summary = await f.world.summaryForPrompt();
+    expect(summary).toContain("This must survive the cap.");
+    const fullConclusionCount = (summary.match(/Filler conclusion text/g) ?? []).length;
+    expect(fullConclusionCount).toBeGreaterThan(0);
+    expect(fullConclusionCount).toBeLessThan(45);
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  it("names how many findings were dropped to topic-only", async () => {
+    const f = fixture();
+    for (let i = 0; i < 45; i++) {
+      await f.world.writeFinding(`topic-${i}`, finding({ topic: `topic-${i}`, confidence: "low" }));
+    }
+
+    expect(await f.world.summaryForPrompt()).toContain("5 lower-confidence/older findings");
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+});
+
 describe("WorldModel.listFindings", () => {
   it("returns every finding's full, untruncated conclusion", async () => {
     const f = fixture();
