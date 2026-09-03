@@ -238,12 +238,27 @@ describe("summaryForPrompt caps what each finding contributes", () => {
 describe("WorldModel.listFindings", () => {
   it("returns every finding's full, untruncated conclusion", async () => {
     const f = fixture();
-    await f.world.writeFinding("pricing-strategy", finding());
+    // Use a long conclusion with SENTINEL_TAIL to prove untruncated conclusions are returned
+    // (unlike summaryForPrompt, which truncates at MAX_CONCLUSION_CHARS=200)
+    const longConclusion =
+      "This conclusion is deliberately far longer than any digest should carry. " +
+      "It rambles about rate limits, certificate pools, public suffix lists and " +
+      "several other things nobody needs repeated on every turn of every run. " +
+      "It keeps going well past any reasonable budget, and ends with SENTINEL_TAIL.";
+
+    await f.world.writeFinding("pricing-strategy", finding({ conclusion: longConclusion }));
     await f.world.writeFinding("competitor-scan", finding({ topic: "competitor-scan", conclusion: "Crowded space." }));
 
     const findings = await f.world.listFindings();
     expect(findings).toHaveLength(2);
     expect(findings.map((fd) => fd.topic).sort()).toEqual(["competitor-scan", "pricing-strategy"]);
+
+    // Prove that full untruncated conclusions are returned, not truncated ones
+    const pricingFinding = findings.find((fd) => fd.topic === "pricing-strategy");
+    expect(pricingFinding?.conclusion).toContain("SENTINEL_TAIL");
+
+    const competitorFinding = findings.find((fd) => fd.topic === "competitor-scan");
+    expect(competitorFinding?.conclusion).toEqual("Crowded space.");
 
     rmSync(f.dataDir, { recursive: true, force: true });
   });
