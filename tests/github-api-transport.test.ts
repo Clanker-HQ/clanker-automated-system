@@ -204,7 +204,7 @@ describe("GithubApiTransport.createRepo", () => {
       "https://api.github.com/orgs/AAS-Labs/repos",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ name: "pilot-01", private: true, description: "First product." }),
+        body: JSON.stringify({ name: "pilot-01", private: true, auto_init: true, description: "First product." }),
       }),
     );
   });
@@ -219,7 +219,7 @@ describe("GithubApiTransport.createRepo", () => {
 
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://api.github.com/orgs/AAS-Labs/repos",
-      expect.objectContaining({ body: JSON.stringify({ name: "pilot-01", private: false }) }),
+      expect.objectContaining({ body: JSON.stringify({ name: "pilot-01", private: false, auto_init: true }) }),
     );
   });
 

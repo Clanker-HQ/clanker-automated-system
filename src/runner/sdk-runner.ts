@@ -457,6 +457,22 @@ export class SdkRunner implements Runner {
       grants: Grant[];
       pending: PendingStore;
       github?: GithubTransport;
+      /**
+       * Builds a GithubTransport bound to an arbitrary token, resolved fresh
+       * per call from whichever grant actually authorised the effect (the
+       * same `process.env[grant.secret]` resolution cloneRepo/pushBranch
+       * already use) — NOT the single `github` above, which is permanently
+       * bound to GITHUB_PR_TOKEN at boot (src/index.ts) for the infra-repo
+       * review pipeline (mergePR/postReviewComment). createRepo and openPR
+       * both act on product repos under whatever org/token a *different*
+       * grant (e.g. products-provision/products-push, GITHUB_PRODUCTS_TOKEN)
+       * covers — routing them through the fixed `github` silently used the
+       * wrong credential for every such call, regardless of how correctly
+       * that other token was scoped. Falls back to `github` when omitted, so
+       * existing tests/callers that don't care about multi-token wiring are
+       * unaffected.
+       */
+      githubForToken?: (token: string) => GithubTransport;
       gitPusher?: GitPusher;
       gitCloner?: GitCloner;
       /** Wired in production (src/index.ts); optional so tests/scripts that don't care about task-queueing can skip it, the same shape `github` already uses. */
@@ -859,7 +875,11 @@ export class SdkRunner implements Runner {
                 }
 
                 try {
-                  const created = await github.createRepo(org, name, { private: isPrivate, description });
+                  // Bound to `token` (this grant's own secret — GITHUB_PRODUCTS_TOKEN
+                  // for builder), never the fixed `github` above, which belongs to a
+                  // different credential entirely. See githubForToken's doc comment.
+                  const transport = this.deps.githubForToken?.(token) ?? github;
+                  const created = await transport.createRepo(org, name, { private: isPrivate, description });
                   return { content: [{ type: "text" as const, text: `Created ${created.fullName} at ${created.url}.` }] };
                 } catch (error) {
                   // Unlike pushBranch's GitPusher error, GithubApiTransport's
@@ -1013,7 +1033,21 @@ export class SdkRunner implements Runner {
                     content: [{ type: "text" as const, text: `Refused: "${head}" is outside the agent/builder/ namespace.` }],
                   };
                 }
-                const pr = await github.createPullRequest(repo, { head, base, title, body });
+                // No decide() gate here by design (see this tool's own doc
+                // comment) — but the API call still needs the RIGHT credential,
+                // not the fixed `github` (GITHUB_PR_TOKEN, the infra-repo review
+                // pipeline's token). Reuses whichever git-push-kind grant would
+                // have authorised pushBranch for this exact repo/branch — the
+                // same trust boundary pushBranch already crossed to get this
+                // code onto GitHub in the first place — and falls back to
+                // `github` when nothing matches (e.g. no grants configured),
+                // preserving prior behaviour rather than refusing outright.
+                const pushEffect = detectOutwardEffect("pushBranch", { repo, branch: head })!;
+                const relevantGrants = this.deps.grants.filter((g) => agent.grantRefs.includes(g.id));
+                const pushGrant = matchGrant(relevantGrants, pushEffect);
+                const token = pushGrant ? process.env[pushGrant.secret] : undefined;
+                const transport = token && this.deps.githubForToken ? this.deps.githubForToken(token) : github;
+                const pr = await transport.createPullRequest(repo, { head, base, title, body });
                 return { content: [{ type: "text" as const, text: `Opened ${pr.url}.` }] };
               },
             ),

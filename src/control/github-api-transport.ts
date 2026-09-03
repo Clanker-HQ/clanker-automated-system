@@ -123,7 +123,18 @@ export class GithubApiTransport implements GithubTransport {
     const res = await this.fetchImpl(`https://api.github.com/orgs/${org}/repos`, {
       method: "POST",
       headers: { ...this.headers(), "content-type": "application/json" },
-      body: JSON.stringify({ name, private: opts.private, ...(opts.description !== undefined ? { description: opts.description } : {}) }),
+      // auto_init: true — without it GitHub creates a completely empty repo
+      // (zero commits, zero branches), and whichever agent branch gets
+      // pushed first becomes the default branch by accident instead of
+      // "main" existing as expected. openPR's base then 404s with nothing to
+      // target. Auto-initializing gives every new repo a real "main" (with a
+      // README commit) at creation time, before pushBranch/openPR ever run.
+      body: JSON.stringify({
+        name,
+        private: opts.private,
+        auto_init: true,
+        ...(opts.description !== undefined ? { description: opts.description } : {}),
+      }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     // Checked against 201 specifically, not `res.ok` (any 2xx) — this is a

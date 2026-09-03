@@ -169,6 +169,12 @@ async function main(): Promise<void> {
     const systemContext = existsSync(systemContextPath) ? readFileSync(systemContextPath, "utf8") : undefined;
     runner = buildRunner({
       grants, pending: new PendingStore(DATA_DIR), github,
+      // createRepo/openPR resolve their own per-grant token (e.g.
+      // GITHUB_PRODUCTS_TOKEN for builder's product-repo work) and need a
+      // transport bound to THAT token, not `github` above (permanently
+      // bound to GITHUB_PR_TOKEN for the infra-repo review pipeline). See
+      // SdkRunner's githubForToken doc comment.
+      githubForToken: (token) => new GithubApiTransport({ token }),
       gitPusher: new RealGitPusher(),
       gitCloner: new RealGitCloner(),
       tasks,

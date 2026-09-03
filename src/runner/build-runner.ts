@@ -34,6 +34,7 @@ export function buildRunner(
     grants: Grant[];
     pending: PendingStore;
     github?: GithubTransport;
+    githubForToken?: (token: string) => GithubTransport;
     gitPusher?: GitPusher;
     gitCloner?: GitCloner;
     tasks?: TaskStore;
