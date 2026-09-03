@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clanker Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e6e8ec; --muted: #9aa1ad;
+    --accent: #5b8cff; --danger: #ff6161; --good: #4fd18b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; }
+  header { padding: 1rem; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.1rem; }
+  nav { display: flex; gap: 0.5rem; padding: 0.5rem 1rem; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  nav button { background: none; border: 1px solid var(--border); color: var(--muted); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; white-space: nowrap; font-size: 0.9rem; }
+  nav button.active { background: var(--accent); color: white; border-color: var(--accent); }
+  main { padding: 1rem; max-width: 900px; margin: 0 auto; }
+  section[hidden] { display: none; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.6rem; }
+  button.action { background: var(--accent); color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+  button.action.danger { background: var(--danger); }
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; font-size: 0.85rem; }
+  @media (max-width: 600px) {
+    nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); justify-content: space-around; z-index: 10; }
+    main { padding-bottom: 4.5rem; }
+  }
+</style>
+</head>
+<body>
+<header><h1>Clanker Dashboard</h1></header>
+<nav>
+  <button data-tab="status" class="active">Status</button>
+  <button data-tab="tasks">Tasks</button>
+  <button data-tab="runs">Runs</button>
+  <button data-tab="config">Config</button>
+  <button data-tab="world">World</button>
+  <button data-tab="metrics">Metrics</button>
+</nav>
+<main>
+  <section id="tab-status">
+    <div class="card">
+      <div class="row"><strong>State:</strong>&nbsp;<span id="status-state">—</span></div>
+      <div class="row"><strong>Budget:</strong>&nbsp;<span id="status-budget">—</span></div>
+      <div class="row"><strong>Concurrency:</strong>&nbsp;<span id="status-concurrency">—</span></div>
+      <div class="row"><strong>Quiet hours:</strong>&nbsp;<span id="status-quiet">—</span></div>
+      <div class="row"><strong>Circuit breaker:</strong>&nbsp;<span id="status-breaker">—</span></div>
+      <div class="row"><strong>Disabled agents:</strong>&nbsp;<span id="status-disabled">—</span></div>
+      <div class="row"><strong>Rate limit:</strong>&nbsp;<span id="status-ratelimit">—</span></div>
+      <div class="row"><strong>Tasks:</strong>&nbsp;<span id="status-tasks">—</span></div>
+    </div>
+  </section>
+  <section id="tab-tasks" hidden>
+    <div class="card">
+      <div class="row">
+        <input id="task-text" placeholder="New task text" style="flex:1; min-width:200px;">
+        <input id="task-priority" type="number" placeholder="priority (50)" style="width:8rem;">
+        <button class="action" id="task-create">Queue</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <input id="task-lookup-id" placeholder="Task id or prefix (any status)" style="flex:1; min-width:200px;">
+        <button class="action" id="task-lookup-btn">Look up</button>
+      </div>
+      <div id="task-lookup-result"></div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Status</th><th>Priority</th><th>Text</th><th>Actions</th></tr></thead>
+        <tbody id="tasks-body"></tbody>
+      </table>
+    </div>
+  </section>
+  <section id="tab-runs" hidden>
+    <div class="card">
+      <table>
+        <thead><tr><th>Run</th><th>Status</th><th>Cost</th><th></th></tr></thead>
+        <tbody id="runs-body"></tbody>
+      </table>
+    </div>
+    <div class="card" id="run-detail" hidden>
+      <pre id="run-detail-body" style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; max-height: 50vh; overflow-y: auto;"></pre>
+    </div>
+  </section>
+  <section id="tab-config" hidden>
+    <div class="card">
+      <div class="row"><strong>Run state:</strong>&nbsp;<span id="config-state">—</span>
+        <button class="action" id="config-stop">Stop</button>
+        <button class="action" id="config-resume">Resume</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <label>Daily budget ($)&nbsp;<input id="config-budget" type="number" style="width:6rem;"></label>
+        <button class="action" id="config-budget-save">Save</button>
+      </div>
+      <div class="row">
+        <label>Concurrency&nbsp;<input id="config-concurrency" type="number" style="width:5rem;"></label>
+        <button class="action" id="config-concurrency-save">Save</button>
+      </div>
+      <div class="row">
+        <label>Quiet hours&nbsp;<input id="config-quiet-from" placeholder="HH:MM" style="width:5rem;"></label>
+        -
+        <input id="config-quiet-to" placeholder="HH:MM" style="width:5rem;">
+        <input id="config-quiet-tz" placeholder="Area/City" style="width:10rem;">
+        <button class="action" id="config-quiet-save">Save</button>
+        <button class="action danger" id="config-quiet-off">Off</button>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="config-breaker"> Circuit breaker enabled</label>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <input id="config-agent-name" placeholder="agent name" style="width:12rem;">
+        <button class="action" id="config-agent-disable">Disable</button>
+        <button class="action" id="config-agent-enable">Enable</button>
+      </div>
+      <div id="config-disabled-list"></div>
+    </div>
+  </section>
+  <section id="tab-world" hidden>
+    <div class="card">
+      <h3>Portfolio</h3>
+      <table>
+        <thead><tr><th>Slug</th><th>Status</th><th>Next review</th><th>Monthly cost</th></tr></thead>
+        <tbody id="world-portfolio-body"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Shelf</h3>
+      <ul id="world-shelf-list"></ul>
+    </div>
+    <div class="card">
+      <h3>Findings</h3>
+      <div id="world-findings-list"></div>
+    </div>
+  </section>
+  <section id="tab-metrics" hidden>
+    <div class="card">
+      <table>
+        <thead><tr><th>Date</th><th>Net income</th><th>Not-achieved rate</th><th>Cost/task</th><th>Novelty %</th></tr></thead>
+        <tbody id="metrics-body"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+  const REFRESH_MS = 10000;
+  let refreshTimer = null;
+  const loaders = {};
+
+  function showTab(name) {
+    for (const btn of document.querySelectorAll("nav button")) {
+      btn.classList.toggle("active", btn.dataset.tab === name);
+    }
+    for (const section of document.querySelectorAll("main > section")) {
+      section.hidden = section.id !== `tab-${name}`;
+    }
+    if (refreshTimer) clearInterval(refreshTimer);
+    const load = loaders[name];
+    if (load) {
+      load();
+      refreshTimer = setInterval(load, REFRESH_MS);
+    }
+  }
+
+  async function loadStatus() {
+    try {
+      const res = await fetch("/api/status");
+      if (!res.ok) return;
+      const s = await res.json();
+      document.getElementById("status-state").textContent = s.stopped ? "STOPPED" : "running";
+      document.getElementById("status-budget").textContent = `$${s.spentTodayUsd.toFixed(2)} of $${s.dailyBudgetUsd}`;
+      document.getElementById("status-concurrency").textContent = s.maxConcurrent;
+      document.getElementById("status-quiet").textContent = s.quietHours
+        ? `${s.quietHours.from}-${s.quietHours.to} ${s.quietHours.timezone}${s.quietHoursActive ? " (active)" : ""}`
+        : "off";
+      document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
+      document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
+      document.getElementById("status-ratelimit").textContent = s.rateLimitUtilization === null
+        ? "no reading yet"
+        : `${Math.round(s.rateLimitUtilization * 100)}% (pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%)`;
+      const c = s.taskCounts;
+      document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
+  }
+  loaders.status = loadStatus;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  async function post(url, body) {
+    try {
+      const res = await fetch(url, { method: "POST", headers: body ? { "content-type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || `Request failed (${res.status})`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      alert(`Network error: ${err.message || err}`);
+      return false;
+    }
+  }
+
+  async function loadTasks() {
+    try {
+      const res = await fetch("/api/tasks");
+      if (!res.ok) return;
+      const tasks = await res.json();
+      const body = document.getElementById("tasks-body");
+      body.innerHTML = tasks.map((t) => `
+        <tr>
+          <td>${t.status}</td>
+          <td>${t.priority}</td>
+          <td>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</td>
+          <td>
+            ${t.status === "failed" ? `<button class="action" data-retry="${t.id}">Retry</button>` : ""}
+            ${t.status === "pending" ? `<button class="action danger" data-cancel="${t.id}">Cancel</button>` : ""}
+          </td>
+        </tr>
+      `).join("");
+
+      for (const btn of body.querySelectorAll("[data-retry]")) {
+        btn.addEventListener("click", async () => {
+          await post(`/api/tasks/${btn.dataset.retry}/retry`);
+          loadTasks();
+        });
+      }
+      for (const btn of body.querySelectorAll("[data-cancel]")) {
+        btn.addEventListener("click", async () => {
+          await post(`/api/tasks/${btn.dataset.cancel}/cancel`);
+          loadTasks();
+        });
+      }
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
+  }
+  loaders.tasks = loadTasks;
+
+  async function loadRuns() {
+    try {
+      const res = await fetch("/api/runs?limit=20");
+      if (!res.ok) return;
+      const runs = await res.json();
+      const body = document.getElementById("runs-body");
+      body.innerHTML = runs.map((r) => `
+        <tr>
+          <td>${escapeHtml(r.runId)}</td>
+          <td>${r.status}${r.verifiedOutcome && r.verifiedOutcome.verdict !== "achieved" ? ` (${r.verifiedOutcome.verdict})` : ""}</td>
+          <td>$${r.costUsd.toFixed(4)}</td>
+          <td><button class="action" data-detail="${r.runId}">View</button></td>
+        </tr>
+      `).join("");
+
+      for (const btn of body.querySelectorAll("[data-detail]")) {
+        btn.addEventListener("click", async () => {
+          try {
+            const detailRes = await fetch(`/api/runs/${btn.dataset.detail}`);
+            if (!detailRes.ok) return;
+            const detail = await detailRes.json();
+            const lines = detail.transcript.map((line) => {
+              try {
+                const event = JSON.parse(line);
+                return `[${event.at}] ${event.type}: ${event.text ?? JSON.stringify(event)}`;
+              } catch {
+                return line;
+              }
+            });
+            document.getElementById("run-detail-body").textContent = `${detail.summary}\n\n${lines.join("\n")}`;
+            document.getElementById("run-detail").hidden = false;
+          } catch (err) {
+            console.error("[dashboard]", err);
+          }
+        });
+      }
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
+  }
+  loaders.runs = loadRuns;
+
+  document.getElementById("task-create").addEventListener("click", async () => {
+    const textEl = document.getElementById("task-text");
+    const priorityEl = document.getElementById("task-priority");
+    const text = textEl.value.trim();
+    if (!text) return;
+    const body = { text };
+    if (priorityEl.value) body.priority = Number(priorityEl.value);
+    if (await post("/api/tasks", body)) {
+      textEl.value = "";
+      priorityEl.value = "";
+    }
+    loadTasks();
+  });
+
+  document.getElementById("task-lookup-btn").addEventListener("click", async () => {
+    const idEl = document.getElementById("task-lookup-id");
+    const id = idEl.value.trim();
+    const resultEl = document.getElementById("task-lookup-result");
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || `Task lookup failed (${res.status})`);
+        resultEl.innerHTML = "";
+        return;
+      }
+      const t = await res.json();
+      resultEl.innerHTML = `
+        <div class="row">
+          <strong>${t.status}</strong>
+          <span>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</span>
+          ${t.status === "failed" ? `<button class="action" data-lookup-retry="${t.id}">Retry</button>` : ""}
+          ${t.status === "pending" ? `<button class="action danger" data-lookup-cancel="${t.id}">Cancel</button>` : ""}
+        </div>
+      `;
+      const retryBtn = resultEl.querySelector("[data-lookup-retry]");
+      if (retryBtn) {
+        retryBtn.addEventListener("click", async () => {
+          await post(`/api/tasks/${retryBtn.dataset.lookupRetry}/retry`);
+          resultEl.innerHTML = "";
+          idEl.value = "";
+          loadTasks();
+        });
+      }
+      const cancelBtn = resultEl.querySelector("[data-lookup-cancel]");
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", async () => {
+          await post(`/api/tasks/${cancelBtn.dataset.lookupCancel}/cancel`);
+          resultEl.innerHTML = "";
+          idEl.value = "";
+          loadTasks();
+        });
+      }
+    } catch (err) {
+      alert(`Network error: ${err.message || err}`);
+    }
+  });
+
+  async function loadConfig() {
+    try {
+      const res = await fetch("/api/config");
+      if (!res.ok) return;
+      const { resolved } = await res.json();
+      document.getElementById("config-state").textContent = resolved.stopped ? "STOPPED" : "running";
+      const budgetEl = document.getElementById("config-budget");
+      if (document.activeElement !== budgetEl) budgetEl.value = resolved.dailyBudgetUsd;
+      const concurrencyEl = document.getElementById("config-concurrency");
+      if (document.activeElement !== concurrencyEl) concurrencyEl.value = resolved.maxConcurrent;
+      if (resolved.quietHours) {
+        const fromEl = document.getElementById("config-quiet-from");
+        if (document.activeElement !== fromEl) fromEl.value = resolved.quietHours.from;
+        const toEl = document.getElementById("config-quiet-to");
+        if (document.activeElement !== toEl) toEl.value = resolved.quietHours.to;
+        const tzEl = document.getElementById("config-quiet-tz");
+        if (document.activeElement !== tzEl) tzEl.value = resolved.quietHours.timezone;
+      }
+      const breakerEl = document.getElementById("config-breaker");
+      if (document.activeElement !== breakerEl) breakerEl.checked = resolved.breakerEnabled;
+      document.getElementById("config-disabled-list").textContent = resolved.disabledAgents.length
+        ? `Disabled: ${resolved.disabledAgents.join(", ")}` : "No agents disabled";
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
+  }
+  loaders.config = loadConfig;
+
+  document.getElementById("config-stop").addEventListener("click", async () => {
+    await post("/api/stop");
+    loadConfig();
+  });
+  document.getElementById("config-resume").addEventListener("click", async () => {
+    await post("/api/resume");
+    loadConfig();
+  });
+  document.getElementById("config-budget-save").addEventListener("click", async () => {
+    const value = Number(document.getElementById("config-budget").value);
+    await post("/api/config/budget", { value });
+    loadConfig();
+  });
+  document.getElementById("config-concurrency-save").addEventListener("click", async () => {
+    const value = Number(document.getElementById("config-concurrency").value);
+    await post("/api/config/concurrency", { value });
+    loadConfig();
+  });
+  document.getElementById("config-quiet-save").addEventListener("click", async () => {
+    const from = document.getElementById("config-quiet-from").value;
+    const to = document.getElementById("config-quiet-to").value;
+    const timezone = document.getElementById("config-quiet-tz").value;
+    await post("/api/config/quiet-hours", { from, to, timezone });
+    loadConfig();
+  });
+  document.getElementById("config-quiet-off").addEventListener("click", async () => {
+    await post("/api/config/quiet-hours", { off: true });
+    loadConfig();
+  });
+  document.getElementById("config-breaker").addEventListener("change", async (e) => {
+    await post("/api/config/breaker", { enabled: e.target.checked });
+    loadConfig();
+  });
+  document.getElementById("config-agent-disable").addEventListener("click", async () => {
+    const name = document.getElementById("config-agent-name").value.trim();
+    if (!name) return;
+    await post(`/api/agents/${encodeURIComponent(name)}/disable`);
+    loadConfig();
+  });
+  document.getElementById("config-agent-enable").addEventListener("click", async () => {
+    const name = document.getElementById("config-agent-name").value.trim();
+    if (!name) return;
+    await post(`/api/agents/${encodeURIComponent(name)}/enable`);
+    loadConfig();
+  });
+
+  async function loadWorld() {
+    try {
+      const res = await fetch("/api/world");
+      if (!res.ok) return;
+      const { portfolio, shelf, findings } = await res.json();
+
+      document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
+        <tr><td>${escapeHtml(p.slug)}</td><td>${p.status}</td><td>${escapeHtml(p.nextReviewAt)}</td><td>$${p.monthlyCostUsd}</td></tr>
+      `).join("") || `<tr><td colspan="4">none</td></tr>`;
+
+      document.getElementById("world-shelf-list").innerHTML = shelf.length
+        ? shelf.map((s) => `<li>${escapeHtml(s.summary)} — <em>${escapeHtml(s.reason)}</em></li>`).join("")
+        : "<li>none</li>";
+
+      document.getElementById("world-findings-list").innerHTML = findings.length
+        ? findings.map((f) => `
+            <div class="row" style="align-items:flex-start;">
+              <strong>${escapeHtml(f.topic)}</strong> (${f.confidence}):&nbsp;${escapeHtml(f.conclusion)}
+            </div>
+          `).join("")
+        : "<p>none</p>";
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
+  }
+  loaders.world = loadWorld;
+
+  async function loadMetrics() {
+    try {
+      const res = await fetch("/api/metrics?days=30");
+      if (!res.ok) return;
+      const snapshots = await res.json();
+      const body = document.getElementById("metrics-body");
+      body.innerHTML = snapshots.slice().reverse().map((m) => `
+        <tr>
+          <td>${m.computedAt.slice(0, 10)}</td>
+          <td>$${m.netIncomeUsd.toFixed(2)}${m.revenueUnavailable ? " (unavailable)" : ""}</td>
+          <td>${m.notAchievedRate === null ? "—" : `${Math.round(m.notAchievedRate * 100)}%`}</td>
+          <td>${m.costPerCompletedTaskUsd === null ? "—" : `$${m.costPerCompletedTaskUsd.toFixed(2)}`}</td>
+          <td>${m.noveltySharePercent === null ? "—" : `${Math.round(m.noveltySharePercent)}%`}</td>
+        </tr>
+      `).join("") || `<tr><td colspan="5">no snapshots yet</td></tr>`;
+    } catch (err) {
+      console.error("[dashboard]", err);
+    }
+  }
+  loaders.metrics = loadMetrics;
+
+  for (const btn of document.querySelectorAll("nav button")) {
+    btn.addEventListener("click", () => showTab(btn.dataset.tab));
+  }
+
+  showTab("status");
+</script>
+</body>
+</html>
