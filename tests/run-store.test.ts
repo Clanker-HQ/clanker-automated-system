@@ -223,4 +223,24 @@ describe("RunStore", () => {
       expect(results.map((r) => r.runId)).toEqual([writer.runId]);
     });
   });
+
+  describe("RunStore.readTranscriptTail", () => {
+    it("returns the last N lines of a run's transcript", async () => {
+      const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+      const writer = await store.open(newRunId("agent"), "agent");
+      await writer.append({ type: "assistant", text: "one" });
+      await writer.append({ type: "assistant", text: "two" });
+      await writer.append({ type: "assistant", text: "three" });
+      await writer.close({ status: "success", summary: "done" });
+
+      const tail = await store.readTranscriptTail(writer.runId, 2);
+      expect(tail).toHaveLength(2);
+      expect(JSON.parse(tail[1]!).text).toBe("three");
+    });
+
+    it("returns an empty array for a run with no transcript on disk", async () => {
+      const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+      expect(await store.readTranscriptTail("nonexistent-run", 10)).toEqual([]);
+    });
+  });
 });

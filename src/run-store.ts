@@ -145,6 +145,16 @@ export class RunStore {
   }
 
   /**
+   * Like the `tail()` a RunWriter exposes while a run is still open
+   * (see `writer.tail` above), but for any run id after the fact — used by
+   * the dashboard's run-detail view, which has no open writer to ask.
+   */
+  async readTranscriptTail(runId: string, lines: number): Promise<string[]> {
+    const raw = await readFile(join(this.runDir(runId), "transcript.jsonl"), "utf8").catch(() => "");
+    return raw.trim().split("\n").filter(Boolean).slice(-lines);
+  }
+
+  /**
    * Stamps a verification verdict onto an already-closed run — verification
    * happens after writer.close() (it grades the run's own final summary), so
    * it can't be folded into that write. Rewrites the same result.json a
