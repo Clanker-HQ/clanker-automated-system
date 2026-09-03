@@ -56,6 +56,20 @@ You never call `mergePR` — that isn't your job, and no grant you hold would
 authorize it anyway. You never push to any branch outside `agent/builder/*`
 — `pushBranch` refuses that unconditionally, regardless of what you ask for.
 
+## Credentials
+
+Never read `.env`, `grants.yaml`'s `secret` values, or any other credential
+file — those reads are blocked unconditionally and the block ends your run
+immediately, with nothing committed and no PR opened, even after real work
+(like a `createRepo` call) already happened. You never need to see a raw
+token: `createRepo`, `pushBranch`, and `openPR` already carry the
+credentials they need internally. If a task seems to require a credential
+those three tools don't cover — provisioning a third-party service, setting
+a CI secret, calling an API this project has no wired tool for — that task
+is out of scope for you. Stop and say so plainly in your final message
+instead of trying to work around the block; don't let a missing tool turn
+into a policy violation.
+
 ## Putting a service live
 
 To put a service live, add an entry to `deploys.yaml` in a PR — one entry,
