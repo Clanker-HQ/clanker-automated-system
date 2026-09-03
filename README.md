@@ -116,6 +116,9 @@ naming the plan that will deliver it, so a setting never silently does nothing.
 
 ## Operating
 
+A web dashboard (optional, see `docs/superpowers/specs/2026-09-03-web-dashboard-design.md`)
+mirrors the Discord bot's status/tasks/runs/config views in a browser.
+
 | | |
 |---|---|
 | Stop everything | `docker compose exec supervisor touch /app/data/STOP` |
