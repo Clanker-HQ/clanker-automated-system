@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDef } from "../registry.js";
 import type { RunStore } from "../run-store.js";
@@ -99,6 +99,11 @@ export class DashboardServer {
     // throw on an unexpected I/O error, and a throw must still produce a
     // real response rather than leaving the request hanging forever.
     try {
+      if (req.method === "GET" && req.path === "/") {
+        const html = await readFile(new URL("../../public/dashboard/index.html", import.meta.url), "utf8");
+        return { status: 200, headers: { "content-type": "text/html" }, body: html };
+      }
+
       if (req.method === "GET" && req.path === "/api/status") {
         const status = await this.deps.governor.status();
         const active = await this.deps.tasks.list();

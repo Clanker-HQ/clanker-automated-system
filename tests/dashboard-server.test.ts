@@ -396,3 +396,21 @@ describe("GET /api/metrics", () => {
     expect(JSON.parse(result.body)).toHaveLength(1);
   });
 });
+
+describe("GET /", () => {
+  it("serves the dashboard page once authenticated", async () => {
+    const result = await server().handleRequest({
+      method: "GET", path: "/", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    expect(result.headers?.["content-type"]).toBe("text/html");
+    expect(result.body).toContain("Clanker Dashboard");
+  });
+
+  it("requires auth for the page itself", async () => {
+    const result = await server().handleRequest({
+      method: "GET", path: "/", query: new URLSearchParams(), authHeader: undefined, body: "",
+    });
+    expect(result.status).toBe(401);
+  });
+});

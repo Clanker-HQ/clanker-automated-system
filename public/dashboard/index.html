@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clanker Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e6e8ec; --muted: #9aa1ad;
+    --accent: #5b8cff; --danger: #ff6161; --good: #4fd18b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; }
+  header { padding: 1rem; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.1rem; }
+  nav { display: flex; gap: 0.5rem; padding: 0.5rem 1rem; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  nav button { background: none; border: 1px solid var(--border); color: var(--muted); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; white-space: nowrap; font-size: 0.9rem; }
+  nav button.active { background: var(--accent); color: white; border-color: var(--accent); }
+  main { padding: 1rem; max-width: 900px; margin: 0 auto; }
+  section[hidden] { display: none; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.6rem; }
+  button.action { background: var(--accent); color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+  button.action.danger { background: var(--danger); }
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; font-size: 0.85rem; }
+  @media (max-width: 600px) {
+    nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); justify-content: space-around; z-index: 10; }
+    main { padding-bottom: 4.5rem; }
+  }
+</style>
+</head>
+<body>
+<header><h1>Clanker Dashboard</h1></header>
+<nav>
+  <button data-tab="status" class="active">Status</button>
+  <button data-tab="tasks">Tasks</button>
+  <button data-tab="runs">Runs</button>
+  <button data-tab="config">Config</button>
+  <button data-tab="world">World</button>
+  <button data-tab="metrics">Metrics</button>
+</nav>
+<main>
+  <section id="tab-status"><p>Loading…</p></section>
+  <section id="tab-tasks" hidden><p>Loading…</p></section>
+  <section id="tab-runs" hidden><p>Loading…</p></section>
+  <section id="tab-config" hidden><p>Loading…</p></section>
+  <section id="tab-world" hidden><p>Loading…</p></section>
+  <section id="tab-metrics" hidden><p>Loading…</p></section>
+</main>
+<script>
+  const REFRESH_MS = 10000;
+  let refreshTimer = null;
+  const loaders = {};
+
+  function showTab(name) {
+    for (const btn of document.querySelectorAll("nav button")) {
+      btn.classList.toggle("active", btn.dataset.tab === name);
+    }
+    for (const section of document.querySelectorAll("main > section")) {
+      section.hidden = section.id !== `tab-${name}`;
+    }
+    if (refreshTimer) clearInterval(refreshTimer);
+    const load = loaders[name];
+    if (load) {
+      load();
+      refreshTimer = setInterval(load, REFRESH_MS);
+    }
+  }
+
+  for (const btn of document.querySelectorAll("nav button")) {
+    btn.addEventListener("click", () => showTab(btn.dataset.tab));
+  }
+
+  showTab("status");
+</script>
+</body>
+</html>
