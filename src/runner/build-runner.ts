@@ -1,6 +1,7 @@
 import type { MemoryConfig } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import type { FindingReviewer } from "../control/finding-reviewer.js";
+import type { GitCloner } from "../control/git-cloner.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import type { PendingStore } from "../control/pending.js";
@@ -34,6 +35,7 @@ export function buildRunner(
     pending: PendingStore;
     github?: GithubTransport;
     gitPusher?: GitPusher;
+    gitCloner?: GitCloner;
     tasks?: TaskStore;
     taskReviewer?: TaskReviewer;
     wake?: () => Promise<void>;

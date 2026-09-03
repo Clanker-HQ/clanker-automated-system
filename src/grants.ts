@@ -236,6 +236,22 @@ export function detectOutwardEffect(toolName: string, input: Record<string, unkn
     return { kind: "provision", description: `create repo ${org}/${name}`, target: org };
   }
 
+  // Only reachable via the cloneRepo tool handler's own direct decide() call
+  // (src/runner/sdk-runner.ts), same as the others above. Deliberately
+  // reuses "git-push" rather than a distinct kind, and deliberately leaves
+  // `branch` unset: matchGrant's git-push case only checks the branches
+  // list when `effect.branch !== undefined`, so an unset branch falls
+  // through to matching `remote` alone — the same rule a raw Bash
+  // `git push` (no explicit branch) already gets. That's exactly right for
+  // a read-only clone: whichever grant already authorises this agent to
+  // push to a repo also covers reading from it, with no separate grant
+  // needed.
+  if (toolName === "cloneRepo") {
+    const repo = typeof input.repo === "string" ? input.repo : "";
+    if (!repo) return null;
+    return { kind: "git-push", description: `clone ${repo}`, target: repo };
+  }
+
   return null;
 }
 

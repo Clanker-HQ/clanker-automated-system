@@ -4,6 +4,7 @@ import type { MemoryConfig } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import { touchesExcludedPath } from "../control/excluded-paths.js";
 import type { FindingReviewer } from "../control/finding-reviewer.js";
+import type { GitCloner } from "../control/git-cloner.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import { PendingStore } from "../control/pending.js";
@@ -457,6 +458,7 @@ export class SdkRunner implements Runner {
       pending: PendingStore;
       github?: GithubTransport;
       gitPusher?: GitPusher;
+      gitCloner?: GitCloner;
       /** Wired in production (src/index.ts); optional so tests/scripts that don't care about task-queueing can skip it, the same shape `github` already uses. */
       tasks?: TaskStore;
       /** Wakes the dispatcher after queueTask adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
@@ -683,6 +685,17 @@ export class SdkRunner implements Runner {
     //     two-step way as pushBranch otherwise: decide()/detectOutwardEffect/
     //     matchGrant, then the matched grant is looked up directly for its
     //     secret.
+    //   - cloneRepo — registered only when `gitCloner` is also present (only
+    //     `builder` holds both dependencies today). Gated the same
+    //     decide()/detectOutwardEffect/matchGrant way as pushBranch, reusing
+    //     "git-push" as its effect kind (see grants.ts's cloneRepo case) so
+    //     the same grant that authorises pushing to a repo also authorises
+    //     reading from it — no separate grant needed. Exists specifically so
+    //     a private repo can be cloned with the credential embedded in the
+    //     URL up front (RealGitCloner, src/control/git-cloner.ts), the same
+    //     way pushBranch already pushes — a bare, credential-less `git
+    //     clone` against a private repo doesn't fail cleanly, it falls back
+    //     to whatever credential helper is on the machine, interactively.
     //   - pushBranch — registered only when `gitPusher` is also present (only
     //     `builder` holds both dependencies today). Its own two gates run in
     //     the same unconditional, order-matters style as mergePR's: (1) an
@@ -723,6 +736,7 @@ export class SdkRunner implements Runner {
     //      gap between the fetch above and the merge call).
     const github = this.deps.github;
     const gitPusher = this.deps.gitPusher;
+    const gitCloner = this.deps.gitCloner;
     const githubPrServer = github && GITHUB_PR_AGENTS.has(agent.name)
       ? createSdkMcpServer({
           name: "githubPr",
@@ -860,6 +874,61 @@ export class SdkRunner implements Runner {
                 }
               },
             ),
+            ...(gitCloner
+              ? [
+                  tool(
+                    "cloneRepo",
+                    "Clone a repo into the current workspace, with the credential embedded so git never falls back to an interactive prompt. Also the safe way to check whether a repo exists yet: a clean refusal means it doesn't (or another problem occurred) — never probe existence any other way.",
+                    { repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"') },
+                    async ({ repo }: { repo: string }) => {
+                      const decision = decide(agent, this.deps.grants, "cloneRepo", { repo });
+                      if (decision.kind !== "allow") {
+                        const text =
+                          decision.kind === "park"
+                            ? `Refused: cloning "${repo}" requires human approval of grant "${decision.grantRef}", which this tool cannot wait for.`
+                            : `Refused: no grant authorises cloning "${repo}".`;
+                        return { content: [{ type: "text" as const, text }] };
+                      }
+
+                      const effect = detectOutwardEffect("cloneRepo", { repo })!;
+                      const relevantGrants = this.deps.grants.filter((g) => agent.grantRefs.includes(g.id));
+                      const grant = matchGrant(relevantGrants, effect);
+                      const token = grant ? process.env[grant.secret] : undefined;
+                      if (!grant || !token) {
+                        return {
+                          content: [
+                            { type: "text" as const, text: `Refused: grant "${grant?.id}" has no ${grant?.secret} set.` },
+                          ],
+                        };
+                      }
+
+                      try {
+                        await gitCloner.clone({
+                          remoteUrl: `https://x-access-token:${token}@github.com/${repo}.git`,
+                          targetDir: ctx.workspace,
+                        });
+                      } catch {
+                        // Never interpolate the caught error: RealGitCloner shells out via
+                        // execFile, and a failing `git clone` rejects with an Error whose
+                        // .message very likely echoes the full remote URL back — including
+                        // the credential-bearing token embedded in it above. Surfacing that
+                        // verbatim would leak the live token in plaintext. This collapses
+                        // "doesn't exist" and "some other failure" into one message
+                        // deliberately, the same tradeoff pushBranch's own catch makes.
+                        return {
+                          content: [
+                            {
+                              type: "text" as const,
+                              text: `Refused: clone of ${repo} failed — it may not exist yet, or another error occurred.`,
+                            },
+                          ],
+                        };
+                      }
+                      return { content: [{ type: "text" as const, text: `Cloned ${repo} into the workspace.` }] };
+                    },
+                  ),
+                ]
+              : []),
             ...(gitPusher
               ? [
                   tool(

@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakeGitCloner } from "../src/control/git-cloner.js";
 import { FakeGitPusher } from "../src/control/git-pusher.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { PendingStore } from "../src/control/pending.js";
@@ -1046,6 +1047,121 @@ describe("SdkRunner GitHub PR tools", () => {
 
     expect(github.merged).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
+  });
+
+  describe("cloneRepo", () => {
+    const GIT_PUSH_GRANT: Grant = { id: "builder-push", kind: "git-push", remote: "owner/repo", branches: ["agent/builder/*"], secret: "BUILDER_PUSH_TOKEN" };
+
+    function builderAgent(grantRefs: string[] = ["builder-push"]) {
+      return { ...AGENT, name: "builder", tier: "autonomous", approval: "auto", grantRefs } as unknown as AgentDef;
+    }
+
+    interface CloneRepoParams {
+      options: {
+        mcpServers: {
+          githubPr?: {
+            instance: { _registeredTools: Record<string, { handler: (input: unknown) => Promise<unknown> }> };
+          };
+        };
+      };
+    }
+    function cloneRepoHandler(params: CloneRepoParams): (input: unknown) => Promise<unknown> {
+      return params.options.mcpServers.githubPr!.instance._registeredTools.cloneRepo!.handler;
+    }
+
+    it("is not registered when gitCloner is not wired in, even with github present", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CloneRepoParams;
+      expect(params.options.mcpServers.githubPr!.instance._registeredTools.cloneRepo).toBeUndefined();
+    });
+
+    it("clones via GitCloner, with the credential embedded in the URL, when the same grant that authorises pushing matches", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("BUILDER_PUSH_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitCloner = new FakeGitCloner();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitCloner });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CloneRepoParams;
+
+      const result = await cloneRepoHandler(params)({ repo: "owner/repo" });
+
+      expect(gitCloner.cloned).toEqual([
+        { remoteUrl: "https://x-access-token:tok@github.com/owner/repo.git", targetDir: CTX.workspace },
+      ]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Cloned owner/repo") }] });
+    });
+
+    it("denies when no git-push grant matches the repo, and never calls GitCloner", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitCloner = new FakeGitCloner();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitCloner });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CloneRepoParams;
+
+      const result = await cloneRepoHandler(params)({ repo: "owner/other-repo" });
+
+      expect(gitCloner.cloned).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/no grant authorises/i) }] });
+    });
+
+    it("refuses with a clear message when the grant's secret env var isn't set, without calling GitCloner", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      // BUILDER_PUSH_TOKEN deliberately left unset.
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitCloner = new FakeGitCloner();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitCloner });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CloneRepoParams;
+
+      const result = await cloneRepoHandler(params)({ repo: "owner/repo" });
+
+      expect(gitCloner.cloned).toEqual([]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("BUILDER_PUSH_TOKEN") }] });
+    });
+
+    // Mirrors pushBranch's own equivalent test: RealGitCloner shells out via
+    // execFile, and a failing `git clone` rejects with an Error whose
+    // .message very likely includes the full argv — including the
+    // credential-bearing remoteUrl (https://x-access-token:<token>@github.com/...).
+    // The handler must never let that raw error's text reach the caller/transcript.
+    it("returns a sanitized refusal, never the raw error, when GitCloner.clone() throws", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("BUILDER_PUSH_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      const gitCloner = {
+        cloned: [] as unknown[],
+        clone: async () => {
+          throw new Error(
+            "fatal: repository 'https://x-access-token:tok@github.com/owner/repo.git/' not found",
+          );
+        },
+      };
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [GIT_PUSH_GRANT], pending: new PendingStore(dir), github, gitCloner });
+      await collect(runner.execute(builderAgent(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CloneRepoParams;
+
+      const result = await cloneRepoHandler(params)({ repo: "owner/repo" });
+
+      const text = (result as { content: { type: string; text: string }[] }).content[0]!.text;
+      expect(text).not.toContain("tok");
+      expect(text).not.toContain("fatal:");
+      expect(text).toMatch(/failed/i);
+    });
   });
 
   describe("pushBranch", () => {

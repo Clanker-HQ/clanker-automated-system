@@ -26,35 +26,30 @@ anything the `createRepo` token's own permissions grant it, and passing
 `public` fails every time with a 403 regardless of retrying. A product
 repo can be made public later, by an operator, once there's a reason to.
 
-If you're not sure whether a named repo already exists, don't check by
-probing GitHub yourself (`curl`, `wget`, `gh api`, `git ls-remote`, or
-anything else that reaches the network directly) — you hold no grant for
-that and it ends your run the same way reading `.env` does. Just try
-step 1's `git clone`: if the repo exists, it succeeds and you continue
-normally; if it fails because the repo doesn't exist, that failure is your
-answer — call `createRepo` at that point.
+If you're not sure whether a named repo already exists, call `cloneRepo`
+to check — never `curl`, `wget`, `gh api`, `git ls-remote`, or a raw
+`git clone` yourself; none of those carry a credential, and product repos
+are private, so any of them falls back to an interactive GitHub sign-in
+prompt that never completes unattended, ending your run the same way
+reading `.env` does. If the repo exists, `cloneRepo` succeeds and you
+continue normally; if it refuses, that's your answer — call `createRepo`
+at that point.
 
 ## How to work
 
 1. Your workspace may still hold files from a previous run — this directory
    is not automatically cleared between runs. Start by removing everything
    in it, including hidden files: `rm -rf ./* .[!.]* 2>/dev/null || true`.
-
-   If you just created the repo yourself via `createRepo` this run, it's
-   guaranteed empty — don't `git clone` it. Product repos are private, and
-   a bare `https://github.com/<owner>/<repo>.git` clone URL carries no
-   credential, so git falls back to an interactive sign-in prompt that
-   never completes unattended (you hold no grant to embed a token into
-   the URL yourself — that's exactly the `.env`/credential rule above).
-   Run `git init` locally instead, and use `main` as your branch name in
-   step 2 below — there's nothing to detect a default branch from yet.
-
-   Otherwise (an existing repo named in the task) clone it fresh:
-   `git clone --depth 1 https://github.com/<owner>/<repo>.git .`
+   Then call `cloneRepo` with the target repo (`owner/repo`). Never run
+   `git clone` yourself — same reasoning as above: it carries no
+   credential, and an unattended sign-in prompt is a dead end.
 2. Determine the repo's real default branch — never guess `main` or
-   `master` — unless you `git init`'d in step 1, in which case use `main`:
+   `master`:
    `git symbolic-ref refs/remotes/origin/HEAD` (strip the `refs/remotes/origin/`
-   prefix to get the branch name).
+   prefix to get the branch name). If you just created this repo via
+   `createRepo`, it's genuinely empty — that command has nothing to detect
+   and fails outright; that failure is your signal to use `main`, not a
+   problem to work around.
 3. Create a local branch under the `agent/builder/` namespace, named for
    what you're building, e.g. `agent/builder/add-rate-limit-header`.
 4. Make the described change. If it deletes or renames a file, Grep the
@@ -87,14 +82,15 @@ Never read `.env`, `grants.yaml`'s `secret` values, or any other credential
 file — those reads are blocked unconditionally and the block ends your run
 immediately, with nothing committed and no PR opened, even after real work
 (like a `createRepo` call) already happened. You never need to see a raw
-token: `createRepo`, `pushBranch`, and `openPR` already carry the
-credentials they need internally.
+token: `createRepo`, `cloneRepo`, `pushBranch`, and `openPR` already carry
+the credentials they need internally.
 
 The same applies to reaching the network directly from Bash — `curl`,
-`wget`, `gh api`, and similar are blocked the same way and end your run the
-same way, even mid-task after other steps already succeeded. `git clone`
-and the `createRepo`/`pushBranch`/`openPR` tools are the only sanctioned
-ways to touch GitHub; nothing else needs an outward call at all.
+`wget`, `gh api`, a raw `git clone`/`git ls-remote`, and similar are
+blocked the same way and end your run the same way, even mid-task after
+other steps already succeeded. `createRepo`/`cloneRepo`/`pushBranch`/
+`openPR` are the only sanctioned ways to touch GitHub; nothing else needs
+an outward call at all.
 
 If a task seems to require a credential or a network call those tools
 don't cover — provisioning a third-party service, setting a CI secret,
