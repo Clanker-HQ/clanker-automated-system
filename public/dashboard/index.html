@@ -69,7 +69,17 @@
       </table>
     </div>
   </section>
-  <section id="tab-runs" hidden><p>Loading…</p></section>
+  <section id="tab-runs" hidden>
+    <div class="card">
+      <table>
+        <thead><tr><th>Run</th><th>Status</th><th>Cost</th><th></th></tr></thead>
+        <tbody id="runs-body"></tbody>
+      </table>
+    </div>
+    <div class="card" id="run-detail" hidden>
+      <pre id="run-detail-body" style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; max-height: 50vh; overflow-y: auto;"></pre>
+    </div>
+  </section>
   <section id="tab-config" hidden><p>Loading…</p></section>
   <section id="tab-world" hidden><p>Loading…</p></section>
   <section id="tab-metrics" hidden><p>Loading…</p></section>
@@ -149,6 +159,40 @@
     }
   }
   loaders.tasks = loadTasks;
+
+  async function loadRuns() {
+    const res = await fetch("/api/runs?limit=20");
+    if (!res.ok) return;
+    const runs = await res.json();
+    const body = document.getElementById("runs-body");
+    body.innerHTML = runs.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.runId)}</td>
+        <td>${r.status}${r.verifiedOutcome && r.verifiedOutcome.verdict !== "achieved" ? ` (${r.verifiedOutcome.verdict})` : ""}</td>
+        <td>$${r.costUsd.toFixed(4)}</td>
+        <td><button class="action" data-detail="${r.runId}">View</button></td>
+      </tr>
+    `).join("");
+
+    for (const btn of body.querySelectorAll("[data-detail]")) {
+      btn.addEventListener("click", async () => {
+        const detailRes = await fetch(`/api/runs/${btn.dataset.detail}`);
+        if (!detailRes.ok) return;
+        const detail = await detailRes.json();
+        const lines = detail.transcript.map((line) => {
+          try {
+            const event = JSON.parse(line);
+            return `[${event.at}] ${event.type}: ${event.text ?? JSON.stringify(event)}`;
+          } catch {
+            return line;
+          }
+        });
+        document.getElementById("run-detail-body").textContent = `${detail.summary}\n\n${lines.join("\n")}`;
+        document.getElementById("run-detail").hidden = false;
+      });
+    }
+  }
+  loaders.runs = loadRuns;
 
   document.getElementById("task-create").addEventListener("click", async () => {
     const textEl = document.getElementById("task-text");
