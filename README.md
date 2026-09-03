@@ -475,9 +475,6 @@ See also `docs/superpowers/specs/2026-08-30-self-evaluation-design.md`.
 Still genuinely deferred:
 
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
-- **A dashboard.** Wanted eventually, but out of scope so far — the Discord
-  `!command` interface (`!status`, `!tasks`, `!runs`, etc.) covers everything
-  today, matching how the rest of this system works.
 - **The repo is real; the webhook and the builder's own token still aren't.**
   This system now lives at `Clanker-HQ/clanker-automated-system` on GitHub,
   and `GITHUB_PR_TOKEN`/`GITHUB_WEBHOOK_SECRET` are set, so `infra-repo`

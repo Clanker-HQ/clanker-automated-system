@@ -15,6 +15,7 @@ import { DiscordJsTransport } from "./control/discord-transport.js";
 import { RealGitPusher } from "./control/git-pusher.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
+import { DashboardServer } from "./control/dashboard-server.js";
 import { LemonSqueezyRevenueTransport } from "./control/lemonsqueezy-revenue-transport.js";
 import { FakeRevenueTransport, type RevenueTransport } from "./control/revenue-transport.js";
 import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
@@ -79,6 +80,9 @@ async function main(): Promise<void> {
   let githubToken: string;
   let webhookSecret: string;
   let webhookPort: number;
+  let dashboardUser: string | undefined;
+  let dashboardPassword: string | undefined;
+  let dashboardPort: number;
   let github: GithubApiTransport;
   let revenue: RevenueTransport;
   let revenueMode: string;
@@ -131,6 +135,9 @@ async function main(): Promise<void> {
     githubToken = mustEnv("GITHUB_PR_TOKEN");
     webhookSecret = mustEnv("GITHUB_WEBHOOK_SECRET");
     webhookPort = parsePort("WEBHOOK_PORT", process.env.WEBHOOK_PORT, 8787);
+    dashboardUser = process.env.DASHBOARD_USER;
+    dashboardPassword = process.env.DASHBOARD_PASSWORD;
+    dashboardPort = parsePort("DASHBOARD_PORT", process.env.DASHBOARD_PORT, 8788);
     github = new GithubApiTransport({ token: githubToken });
     // Optional, not mustEnv'd: revenue is unobservable without it, but a
     // missing key must not fail boot the same way a missing GITHUB_PR_TOKEN
@@ -331,6 +338,28 @@ async function main(): Promise<void> {
       console.error(error instanceof Error ? error.message : String(error));
     },
   );
+
+  if (dashboardUser && dashboardPassword) {
+    const dashboard = new DashboardServer({
+      user: dashboardUser,
+      password: dashboardPassword,
+      deps: {
+        tasks, runs: runStore, overrides, governor, breaker, world,
+        metrics: metricsStore, dispatcher, agents, dataDir: DATA_DIR,
+      },
+    });
+    void dashboard.listen(dashboardPort).then(
+      () => {
+        console.log(`[boot] dashboard listening on :${dashboardPort}`);
+      },
+      (error: unknown) => {
+        console.error(`\n[boot] Failed to start the dashboard on port ${dashboardPort}. No web dashboard will be available.\n`);
+        console.error(error instanceof Error ? error.message : String(error));
+      },
+    );
+  } else {
+    console.log("[boot] DASHBOARD_USER/DASHBOARD_PASSWORD not set — no dashboard server started");
+  }
 
   if (config.digest.enabled) {
     void import("./triggers/digest.js")
