@@ -42,7 +42,18 @@
   <button data-tab="metrics">Metrics</button>
 </nav>
 <main>
-  <section id="tab-status"><p>Loading…</p></section>
+  <section id="tab-status">
+    <div class="card">
+      <div class="row"><strong>State:</strong>&nbsp;<span id="status-state">—</span></div>
+      <div class="row"><strong>Budget:</strong>&nbsp;<span id="status-budget">—</span></div>
+      <div class="row"><strong>Concurrency:</strong>&nbsp;<span id="status-concurrency">—</span></div>
+      <div class="row"><strong>Quiet hours:</strong>&nbsp;<span id="status-quiet">—</span></div>
+      <div class="row"><strong>Circuit breaker:</strong>&nbsp;<span id="status-breaker">—</span></div>
+      <div class="row"><strong>Disabled agents:</strong>&nbsp;<span id="status-disabled">—</span></div>
+      <div class="row"><strong>Rate limit:</strong>&nbsp;<span id="status-ratelimit">—</span></div>
+      <div class="row"><strong>Tasks:</strong>&nbsp;<span id="status-tasks">—</span></div>
+    </div>
+  </section>
   <section id="tab-tasks" hidden><p>Loading…</p></section>
   <section id="tab-runs" hidden><p>Loading…</p></section>
   <section id="tab-config" hidden><p>Loading…</p></section>
@@ -68,6 +79,26 @@
       refreshTimer = setInterval(load, REFRESH_MS);
     }
   }
+
+  async function loadStatus() {
+    const res = await fetch("/api/status");
+    if (!res.ok) return;
+    const s = await res.json();
+    document.getElementById("status-state").textContent = s.stopped ? "STOPPED" : "running";
+    document.getElementById("status-budget").textContent = `$${s.spentTodayUsd.toFixed(2)} of $${s.dailyBudgetUsd}`;
+    document.getElementById("status-concurrency").textContent = s.maxConcurrent;
+    document.getElementById("status-quiet").textContent = s.quietHours
+      ? `${s.quietHours.from}-${s.quietHours.to} ${s.quietHours.timezone}${s.quietHoursActive ? " (active)" : ""}`
+      : "off";
+    document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
+    document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
+    document.getElementById("status-ratelimit").textContent = s.rateLimitUtilization === null
+      ? "no reading yet"
+      : `${Math.round(s.rateLimitUtilization * 100)}% (pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%)`;
+    const c = s.taskCounts;
+    document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
+  }
+  loaders.status = loadStatus;
 
   for (const btn of document.querySelectorAll("nav button")) {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
