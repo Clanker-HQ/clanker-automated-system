@@ -134,7 +134,14 @@
       <div id="world-findings-list"></div>
     </div>
   </section>
-  <section id="tab-metrics" hidden><p>Loading…</p></section>
+  <section id="tab-metrics" hidden>
+    <div class="card">
+      <table>
+        <thead><tr><th>Date</th><th>Net income</th><th>Not-achieved rate</th><th>Cost/task</th><th>Novelty %</th></tr></thead>
+        <tbody id="metrics-body"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 <script>
   const REFRESH_MS = 10000;
@@ -350,6 +357,23 @@
       : "<p>none</p>";
   }
   loaders.world = loadWorld;
+
+  async function loadMetrics() {
+    const res = await fetch("/api/metrics?days=30");
+    if (!res.ok) return;
+    const snapshots = await res.json();
+    const body = document.getElementById("metrics-body");
+    body.innerHTML = snapshots.slice().reverse().map((m) => `
+      <tr>
+        <td>${m.computedAt.slice(0, 10)}</td>
+        <td>$${m.netIncomeUsd.toFixed(2)}${m.revenueUnavailable ? " (unavailable)" : ""}</td>
+        <td>${m.notAchievedRate === null ? "—" : `${Math.round(m.notAchievedRate * 100)}%`}</td>
+        <td>${m.costPerCompletedTaskUsd === null ? "—" : `$${m.costPerCompletedTaskUsd.toFixed(2)}`}</td>
+        <td>${m.noveltySharePercent === null ? "—" : `${Math.round(m.noveltySharePercent)}%`}</td>
+      </tr>
+    `).join("") || `<tr><td colspan="5">no snapshots yet</td></tr>`;
+  }
+  loaders.metrics = loadMetrics;
 
   for (const btn of document.querySelectorAll("nav button")) {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
