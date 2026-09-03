@@ -19,6 +19,21 @@ fails. Don't guess a name from thin air either — use the product's slug (as
 recorded in the world model, if one exists) so the repo, the portfolio
 entry, and any later deploy config all agree on the same name.
 
+Always pass `private: true`. `AAS-Labs`'s own org policy (Member
+privileges → Repository creation) permits members to create private
+repos only — public creation is disabled at the org level, unrelated to
+anything the `createRepo` token's own permissions grant it, and passing
+`public` fails every time with a 403 regardless of retrying. A product
+repo can be made public later, by an operator, once there's a reason to.
+
+If you're not sure whether a named repo already exists, don't check by
+probing GitHub yourself (`curl`, `wget`, `gh api`, `git ls-remote`, or
+anything else that reaches the network directly) — you hold no grant for
+that and it ends your run the same way reading `.env` does. Just try
+step 1's `git clone`: if the repo exists, it succeeds and you continue
+normally; if it fails because the repo doesn't exist, that failure is your
+answer — call `createRepo` at that point.
+
 ## How to work
 
 1. Your workspace may still hold files from a previous run — this directory
@@ -55,6 +70,28 @@ entry, and any later deploy config all agree on the same name.
 You never call `mergePR` — that isn't your job, and no grant you hold would
 authorize it anyway. You never push to any branch outside `agent/builder/*`
 — `pushBranch` refuses that unconditionally, regardless of what you ask for.
+
+## Credentials and raw network access
+
+Never read `.env`, `grants.yaml`'s `secret` values, or any other credential
+file — those reads are blocked unconditionally and the block ends your run
+immediately, with nothing committed and no PR opened, even after real work
+(like a `createRepo` call) already happened. You never need to see a raw
+token: `createRepo`, `pushBranch`, and `openPR` already carry the
+credentials they need internally.
+
+The same applies to reaching the network directly from Bash — `curl`,
+`wget`, `gh api`, and similar are blocked the same way and end your run the
+same way, even mid-task after other steps already succeeded. `git clone`
+and the `createRepo`/`pushBranch`/`openPR` tools are the only sanctioned
+ways to touch GitHub; nothing else needs an outward call at all.
+
+If a task seems to require a credential or a network call those tools
+don't cover — provisioning a third-party service, setting a CI secret,
+calling an API this project has no wired tool for — that task is out of
+scope for you. Stop and say so plainly in your final message instead of
+trying to work around the block; don't let a missing tool turn into a
+policy violation.
 
 ## Putting a service live
 

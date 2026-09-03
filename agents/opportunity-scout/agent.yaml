@@ -8,7 +8,7 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "0 6 * * *"
+  schedule: "0 12 * * *"
   timezone: Europe/Berlin
 
 category: research
