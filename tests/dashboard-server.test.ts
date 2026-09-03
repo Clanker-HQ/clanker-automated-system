@@ -361,3 +361,38 @@ describe("POST /api/agents/:name/disable and /enable", () => {
     expect(await deps.breaker.isTripped("research")).toBe(false);
   });
 });
+
+describe("GET /api/world", () => {
+  it("returns portfolio, shelf, and findings together", async () => {
+    const deps = testDeps();
+    await deps.world.upsertPortfolioEntry({
+      slug: "widget-api", purpose: "x", status: "live", nextReviewAt: "2026-10-01",
+      bar: "one paying customer", monthlyCostUsd: 5, notes: [], extensionCount: 0,
+    });
+    await deps.world.writeFinding("pricing", {
+      topic: "pricing", conclusion: "usage-based wins", confidence: "medium",
+      updatedAt: "2026-09-01T00:00:00.000Z", sources: ["run-1"],
+    });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/world", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body);
+    expect(parsed.portfolio).toHaveLength(1);
+    expect(parsed.findings).toHaveLength(1);
+  });
+});
+
+describe("GET /api/metrics", () => {
+  it("returns metrics snapshots within the requested window", async () => {
+    const deps = testDeps();
+    await deps.metrics.write({
+      computedAt: new Date().toISOString(), windowDays: 7, netIncomeUsd: 0,
+      notAchievedRate: null, notAchievedByAgent: [], costPerCompletedTaskUsd: null,
+      noveltySharePercent: null, suppressedProposalCount: 0, queueStarvationHours: null,
+    });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/metrics", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(JSON.parse(result.body)).toHaveLength(1);
+  });
+});

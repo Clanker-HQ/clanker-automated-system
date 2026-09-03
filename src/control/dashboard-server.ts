@@ -306,6 +306,21 @@ export class DashboardServer {
         return json(200, { disabledAgents: [...disabled] });
       }
 
+      if (req.method === "GET" && req.path === "/api/world") {
+        const [portfolio, shelf, findings] = await Promise.all([
+          this.deps.world.readPortfolio(), this.deps.world.readShelf(), this.deps.world.listFindings(),
+        ]);
+        return json(200, { portfolio, shelf, findings });
+      }
+
+      if (req.method === "GET" && req.path === "/api/metrics") {
+        const all = await this.deps.metrics.listAll();
+        const daysParam = req.query.get("days");
+        const days = daysParam && Number.isInteger(Number(daysParam)) && Number(daysParam) > 0 ? Number(daysParam) : 30;
+        const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+        return json(200, all.filter((m) => new Date(m.computedAt).getTime() >= cutoff));
+      }
+
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };
     } catch (error) {
       console.error(`[dashboard] unhandled error handling ${req.method} ${req.path}`, error);
