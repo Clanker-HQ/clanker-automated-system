@@ -80,7 +80,43 @@
       <pre id="run-detail-body" style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; max-height: 50vh; overflow-y: auto;"></pre>
     </div>
   </section>
-  <section id="tab-config" hidden><p>Loading…</p></section>
+  <section id="tab-config" hidden>
+    <div class="card">
+      <div class="row"><strong>Run state:</strong>&nbsp;<span id="config-state">—</span>
+        <button class="action" id="config-stop">Stop</button>
+        <button class="action" id="config-resume">Resume</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <label>Daily budget ($)&nbsp;<input id="config-budget" type="number" style="width:6rem;"></label>
+        <button class="action" id="config-budget-save">Save</button>
+      </div>
+      <div class="row">
+        <label>Concurrency&nbsp;<input id="config-concurrency" type="number" style="width:5rem;"></label>
+        <button class="action" id="config-concurrency-save">Save</button>
+      </div>
+      <div class="row">
+        <label>Quiet hours&nbsp;<input id="config-quiet-from" placeholder="HH:MM" style="width:5rem;"></label>
+        -
+        <input id="config-quiet-to" placeholder="HH:MM" style="width:5rem;">
+        <input id="config-quiet-tz" placeholder="Area/City" style="width:10rem;">
+        <button class="action" id="config-quiet-save">Save</button>
+        <button class="action danger" id="config-quiet-off">Off</button>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="config-breaker"> Circuit breaker enabled</label>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <input id="config-agent-name" placeholder="agent name" style="width:12rem;">
+        <button class="action" id="config-agent-disable">Disable</button>
+        <button class="action" id="config-agent-enable">Enable</button>
+      </div>
+      <div id="config-disabled-list"></div>
+    </div>
+  </section>
   <section id="tab-world" hidden><p>Loading…</p></section>
   <section id="tab-metrics" hidden><p>Loading…</p></section>
 </main>
@@ -210,6 +246,70 @@
       alert(err.error || "Failed to create task");
     }
     loadTasks();
+  });
+
+  async function loadConfig() {
+    const res = await fetch("/api/config");
+    if (!res.ok) return;
+    const { resolved } = await res.json();
+    document.getElementById("config-state").textContent = resolved.stopped ? "STOPPED" : "running";
+    document.getElementById("config-budget").value = resolved.dailyBudgetUsd;
+    document.getElementById("config-concurrency").value = resolved.maxConcurrent;
+    if (resolved.quietHours) {
+      document.getElementById("config-quiet-from").value = resolved.quietHours.from;
+      document.getElementById("config-quiet-to").value = resolved.quietHours.to;
+      document.getElementById("config-quiet-tz").value = resolved.quietHours.timezone;
+    }
+    document.getElementById("config-breaker").checked = resolved.breakerEnabled;
+    document.getElementById("config-disabled-list").textContent = resolved.disabledAgents.length
+      ? `Disabled: ${resolved.disabledAgents.join(", ")}` : "No agents disabled";
+  }
+  loaders.config = loadConfig;
+
+  document.getElementById("config-stop").addEventListener("click", async () => {
+    await fetch("/api/stop", { method: "POST" });
+    loadConfig();
+  });
+  document.getElementById("config-resume").addEventListener("click", async () => {
+    await fetch("/api/resume", { method: "POST" });
+    loadConfig();
+  });
+  document.getElementById("config-budget-save").addEventListener("click", async () => {
+    const value = Number(document.getElementById("config-budget").value);
+    await fetch("/api/config/budget", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value }) });
+    loadConfig();
+  });
+  document.getElementById("config-concurrency-save").addEventListener("click", async () => {
+    const value = Number(document.getElementById("config-concurrency").value);
+    await fetch("/api/config/concurrency", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value }) });
+    loadConfig();
+  });
+  document.getElementById("config-quiet-save").addEventListener("click", async () => {
+    const from = document.getElementById("config-quiet-from").value;
+    const to = document.getElementById("config-quiet-to").value;
+    const timezone = document.getElementById("config-quiet-tz").value;
+    await fetch("/api/config/quiet-hours", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from, to, timezone }) });
+    loadConfig();
+  });
+  document.getElementById("config-quiet-off").addEventListener("click", async () => {
+    await fetch("/api/config/quiet-hours", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ off: true }) });
+    loadConfig();
+  });
+  document.getElementById("config-breaker").addEventListener("change", async (e) => {
+    await fetch("/api/config/breaker", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: e.target.checked }) });
+    loadConfig();
+  });
+  document.getElementById("config-agent-disable").addEventListener("click", async () => {
+    const name = document.getElementById("config-agent-name").value.trim();
+    if (!name) return;
+    await fetch(`/api/agents/${encodeURIComponent(name)}/disable`, { method: "POST" });
+    loadConfig();
+  });
+  document.getElementById("config-agent-enable").addEventListener("click", async () => {
+    const name = document.getElementById("config-agent-name").value.trim();
+    if (!name) return;
+    await fetch(`/api/agents/${encodeURIComponent(name)}/enable`, { method: "POST" });
+    loadConfig();
   });
 
   for (const btn of document.querySelectorAll("nav button")) {
