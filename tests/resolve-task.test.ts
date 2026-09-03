@@ -33,8 +33,13 @@ describe("resolveTaskByPrefix", () => {
     const b = await s.create({ text: "b", createdBy: "test" });
     // Every id starts with "", so this always matches everything currently in the store.
     const result = await resolveTaskByPrefix(s, "");
+    // Sorted the same way resolveTaskByPrefix sorts (createdAt, then id):
+    // a and b can land on the same millisecond createdAt (routinely does on
+    // a fast CI runner), so asserting creation order (a then b) is flaky —
+    // mirror the real tiebreak instead of assuming it.
+    const sorted = [a, b].sort((x, y) => x.createdAt.localeCompare(y.createdAt) || x.id.localeCompare(y.id));
     expect(result).toEqual({
-      error: `\`\` matches 2 tasks — be more specific: ${a.id.slice(0, 8)}, ${b.id.slice(0, 8)}`,
+      error: `\`\` matches 2 tasks — be more specific: ${sorted[0]!.id.slice(0, 8)}, ${sorted[1]!.id.slice(0, 8)}`,
       notFound: false,
     });
   });
