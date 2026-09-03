@@ -54,7 +54,21 @@
       <div class="row"><strong>Tasks:</strong>&nbsp;<span id="status-tasks">—</span></div>
     </div>
   </section>
-  <section id="tab-tasks" hidden><p>Loading…</p></section>
+  <section id="tab-tasks" hidden>
+    <div class="card">
+      <div class="row">
+        <input id="task-text" placeholder="New task text" style="flex:1; min-width:200px;">
+        <input id="task-priority" type="number" placeholder="priority (50)" style="width:8rem;">
+        <button class="action" id="task-create">Queue</button>
+      </div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Status</th><th>Priority</th><th>Text</th><th>Actions</th></tr></thead>
+        <tbody id="tasks-body"></tbody>
+      </table>
+    </div>
+  </section>
   <section id="tab-runs" hidden><p>Loading…</p></section>
   <section id="tab-config" hidden><p>Loading…</p></section>
   <section id="tab-world" hidden><p>Loading…</p></section>
@@ -99,6 +113,55 @@
     document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
   }
   loaders.status = loadStatus;
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  async function loadTasks() {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) return;
+    const tasks = await res.json();
+    const body = document.getElementById("tasks-body");
+    body.innerHTML = tasks.map((t) => `
+      <tr>
+        <td>${t.status}</td>
+        <td>${t.priority}</td>
+        <td>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</td>
+        <td>
+          ${t.status === "failed" ? `<button class="action" data-retry="${t.id}">Retry</button>` : ""}
+          ${t.status === "pending" ? `<button class="action danger" data-cancel="${t.id}">Cancel</button>` : ""}
+        </td>
+      </tr>
+    `).join("");
+
+    for (const btn of body.querySelectorAll("[data-retry]")) {
+      btn.addEventListener("click", async () => {
+        await fetch(`/api/tasks/${btn.dataset.retry}/retry`, { method: "POST" });
+        loadTasks();
+      });
+    }
+    for (const btn of body.querySelectorAll("[data-cancel]")) {
+      btn.addEventListener("click", async () => {
+        await fetch(`/api/tasks/${btn.dataset.cancel}/cancel`, { method: "POST" });
+        loadTasks();
+      });
+    }
+  }
+  loaders.tasks = loadTasks;
+
+  document.getElementById("task-create").addEventListener("click", async () => {
+    const textEl = document.getElementById("task-text");
+    const priorityEl = document.getElementById("task-priority");
+    const text = textEl.value.trim();
+    if (!text) return;
+    const body = { text };
+    if (priorityEl.value) body.priority = Number(priorityEl.value);
+    await fetch("/api/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    textEl.value = "";
+    priorityEl.value = "";
+    loadTasks();
+  });
 
   for (const btn of document.querySelectorAll("nav button")) {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
