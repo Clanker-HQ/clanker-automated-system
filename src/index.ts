@@ -12,6 +12,7 @@ import { buildSuccessorSuggester } from "./control/build-successor-suggester.js"
 import { buildTaskReviewer } from "./control/build-task-reviewer.js";
 import { Dispatcher } from "./control/dispatcher.js";
 import { DiscordJsTransport } from "./control/discord-transport.js";
+import { RealGitCloner } from "./control/git-cloner.js";
 import { RealGitPusher } from "./control/git-pusher.js";
 import { GithubApiTransport } from "./control/github-api-transport.js";
 import { PendingStore } from "./control/pending.js";
@@ -169,6 +170,7 @@ async function main(): Promise<void> {
     runner = buildRunner({
       grants, pending: new PendingStore(DATA_DIR), github,
       gitPusher: new RealGitPusher(),
+      gitCloner: new RealGitCloner(),
       tasks,
       taskReviewer: buildTaskReviewer(),
       memory,

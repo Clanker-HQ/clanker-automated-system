@@ -317,6 +317,23 @@ describe("detectOutwardEffect: pushBranch", () => {
   });
 });
 
+describe("detectOutwardEffect: cloneRepo", () => {
+  it("reports a git-push effect with no branch set", () => {
+    const effect = detectOutwardEffect("cloneRepo", { repo: "owner/repo" });
+    expect(effect).toEqual({
+      kind: "git-push",
+      description: "clone owner/repo",
+      target: "owner/repo",
+    });
+    expect(effect!.branch).toBeUndefined();
+  });
+
+  it("returns null when repo is missing or not a string", () => {
+    expect(detectOutwardEffect("cloneRepo", {})).toBeNull();
+    expect(detectOutwardEffect("cloneRepo", { repo: 1 })).toBeNull();
+  });
+});
+
 describe("matchGrant", () => {
   it("matches a wildcard github-pr grant against any repo", () => {
     const wildcard = parseGrants(
@@ -413,6 +430,16 @@ describe("matchGrant: git-push branch enforcement", () => {
   it("supports a glob pattern in branches, e.g. agent/builder/*", () => {
     const effect = detectOutwardEffect("pushBranch", { repo: "owner/repo", branch: "agent/builder/deeply/nested-slug" })!;
     expect(matchGrant([BUILDER_PUSH], effect)).toBe(BUILDER_PUSH);
+  });
+
+  it("matches a cloneRepo effect against the same grant that authorises pushing, ignoring branches entirely", () => {
+    const effect = detectOutwardEffect("cloneRepo", { repo: "owner/repo" })!;
+    expect(matchGrant([BUILDER_PUSH], effect)).toBe(BUILDER_PUSH);
+  });
+
+  it("rejects a cloneRepo effect whose repo doesn't match the grant's remote", () => {
+    const effect = detectOutwardEffect("cloneRepo", { repo: "owner/other-repo" })!;
+    expect(matchGrant([BUILDER_PUSH], effect)).toBeNull();
   });
 });
 
