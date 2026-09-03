@@ -157,9 +157,14 @@
     if (!text) return;
     const body = { text };
     if (priorityEl.value) body.priority = Number(priorityEl.value);
-    await fetch("/api/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    textEl.value = "";
-    priorityEl.value = "";
+    const res = await fetch("/api/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (res.ok) {
+      textEl.value = "";
+      priorityEl.value = "";
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || "Failed to create task");
+    }
     loadTasks();
   });
 
