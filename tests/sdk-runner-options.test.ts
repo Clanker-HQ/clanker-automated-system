@@ -1382,6 +1382,35 @@ describe("SdkRunner GitHub PR tools", () => {
       expect(github.createdPullRequests).toEqual([]);
       expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/agent\/builder\//) }] });
     });
+
+    it("routes through githubForToken's transport, bound to the matching git-push grant's secret, not the fixed github", async () => {
+      // Same regression as createRepo's equivalent test — openPR has no
+      // decide() gate of its own, but still needs the RIGHT credential, not
+      // the fixed `github` (GITHUB_PR_TOKEN). It reuses whichever git-push
+      // grant would have authorised pushBranch for this repo/branch.
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("GITHUB_PRODUCTS_TOKEN", "the-real-products-token");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const pushGrant: Grant = {
+        id: "products-push", kind: "git-push", remote: "AAS-Labs/*", branches: ["agent/builder/*"], secret: "GITHUB_PRODUCTS_TOKEN",
+      };
+      const wrongTransport = new FakeGithubTransport();
+      const rightTransport = new FakeGithubTransport();
+      const githubForToken = vi.fn((token: string) => (token === "the-real-products-token" ? rightTransport : wrongTransport));
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const agent = { ...AGENT, name: "builder", tier: "autonomous", approval: "auto", grantRefs: ["products-push"] } as unknown as AgentDef;
+      const runner = new SdkRunner({ grants: [pushGrant], pending: new PendingStore(dir), github: wrongTransport, githubForToken });
+      await collect(runner.execute(agent, CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+      await openPrHandler(params)({ repo: "AAS-Labs/pilot-01", head: "agent/builder/add-x", base: "main", title: "t", body: "b" });
+
+      expect(githubForToken).toHaveBeenCalledWith("the-real-products-token");
+      expect(rightTransport.createdPullRequests).toEqual([
+        { repo: "AAS-Labs/pilot-01", head: "agent/builder/add-x", base: "main", title: "t", body: "b" },
+      ]);
+      expect(wrongTransport.createdPullRequests).toEqual([]);
+    });
   });
 
   describe("createRepo", () => {
@@ -1425,6 +1454,34 @@ describe("SdkRunner GitHub PR tools", () => {
 
       expect(github.createdRepos).toEqual([{ org: "AAS-Labs", name: "pilot-01", private: true, description: "First product." }]);
       expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Created AAS-Labs/pilot-01") }] });
+    });
+
+    it("routes through githubForToken's transport, bound to the matched grant's own secret, not the fixed github", async () => {
+      // Regression test for a real bug: createRepo/openPR used to call the
+      // single `github` transport unconditionally — permanently bound to
+      // GITHUB_PR_TOKEN (the infra-repo review pipeline's credential) — no
+      // matter which grant/token actually authorised the effect. A builder
+      // task creating an AAS-Labs repo would silently make the API call with
+      // the wrong credential, producing a 403/404 indistinguishable from a
+      // genuine permission problem — which is exactly what happened in
+      // production (chased for a full session as a token-scoping issue
+      // before this misrouting was found).
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("GITHUB_PRODUCTS_TOKEN", "the-real-products-token");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const wrongTransport = new FakeGithubTransport(); // stands in for the GITHUB_PR_TOKEN-bound `github`
+      const rightTransport = new FakeGithubTransport(); // what githubForToken should hand back for GITHUB_PRODUCTS_TOKEN
+      const githubForToken = vi.fn((token: string) => (token === "the-real-products-token" ? rightTransport : wrongTransport));
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({ grants: [PROVISION_GRANT], pending: new PendingStore(dir), github: wrongTransport, githubForToken });
+      await collect(runner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+
+      await createRepoHandler(params)({ org: "AAS-Labs", name: "pilot-01", private: true });
+
+      expect(githubForToken).toHaveBeenCalledWith("the-real-products-token");
+      expect(rightTransport.createdRepos).toEqual([{ org: "AAS-Labs", name: "pilot-01", private: true }]);
+      expect(wrongTransport.createdRepos).toEqual([]);
     });
 
     it("refuses when no provision grant matches the target org, without calling GithubTransport", async () => {
