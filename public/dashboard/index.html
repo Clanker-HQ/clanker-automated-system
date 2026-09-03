@@ -117,7 +117,23 @@
       <div id="config-disabled-list"></div>
     </div>
   </section>
-  <section id="tab-world" hidden><p>Loading…</p></section>
+  <section id="tab-world" hidden>
+    <div class="card">
+      <h3>Portfolio</h3>
+      <table>
+        <thead><tr><th>Slug</th><th>Status</th><th>Next review</th><th>Monthly cost</th></tr></thead>
+        <tbody id="world-portfolio-body"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Shelf</h3>
+      <ul id="world-shelf-list"></ul>
+    </div>
+    <div class="card">
+      <h3>Findings</h3>
+      <div id="world-findings-list"></div>
+    </div>
+  </section>
   <section id="tab-metrics" hidden><p>Loading…</p></section>
 </main>
 <script>
@@ -311,6 +327,29 @@
     await fetch(`/api/agents/${encodeURIComponent(name)}/enable`, { method: "POST" });
     loadConfig();
   });
+
+  async function loadWorld() {
+    const res = await fetch("/api/world");
+    if (!res.ok) return;
+    const { portfolio, shelf, findings } = await res.json();
+
+    document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
+      <tr><td>${escapeHtml(p.slug)}</td><td>${p.status}</td><td>${p.nextReviewAt}</td><td>$${p.monthlyCostUsd}</td></tr>
+    `).join("") || `<tr><td colspan="4">none</td></tr>`;
+
+    document.getElementById("world-shelf-list").innerHTML = shelf.length
+      ? shelf.map((s) => `<li>${escapeHtml(s.summary)} — <em>${escapeHtml(s.reason)}</em></li>`).join("")
+      : "<li>none</li>";
+
+    document.getElementById("world-findings-list").innerHTML = findings.length
+      ? findings.map((f) => `
+          <div class="row" style="align-items:flex-start;">
+            <strong>${escapeHtml(f.topic)}</strong> (${f.confidence}):&nbsp;${escapeHtml(f.conclusion)}
+          </div>
+        `).join("")
+      : "<p>none</p>";
+  }
+  loaders.world = loadWorld;
 
   for (const btn of document.querySelectorAll("nav button")) {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
