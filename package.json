@@ -6,7 +6,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "tsx --env-file-if-exists=.env src/index.ts",
+    "start": "tsx scripts/supervise.ts",
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
