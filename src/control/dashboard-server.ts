@@ -282,6 +282,30 @@ export class DashboardServer {
         return json(200, { breakerEnabled: payload.enabled });
       }
 
+      const agentDisableMatch = req.path.match(/^\/api\/agents\/([^/]+)\/disable$/);
+      if (req.method === "POST" && agentDisableMatch) {
+        const name = decodeURIComponent(agentDisableMatch[1]!);
+        if (!this.deps.agents.some((a) => a.name === name)) {
+          return json(404, { error: `No agent named "${name}" is loaded.` });
+        }
+        const overrides = await this.deps.overrides.read();
+        const disabled = new Set(overrides.disabledAgents ?? []);
+        disabled.add(name);
+        await this.deps.overrides.set("disabledAgents", [...disabled], "dashboard");
+        return json(200, { disabledAgents: [...disabled] });
+      }
+
+      const agentEnableMatch = req.path.match(/^\/api\/agents\/([^/]+)\/enable$/);
+      if (req.method === "POST" && agentEnableMatch) {
+        const name = decodeURIComponent(agentEnableMatch[1]!);
+        const overrides = await this.deps.overrides.read();
+        const disabled = new Set(overrides.disabledAgents ?? []);
+        disabled.delete(name);
+        await this.deps.overrides.set("disabledAgents", [...disabled], "dashboard");
+        await this.deps.breaker.reset(name);
+        return json(200, { disabledAgents: [...disabled] });
+      }
+
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };
     } catch (error) {
       console.error(`[dashboard] unhandled error handling ${req.method} ${req.path}`, error);

@@ -325,3 +325,39 @@ describe("POST /api/config/breaker", () => {
     expect((await deps.overrides.read()).breakerEnabled).toBe(false);
   });
 });
+
+describe("POST /api/agents/:name/disable and /enable", () => {
+  it("disables a known agent", async () => {
+    const deps = testDeps();
+    deps.agents = [{ name: "research" } as AgentDef];
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/agents/research/disable", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    expect((await deps.overrides.read()).disabledAgents).toEqual(["research"]);
+  });
+
+  it("refuses to disable an unknown agent name", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/agents/nope/disable", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(404);
+  });
+
+  it("re-enables an agent and resets its breaker", async () => {
+    const deps = testDeps();
+    deps.agents = [{ name: "research" } as AgentDef];
+    await deps.overrides.set("disabledAgents", ["research"], "test");
+    await deps.breaker.recordResult("research", "failed");
+    await deps.breaker.recordResult("research", "failed");
+    await deps.breaker.recordResult("research", "failed");
+    expect(await deps.breaker.isTripped("research")).toBe(true);
+
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/agents/research/enable", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    expect((await deps.overrides.read()).disabledAgents).toEqual([]);
+    expect(await deps.breaker.isTripped("research")).toBe(false);
+  });
+});
