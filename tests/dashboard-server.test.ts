@@ -1,5 +1,6 @@
 // tests/dashboard-server.test.ts
 import { existsSync, mkdtempSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -108,6 +109,43 @@ describe("DashboardServer CSRF protection", () => {
       originHeader: "https://evil.example", hostHeader: "localhost:5177",
     });
     expect(result.status).toBe(200);
+  });
+});
+
+describe("DashboardServer.listen() raw HTTP handling", () => {
+  it("responds 400 instead of crashing the process on a request-target new URL() rejects", async () => {
+    const dashboard = server();
+    await dashboard.listen(0);
+    const port = (dashboard["server"] as any)?.address()?.port;
+    expect(port).toBeGreaterThan(0);
+
+    try {
+      // "//" is a single token Node's own HTTP parser accepts as req.url, but
+      // `new URL("//", "http://localhost")` throws "Invalid URL" — this used
+      // to escape as an uncaught exception and kill the whole process.
+      const response = await new Promise<{ status: number }>((resolve, reject) => {
+        const req = request({ hostname: "localhost", port, path: "//", method: "GET" }, (res) => {
+          res.resume();
+          res.on("end", () => resolve({ status: res.statusCode || 0 }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      expect(response.status).toBe(400);
+
+      // The server must still be alive and serving normal requests afterward.
+      const followUp = await new Promise<{ status: number }>((resolve, reject) => {
+        const req = request({ hostname: "localhost", port, path: "/api/status", method: "GET", headers: { authorization: AUTH } }, (res) => {
+          res.resume();
+          res.on("end", () => resolve({ status: res.statusCode || 0 }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      expect(followUp.status).toBe(200);
+    } finally {
+      await dashboard.close();
+    }
   });
 });
 
