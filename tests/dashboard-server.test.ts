@@ -68,6 +68,49 @@ describe("DashboardServer auth", () => {
   });
 });
 
+describe("DashboardServer CSRF protection", () => {
+  it("rejects a POST whose Origin doesn't match the request's Host", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/stop", query: new URLSearchParams(), authHeader: AUTH, body: "",
+      originHeader: "https://evil.example", hostHeader: "localhost:5177",
+    });
+    expect(result.status).toBe(403);
+  });
+
+  it("allows a POST whose Origin matches the request's Host", async () => {
+    const deps = testDeps();
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/stop", query: new URLSearchParams(), authHeader: AUTH, body: "",
+      originHeader: "http://localhost:5177", hostHeader: "localhost:5177",
+    });
+    expect(result.status).toBe(200);
+  });
+
+  it("allows a POST with no Origin header at all (curl, non-browser clients)", async () => {
+    const deps = testDeps();
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/stop", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+  });
+
+  it("rejects a POST with an unparseable Origin header", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/stop", query: new URLSearchParams(), authHeader: AUTH, body: "",
+      originHeader: "not-a-url", hostHeader: "localhost:5177",
+    });
+    expect(result.status).toBe(403);
+  });
+
+  it("never applies the Origin check to GET requests", async () => {
+    const result = await server().handleRequest({
+      method: "GET", path: "/api/status", query: new URLSearchParams(), authHeader: AUTH, body: "",
+      originHeader: "https://evil.example", hostHeader: "localhost:5177",
+    });
+    expect(result.status).toBe(200);
+  });
+});
+
 describe("GET /api/status", () => {
   it("returns governor status plus task counts by status", async () => {
     const deps = testDeps();
@@ -342,6 +385,20 @@ describe("POST /api/agents/:name/disable and /enable", () => {
       method: "POST", path: "/api/agents/nope/disable", query: new URLSearchParams(), authHeader: AUTH, body: "",
     });
     expect(result.status).toBe(404);
+  });
+
+  it("rejects a path-traversal agent name on disable", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/agents/..%2f..%2fx/disable", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(400);
+  });
+
+  it("rejects a path-traversal agent name on enable", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/agents/..%2f..%2fx/enable", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(400);
   });
 
   it("re-enables an agent and resets its breaker", async () => {

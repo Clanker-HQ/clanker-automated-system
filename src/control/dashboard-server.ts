@@ -34,6 +34,10 @@ export interface DashboardRequest {
   query: URLSearchParams;
   authHeader: string | undefined;
   body: string;
+  /** `Origin` header, when the client sent one. Absent for non-browser clients (curl, tests). */
+  originHeader?: string;
+  /** `Host` header the request was addressed to — compared against `originHeader` for CSRF protection. */
+  hostHeader?: string;
 }
 
 export interface DashboardResponse {
@@ -75,6 +79,31 @@ const UNAUTHORIZED: DashboardResponse = {
   body: "unauthorized",
 };
 
+const CROSS_ORIGIN_BLOCKED: DashboardResponse = {
+  status: 403,
+  headers: { "content-type": "text/plain" },
+  body: "cross-origin request blocked",
+};
+
+/**
+ * HTTP Basic Auth gives zero CSRF protection on its own — a browser attaches
+ * cached credentials to any request to this origin, including one launched
+ * from a cross-site auto-submitting form. Browsers send `Origin` on every
+ * state-changing (non-GET) fetch/form request, so comparing it against the
+ * request's own `Host` is the standard pragmatic mitigation. A request with
+ * no `Origin` header at all (curl, server-to-server, some legitimate
+ * same-origin requests) is allowed through — this is a mitigation, not a
+ * hard guarantee.
+ */
+function isCrossOriginPost(originHeader: string | undefined, hostHeader: string | undefined): boolean {
+  if (!originHeader) return false;
+  try {
+    return new URL(originHeader).host !== hostHeader;
+  } catch {
+    return true; // an unparseable Origin can't be verified same-origin — treat it as cross-origin.
+  }
+}
+
 export class DashboardServer {
   private readonly user: string;
   private readonly password: string;
@@ -92,6 +121,10 @@ export class DashboardServer {
   /** Pure request handling, no real HTTP involved — exactly like WebhookReceiver.handleRequest. */
   async handleRequest(req: DashboardRequest): Promise<DashboardResponse> {
     if (!checkAuth(req.authHeader, this.user, this.password)) return UNAUTHORIZED;
+
+    if (req.method !== "GET" && isCrossOriginPost(req.originHeader, req.hostHeader)) {
+      return CROSS_ORIGIN_BLOCKED;
+    }
 
     // Every route below (added in later tasks) lives inside this try block —
     // unlike WebhookReceiver, whose handler calls are already isolated by
@@ -290,6 +323,7 @@ export class DashboardServer {
       const agentDisableMatch = req.path.match(/^\/api\/agents\/([^/]+)\/disable$/);
       if (req.method === "POST" && agentDisableMatch) {
         const name = decodeURIComponent(agentDisableMatch[1]!);
+        if (!/^[\w-]+$/.test(name)) return json(400, { error: `Invalid agent name: "${name}"` });
         if (!this.deps.agents.some((a) => a.name === name)) {
           return json(404, { error: `No agent named "${name}" is loaded.` });
         }
@@ -303,6 +337,7 @@ export class DashboardServer {
       const agentEnableMatch = req.path.match(/^\/api\/agents\/([^/]+)\/enable$/);
       if (req.method === "POST" && agentEnableMatch) {
         const name = decodeURIComponent(agentEnableMatch[1]!);
+        if (!/^[\w-]+$/.test(name)) return json(400, { error: `Invalid agent name: "${name}"` });
         const overrides = await this.deps.overrides.read();
         const disabled = new Set(overrides.disabledAgents ?? []);
         disabled.delete(name);
@@ -377,6 +412,8 @@ export class DashboardServer {
           query: url.searchParams,
           authHeader: req.headers.authorization,
           body: Buffer.concat(chunks).toString("utf8"),
+          originHeader: req.headers.origin,
+          hostHeader: req.headers.host,
         }).then(({ status, headers, body }) => {
           res.writeHead(status, headers ?? { "content-type": "text/plain" });
           res.end(body);
