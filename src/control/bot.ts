@@ -5,6 +5,7 @@ import type { AgentDef } from "../registry.js";
 import { QuietHoursSchema } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import { formatZodError } from "../errors.js";
+import { resolveTaskByPrefix } from "./resolve-task.js";
 import type { GovernorStatus } from "../governor.js";
 import type { RunResult, RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
@@ -304,17 +305,6 @@ export class DiscordBot {
     }
   }
 
-  /** Shared by `!result`/`!retry`/`!cancel`: resolves the short id `!tasks` shows (or a full id) to exactly one task. */
-  private async resolveTaskByPrefix(prefix: string): Promise<{ task: Task } | { error: string }> {
-    const matches = await this.tasks.findByPrefix(prefix);
-    if (matches.length === 0) return { error: `No task found starting with \`${prefix}\`.` };
-    if (matches.length > 1) {
-      const ids = matches.map((t) => t.id.slice(0, 8)).join(", ");
-      return { error: `\`${prefix}\` matches ${matches.length} tasks — be more specific: ${ids}` };
-    }
-    return { task: matches[0]! };
-  }
-
   private async handleCommand(msg: IncomingMessage): Promise<void> {
     const [command, ...rest] = msg.content.trim().split(/\s+/);
     const arg = rest.join(" ");
@@ -461,14 +451,14 @@ export class DiscordBot {
       case "!result": {
         const prefix = arg.trim();
         if (!prefix) return void reply("Usage: `!result <task-id-or-prefix>` (the short id `!tasks` shows works)");
-        const resolved = await this.resolveTaskByPrefix(prefix);
+        const resolved = await resolveTaskByPrefix(this.tasks, prefix);
         if ("error" in resolved) return void reply(resolved.error);
         return void reply(formatTaskDetail(resolved.task));
       }
       case "!retry": {
         const prefix = arg.trim();
         if (!prefix) return void reply("Usage: `!retry <task-id-or-prefix>`");
-        const resolved = await this.resolveTaskByPrefix(prefix);
+        const resolved = await resolveTaskByPrefix(this.tasks, prefix);
         if ("error" in resolved) return void reply(resolved.error);
         const { task } = resolved;
         if (task.status !== "failed") {
@@ -491,7 +481,7 @@ export class DiscordBot {
       case "!cancel": {
         const prefix = arg.trim();
         if (!prefix) return void reply("Usage: `!cancel <task-id-or-prefix>`");
-        const resolved = await this.resolveTaskByPrefix(prefix);
+        const resolved = await resolveTaskByPrefix(this.tasks, prefix);
         if ("error" in resolved) return void reply(resolved.error);
         const { task } = resolved;
         // Only "pending": a running task has no cancellation hook today, and
