@@ -1,5 +1,5 @@
 // tests/dashboard-server.test.ts
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -229,5 +229,29 @@ describe("GET /api/runs/:id", () => {
       method: "GET", path: "/api/runs/nope", query: new URLSearchParams(), authHeader: AUTH, body: "",
     });
     expect(result.status).toBe(404);
+  });
+});
+
+describe("GET /api/config", () => {
+  it("returns raw overrides plus resolved governor settings", async () => {
+    const deps = testDeps();
+    await deps.overrides.set("dailyBudgetUsd", 42, "test");
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/config", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body);
+    expect(parsed.overrides.dailyBudgetUsd).toBe(42);
+    expect(parsed.resolved.dailyBudgetUsd).toBe(42);
+  });
+});
+
+describe("POST /api/stop and /api/resume", () => {
+  it("sets and clears the STOP sentinel file", async () => {
+    const deps = testDeps();
+    await server(deps).handleRequest({ method: "POST", path: "/api/stop", query: new URLSearchParams(), authHeader: AUTH, body: "" });
+    expect(existsSync(join(deps.dataDir, "STOP"))).toBe(true);
+
+    await server(deps).handleRequest({ method: "POST", path: "/api/resume", query: new URLSearchParams(), authHeader: AUTH, body: "" });
+    expect(existsSync(join(deps.dataDir, "STOP"))).toBe(false);
   });
 });

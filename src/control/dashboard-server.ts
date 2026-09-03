@@ -1,5 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { AgentDef } from "../registry.js";
 import type { RunStore } from "../run-store.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
@@ -190,6 +192,21 @@ export class DashboardServer {
         } catch {
           return json(404, { error: `No run found with id "${runDetailMatch[1]}".` });
         }
+      }
+
+      if (req.method === "GET" && req.path === "/api/config") {
+        return json(200, { overrides: await this.deps.overrides.read(), resolved: await this.deps.governor.status() });
+      }
+
+      if (req.method === "POST" && req.path === "/api/stop") {
+        await mkdir(this.deps.dataDir, { recursive: true });
+        await writeFile(join(this.deps.dataDir, "STOP"), "");
+        return json(200, { stopped: true });
+      }
+
+      if (req.method === "POST" && req.path === "/api/resume") {
+        await rm(join(this.deps.dataDir, "STOP"), { force: true });
+        return json(200, { stopped: false });
       }
 
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };
