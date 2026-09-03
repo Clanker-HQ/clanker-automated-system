@@ -8,6 +8,7 @@ import type { BreakerStore } from "../state/breaker.js";
 import type { MetricsStore } from "../state/metrics-store.js";
 import type { WorldModel } from "../world/world-model.js";
 import type { TaskStore } from "./task-store.js";
+import { resolveTaskByPrefix } from "./resolve-task.js";
 
 export interface DashboardDeps {
   tasks: TaskStore;
@@ -102,6 +103,22 @@ export class DashboardServer {
         }
         return json(200, { ...status, taskCounts: counts });
       }
+
+      if (req.method === "GET" && req.path === "/api/tasks") {
+        const all = await this.deps.tasks.list();
+        const active = all
+          .filter((t) => t.status === "pending" || t.status === "queued" || t.status === "running" || t.status === "waiting")
+          .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
+        return json(200, active);
+      }
+
+      const taskDetailMatch = req.path.match(/^\/api\/tasks\/([^/]+)$/);
+      if (req.method === "GET" && taskDetailMatch) {
+        const resolved = await resolveTaskByPrefix(this.deps.tasks, taskDetailMatch[1]!);
+        if ("error" in resolved) return json(resolved.notFound ? 404 : 409, { error: resolved.error });
+        return json(200, resolved.task);
+      }
+
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };
     } catch (error) {
       console.error(`[dashboard] unhandled error handling ${req.method} ${req.path}`, error);

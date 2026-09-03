@@ -98,3 +98,38 @@ describe("GET /api/status", () => {
     }
   });
 });
+
+describe("GET /api/tasks", () => {
+  it("lists only active tasks, highest priority first, excluding finished ones", async () => {
+    const deps = testDeps();
+    const low = await deps.tasks.create({ text: "low", createdBy: "test", priority: 10 });
+    const high = await deps.tasks.create({ text: "high", createdBy: "test", priority: 90 });
+    const done = await deps.tasks.create({ text: "done", createdBy: "test" });
+    await deps.tasks.update(done.id, { status: "done" });
+
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/tasks", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body) as { id: string }[];
+    expect(parsed.map((t) => t.id)).toEqual([high.id, low.id]);
+  });
+});
+
+describe("GET /api/tasks/:id", () => {
+  it("resolves a short id prefix to the matching task", async () => {
+    const deps = testDeps();
+    const task = await deps.tasks.create({ text: "x", createdBy: "test" });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: `/api/tasks/${task.id.slice(0, 8)}`, query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body).id).toBe(task.id);
+  });
+
+  it("returns 404 when no task matches", async () => {
+    const result = await server().handleRequest({
+      method: "GET", path: "/api/tasks/nope", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(404);
+  });
+});
