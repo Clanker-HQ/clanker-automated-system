@@ -6,146 +6,396 @@
 <title>Clanker Dashboard</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e6e8ec; --muted: #9aa1ad;
-    --accent: #5b8cff; --danger: #ff6161; --good: #4fd18b;
+    --bg: #070b0d;
+    --surface: #101c20;
+    --surface-raised: #17262b;
+    --border: #24424a;
+    --border-strong: #3a6670;
+    --text: #eaf6f7;
+    --text-muted: #8fb3ba;
+    --text-dim: #4f6b70;
+    --accent: #22e0d8;
+    --accent-strong: #5aede6;
+    --accent-ink: #012322;
+    --good: #6ee089;
+    --bad: #ff5577;
+    --bad-ink: #2e0410;
+    --accent-rgb: 34, 224, 216;
+    --good-rgb: 110, 224, 137;
+    --bad-rgb: 255, 85, 119;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif;
+    --font-mono: "SF Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; }
-  header { padding: 1rem; border-bottom: 1px solid var(--border); }
-  header h1 { margin: 0; font-size: 1.1rem; }
-  nav { display: flex; gap: 0.5rem; padding: 0.5rem 1rem; border-bottom: 1px solid var(--border); overflow-x: auto; }
-  nav button { background: none; border: 1px solid var(--border); color: var(--muted); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; white-space: nowrap; font-size: 0.9rem; }
-  nav button.active { background: var(--accent); color: white; border-color: var(--accent); }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 13.5px; }
+  header { display: flex; align-items: center; gap: 0.6rem; padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.01em; }
+  header .dot { background: var(--good); }
+
+  nav { display: flex; gap: 0; padding: 0 0.5rem; border-bottom: 1px solid var(--border); background: var(--surface); overflow-x: auto; }
+  nav button {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 0.4rem;
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--text-muted); padding: 0.65rem 0.9rem; cursor: pointer;
+    font: inherit; font-size: 0.85rem; white-space: nowrap;
+  }
+  nav button { transition: color 0.15s ease, border-color 0.15s ease; }
+  nav button:hover { color: var(--text); }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  nav .nav-icon { display: none; width: 16px; height: 16px; flex: 0 0 auto; }
+  nav .nav-icon svg { display: block; width: 100%; height: 100%; }
+
   main { padding: 1rem; max-width: 900px; margin: 0 auto; }
   section[hidden] { display: none; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1rem 1.15rem; margin-bottom: 1rem; overflow-x: auto; }
+  .card-title { font-size: 0.8rem; font-weight: 600; color: var(--text); margin: 0 0 0.75rem; }
+
+  .tile-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px; background: var(--border); border: 1px solid var(--border);
+    border-radius: 16px; overflow: hidden; margin-bottom: 1rem;
+  }
+  .tile { background: var(--surface); padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+  .tile-wide { grid-column: 1 / -1; }
+  .tile-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+  .tile-value-row { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .tile-value-text { font-family: var(--font-mono); font-size: 1.1rem; font-weight: 600; color: var(--text); }
+  .tile-value-text--sm { font-size: 0.88rem; font-weight: 500; }
+  .tile-delta { font-size: 0.72rem; font-family: var(--font-mono); }
+  .tile-delta-good { color: var(--good); }
+  .tile-delta-bad { color: var(--bad); }
+
+  .skel:empty {
+    display: inline-block; width: 4.5em; height: 0.9em; border-radius: 3px;
+    background: linear-gradient(90deg, var(--surface-raised) 25%, var(--border-strong) 37%, var(--surface-raised) 63%);
+    background-size: 200% 100%; animation: shimmer 1.3s ease-in-out infinite; vertical-align: middle;
+  }
+  .skel-bar {
+    display: block; height: 0.85em; border-radius: 3px;
+    background: linear-gradient(90deg, var(--surface-raised) 25%, var(--border-strong) 37%, var(--surface-raised) 63%);
+    background-size: 200% 100%; animation: shimmer 1.3s ease-in-out infinite;
+  }
+  .skel-bar--sm { width: 35%; }
+  .skel-bar--md { width: 60%; }
+  .skel-bar--lg { width: 85%; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  .empty-state { color: var(--text-muted); font-size: 0.85rem; padding: 0.4rem 0; font-style: italic; }
+
+  .notice {
+    display: flex; align-items: center; gap: 0.75rem; justify-content: space-between;
+    border-left: 3px solid var(--bad); background: var(--surface-raised); color: var(--text);
+    padding: 0.65rem 0.85rem; border-radius: 0 10px 10px 0; margin-bottom: 1rem; font-size: 0.82rem;
+  }
+  .notice[hidden] { display: none; }
+
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); flex: 0 0 auto; }
+  .dot-good { background: var(--good); }
+  .dot-bad { background: var(--bad); }
+  .dot-warn { background: var(--accent); }
+  .dot-neutral { background: var(--text-dim); }
+  .dot-pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(var(--good-rgb), 0.45); }
+    50% { box-shadow: 0 0 0 4px rgba(var(--good-rgb), 0); }
+  }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.79rem; font-weight: 500;
+    padding: 0.18rem 0.65rem 0.18rem 0.5rem; border-radius: 999px;
+  }
+  .chip .dot { width: 6px; height: 6px; }
+  .chip-good { background: rgba(var(--good-rgb), 0.14); color: var(--good); }
+  .chip-bad { background: rgba(var(--bad-rgb), 0.15); color: var(--bad); }
+  .chip-warn { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+  .chip-neutral { background: var(--surface-raised); color: var(--text-muted); }
+  .status-suffix { color: var(--text-muted); font-size: 0.78rem; margin-left: 0.3rem; }
+
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  th {
+    text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-muted); font-weight: 600; padding: 0.5rem 0.5rem; border-bottom: 1px solid var(--border-strong);
+  }
+  td { padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.83rem; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background-color 0.1s ease; }
+  tbody tr:hover { background: var(--surface-raised); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
   .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.6rem; }
-  button.action { background: var(--accent); color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-  button.action.danger { background: var(--danger); }
-  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; font-size: 0.85rem; }
+  .row:last-child { margin-bottom: 0; }
+  .row > * { min-width: 0; overflow-wrap: break-word; }
+
+  .finding { padding-bottom: 0.6rem; margin-bottom: 0.6rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; line-height: 1.5; overflow-wrap: break-word; }
+  .finding:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 0.35rem; border: 1px solid transparent;
+    border-radius: 999px; padding: 0.45rem 1rem; font-size: 0.82rem; font-family: inherit;
+    cursor: pointer; line-height: 1.2;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+  }
+  .btn:active { transform: scale(0.96); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; box-shadow: 0 4px 14px rgba(var(--accent-rgb), 0.3); }
+  .btn-primary:hover { background: var(--accent-strong); box-shadow: 0 4px 16px rgba(var(--accent-rgb), 0.45); }
+  .btn-secondary { background: transparent; border-color: var(--border-strong); color: var(--text); }
+  .btn-secondary:hover { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb), 0.1); }
+  .btn-danger { background: var(--bad); color: var(--bad-ink); font-weight: 600; box-shadow: 0 4px 14px rgba(var(--bad-rgb), 0.28); }
+  .btn-danger:hover { filter: brightness(1.1); box-shadow: 0 4px 16px rgba(var(--bad-rgb), 0.4); }
+  .btn-sm { padding: 0.3rem 0.75rem; font-size: 0.75rem; }
+
+  input, select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border-strong);
+    border-radius: 10px; padding: 0.42rem 0.6rem; font-size: 0.85rem; font-family: inherit;
+    transition: border-color 0.15s ease;
+  }
+  input:hover, select:hover { border-color: var(--text-dim); }
+  input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
+  label { font-size: 0.85rem; color: var(--text-muted); display: inline-flex; align-items: center; gap: 0.4rem; }
+
+  ul#world-shelf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  ul#world-shelf-list li { font-size: 0.85rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  ul#world-shelf-list li:last-child { border-bottom: none; padding-bottom: 0; }
+  ul#world-shelf-list em { color: var(--text-muted); font-style: normal; }
+
+  .spark { display: block; width: 100%; height: 28px; margin-top: 0.3rem; }
+  .spark-fill { fill: var(--accent); fill-opacity: 0.14; stroke: none; }
+  .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .spark-empty { font-size: 0.7rem; color: var(--text-dim); margin-top: 0.4rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skel:empty, .skel-bar { animation: none; background: var(--surface-raised); }
+    .dot-pulse { animation: none; }
+  }
+
   @media (max-width: 600px) {
-    nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); justify-content: space-around; z-index: 10; }
-    main { padding-bottom: 4.5rem; }
+    nav {
+      position: fixed; bottom: 0; left: 0; right: 0; top: auto;
+      justify-content: stretch; padding: 0; border-top: 1px solid var(--border); border-bottom: none; z-index: 10;
+    }
+    nav button {
+      flex: 1 1 0; flex-direction: column; gap: 0.15rem;
+      padding: 0.4rem 0.1rem 0.5rem; border-bottom: none; border-top: 2px solid transparent;
+    }
+    nav button.active { border-top-color: var(--accent); border-bottom-color: transparent; }
+    nav .nav-icon { display: block; margin: 0 auto; }
+    nav .nav-label { font-size: 0.62rem; letter-spacing: 0.02em; }
+    main { padding-bottom: 4.75rem; }
   }
 </style>
 </head>
 <body>
-<header><h1>Clanker Dashboard</h1></header>
+<header>
+  <span class="dot" aria-hidden="true"></span>
+  <h1>Clanker Dashboard</h1>
+</header>
 <nav>
-  <button data-tab="status" class="active">Status</button>
-  <button data-tab="tasks">Tasks</button>
-  <button data-tab="runs">Runs</button>
-  <button data-tab="config">Config</button>
-  <button data-tab="world">World</button>
-  <button data-tab="metrics">Metrics</button>
+  <button data-tab="status" class="active">
+    <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="1,8.5 4.5,8.5 6,3.5 9,13 10.5,8.5 15,8.5"/></svg></span>
+    <span class="nav-label">Status</span>
+  </button>
+  <button data-tab="tasks">
+    <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.3" y="2.3" width="2.4" height="2.4" rx="0.4"/><rect x="1.3" y="6.8" width="2.4" height="2.4" rx="0.4"/><rect x="1.3" y="11.3" width="2.4" height="2.4" rx="0.4"/><line x1="6" y1="3.5" x2="14.7" y2="3.5"/><line x1="6" y1="8" x2="14.7" y2="8"/><line x1="6" y1="12.5" x2="14.7" y2="12.5"/></svg></span>
+    <span class="nav-label">Tasks</span>
+  </button>
+  <button data-tab="runs">
+    <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8.5" r="6"/><polyline points="8,5.2 8,8.5 10.8,10"/></svg></span>
+    <span class="nav-label">Runs</span>
+  </button>
+  <button data-tab="config">
+    <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.6"/><line x1="8" y1="0.8" x2="8" y2="3"/><line x1="8" y1="13" x2="8" y2="15.2"/><line x1="0.8" y1="8" x2="3" y2="8"/><line x1="13" y1="8" x2="15.2" y2="8"/><line x1="2.7" y1="2.7" x2="4.3" y2="4.3"/><line x1="11.7" y1="11.7" x2="13.3" y2="13.3"/><line x1="2.7" y1="13.3" x2="4.3" y2="11.7"/><line x1="11.7" y1="4.3" x2="13.3" y2="2.7"/></svg></span>
+    <span class="nav-label">Config</span>
+  </button>
+  <button data-tab="world">
+    <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.3"/><ellipse cx="8" cy="8" rx="2.6" ry="6.3"/><line x1="1.9" y1="8" x2="14.1" y2="8"/></svg></span>
+    <span class="nav-label">World</span>
+  </button>
+  <button data-tab="metrics">
+    <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><rect x="2.5" y="9.2" width="2.3" height="4.8"/><rect x="6.8" y="4.8" width="2.3" height="9.2"/><rect x="11.1" y="7" width="2.3" height="7"/><rect x="1.5" y="13.6" width="13" height="0.6"/></svg></span>
+    <span class="nav-label">Metrics</span>
+  </button>
 </nav>
 <main>
   <section id="tab-status">
-    <div class="card">
-      <div class="row"><strong>State:</strong>&nbsp;<span id="status-state">—</span></div>
-      <div class="row"><strong>Budget:</strong>&nbsp;<span id="status-budget">—</span></div>
-      <div class="row"><strong>Concurrency:</strong>&nbsp;<span id="status-concurrency">—</span></div>
-      <div class="row"><strong>Quiet hours:</strong>&nbsp;<span id="status-quiet">—</span></div>
-      <div class="row"><strong>Circuit breaker:</strong>&nbsp;<span id="status-breaker">—</span></div>
-      <div class="row"><strong>Disabled agents:</strong>&nbsp;<span id="status-disabled">—</span></div>
-      <div class="row"><strong>Rate limit:</strong>&nbsp;<span id="status-ratelimit">—</span></div>
-      <div class="row"><strong>Tasks:</strong>&nbsp;<span id="status-tasks">—</span></div>
+    <div class="notice notice-error" id="status-error" hidden>
+      <span class="notice-text"></span>
+      <button class="btn btn-secondary btn-sm" data-notice-retry="status">Retry now</button>
+    </div>
+    <div class="tile-grid">
+      <div class="tile">
+        <div class="tile-label">State</div>
+        <div class="tile-value-row"><span class="dot" id="status-state-dot"></span><span class="tile-value-text skel" id="status-state"></span></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Budget</div>
+        <div class="tile-value-text skel" id="status-budget"></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Concurrency</div>
+        <div class="tile-value-text skel" id="status-concurrency"></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Quiet hours</div>
+        <div class="tile-value-text skel" id="status-quiet"></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Circuit breaker</div>
+        <div class="tile-value-row"><span class="dot" id="status-breaker-dot"></span><span class="tile-value-text skel" id="status-breaker"></span></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Rate limit</div>
+        <div class="tile-value-text skel" id="status-ratelimit"></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Disabled agents</div>
+        <div class="tile-value-text tile-value-text--sm skel" id="status-disabled"></div>
+      </div>
+      <div class="tile tile-wide">
+        <div class="tile-label">Tasks</div>
+        <div class="tile-value-text tile-value-text--sm skel" id="status-tasks"></div>
+      </div>
     </div>
   </section>
   <section id="tab-tasks" hidden>
+    <div class="notice notice-error" id="tasks-error" hidden>
+      <span class="notice-text"></span>
+      <button class="btn btn-secondary btn-sm" data-notice-retry="tasks">Retry now</button>
+    </div>
     <div class="card">
+      <div class="card-title">Queue a task</div>
       <div class="row">
         <input id="task-text" placeholder="New task text" style="flex:1; min-width:200px;">
         <input id="task-priority" type="number" placeholder="priority (50)" style="width:8rem;">
-        <button class="action" id="task-create">Queue</button>
+        <button class="btn btn-primary" id="task-create">Queue</button>
       </div>
     </div>
     <div class="card">
+      <div class="card-title">Look up a task</div>
       <div class="row">
         <input id="task-lookup-id" placeholder="Task id or prefix (any status)" style="flex:1; min-width:200px;">
-        <button class="action" id="task-lookup-btn">Look up</button>
+        <button class="btn btn-secondary" id="task-lookup-btn">Look up</button>
       </div>
       <div id="task-lookup-result"></div>
     </div>
     <div class="card">
       <table>
         <thead><tr><th>Status</th><th>Priority</th><th>Text</th><th>Actions</th></tr></thead>
-        <tbody id="tasks-body"></tbody>
+        <tbody id="tasks-body">
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--lg"></span></td><td></td></tr>
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--md"></span></td><td></td></tr>
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--lg"></span></td><td></td></tr>
+        </tbody>
       </table>
     </div>
   </section>
   <section id="tab-runs" hidden>
+    <div class="notice notice-error" id="runs-error" hidden>
+      <span class="notice-text"></span>
+      <button class="btn btn-secondary btn-sm" data-notice-retry="runs">Retry now</button>
+    </div>
     <div class="card">
       <table>
         <thead><tr><th>Run</th><th>Status</th><th>Cost</th><th></th></tr></thead>
-        <tbody id="runs-body"></tbody>
+        <tbody id="runs-body">
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--md"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td></td></tr>
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--md"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td></td></tr>
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--md"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td></td></tr>
+        </tbody>
       </table>
     </div>
     <div class="card" id="run-detail" hidden>
-      <pre id="run-detail-body" style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; max-height: 50vh; overflow-y: auto;"></pre>
+      <pre id="run-detail-body" style="white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 0.78rem; max-height: 50vh; overflow-y: auto; margin: 0;"></pre>
     </div>
   </section>
   <section id="tab-config" hidden>
+    <div class="notice notice-error" id="config-error" hidden>
+      <span class="notice-text"></span>
+      <button class="btn btn-secondary btn-sm" data-notice-retry="config">Retry now</button>
+    </div>
     <div class="card">
-      <div class="row"><strong>Run state:</strong>&nbsp;<span id="config-state">—</span>
-        <button class="action" id="config-stop">Stop</button>
-        <button class="action" id="config-resume">Resume</button>
+      <div class="card-title">Run control</div>
+      <div class="row">
+        <strong>State:</strong>&nbsp;<span id="config-state" class="num">—</span>
+        <button class="btn btn-danger" id="config-stop">Stop</button>
+        <button class="btn btn-primary" id="config-resume">Resume</button>
       </div>
     </div>
     <div class="card">
+      <div class="card-title">Budget &amp; concurrency</div>
       <div class="row">
         <label>Daily budget ($)&nbsp;<input id="config-budget" type="number" style="width:6rem;"></label>
-        <button class="action" id="config-budget-save">Save</button>
+        <button class="btn btn-primary" id="config-budget-save">Save</button>
       </div>
       <div class="row">
         <label>Concurrency&nbsp;<input id="config-concurrency" type="number" style="width:5rem;"></label>
-        <button class="action" id="config-concurrency-save">Save</button>
+        <button class="btn btn-primary" id="config-concurrency-save">Save</button>
       </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Quiet hours</div>
       <div class="row">
-        <label>Quiet hours&nbsp;<input id="config-quiet-from" placeholder="HH:MM" style="width:5rem;"></label>
-        -
-        <input id="config-quiet-to" placeholder="HH:MM" style="width:5rem;">
+        <label>From&nbsp;<input id="config-quiet-from" placeholder="HH:MM" style="width:5rem;"></label>
+        <label>To&nbsp;<input id="config-quiet-to" placeholder="HH:MM" style="width:5rem;"></label>
         <input id="config-quiet-tz" placeholder="Area/City" style="width:10rem;">
-        <button class="action" id="config-quiet-save">Save</button>
-        <button class="action danger" id="config-quiet-off">Off</button>
+        <button class="btn btn-primary" id="config-quiet-save">Save</button>
+        <button class="btn btn-danger" id="config-quiet-off">Off</button>
       </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Circuit breaker</div>
       <div class="row">
         <label><input type="checkbox" id="config-breaker"> Circuit breaker enabled</label>
       </div>
     </div>
     <div class="card">
+      <div class="card-title">Agents</div>
       <div class="row">
         <input id="config-agent-name" placeholder="agent name" style="width:12rem;">
-        <button class="action" id="config-agent-disable">Disable</button>
-        <button class="action" id="config-agent-enable">Enable</button>
+        <button class="btn btn-danger" id="config-agent-disable">Disable</button>
+        <button class="btn btn-primary" id="config-agent-enable">Enable</button>
       </div>
-      <div id="config-disabled-list"></div>
+      <div id="config-disabled-list" class="empty-state"></div>
     </div>
   </section>
   <section id="tab-world" hidden>
+    <div class="notice notice-error" id="world-error" hidden>
+      <span class="notice-text"></span>
+      <button class="btn btn-secondary btn-sm" data-notice-retry="world">Retry now</button>
+    </div>
     <div class="card">
-      <h3>Portfolio</h3>
+      <div class="card-title">Portfolio</div>
       <table>
         <thead><tr><th>Slug</th><th>Status</th><th>Next review</th><th>Monthly cost</th></tr></thead>
-        <tbody id="world-portfolio-body"></tbody>
+        <tbody id="world-portfolio-body">
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--md"></span></td><td><span class="skel-bar skel-bar--sm"></span></td></tr>
+        </tbody>
       </table>
     </div>
     <div class="card">
-      <h3>Shelf</h3>
-      <ul id="world-shelf-list"></ul>
+      <div class="card-title">Shelf</div>
+      <ul id="world-shelf-list"><li><span class="skel-bar skel-bar--lg"></span></li></ul>
     </div>
     <div class="card">
-      <h3>Findings</h3>
-      <div id="world-findings-list"></div>
+      <div class="card-title">Findings</div>
+      <div id="world-findings-list"><span class="skel-bar skel-bar--lg"></span></div>
     </div>
   </section>
   <section id="tab-metrics" hidden>
+    <div class="notice notice-error" id="metrics-error" hidden>
+      <span class="notice-text"></span>
+      <button class="btn btn-secondary btn-sm" data-notice-retry="metrics">Retry now</button>
+    </div>
+    <div class="tile-grid" id="metrics-summary"></div>
     <div class="card">
       <table>
         <thead><tr><th>Date</th><th>Net income</th><th>Not-achieved rate</th><th>Cost/task</th><th>Novelty %</th></tr></thead>
-        <tbody id="metrics-body"></tbody>
+        <tbody id="metrics-body">
+          <tr class="skel-row"><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td></tr>
+        </tbody>
       </table>
     </div>
   </section>
@@ -170,18 +420,37 @@
     }
   }
 
+  function setNotice(id, message) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (message) {
+      el.querySelector(".notice-text").textContent = message;
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-notice-retry]");
+    if (btn && loaders[btn.dataset.noticeRetry]) loaders[btn.dataset.noticeRetry]();
+  });
+
   async function loadStatus() {
     try {
       const res = await fetch("/api/status");
-      if (!res.ok) return;
+      if (!res.ok) { setNotice("status-error", `Couldn't load status (${res.status}).`); return; }
       const s = await res.json();
+      setNotice("status-error", null);
       document.getElementById("status-state").textContent = s.stopped ? "STOPPED" : "running";
+      document.getElementById("status-state-dot").className = "dot " + (s.stopped ? "dot-bad" : "dot-good dot-pulse");
       document.getElementById("status-budget").textContent = `$${s.spentTodayUsd.toFixed(2)} of $${s.dailyBudgetUsd}`;
       document.getElementById("status-concurrency").textContent = s.maxConcurrent;
       document.getElementById("status-quiet").textContent = s.quietHours
         ? `${s.quietHours.from}-${s.quietHours.to} ${s.quietHours.timezone}${s.quietHoursActive ? " (active)" : ""}`
         : "off";
       document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
+      document.getElementById("status-breaker-dot").className = "dot " + (s.breakerEnabled ? "dot-good" : "dot-neutral");
       document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
       document.getElementById("status-ratelimit").textContent = s.rateLimitUtilization === null
         ? "no reading yet"
@@ -190,6 +459,7 @@
       document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
     } catch (err) {
       console.error("[dashboard]", err);
+      setNotice("status-error", "Couldn't reach the server. Check your connection.");
     }
   }
   loaders.status = loadStatus;
@@ -213,23 +483,39 @@
     }
   }
 
+  // Shared across task/run/portfolio statuses — their vocabularies don't
+  // collide in meaning (e.g. "failed" and "killed" mean the same bad outcome
+  // wherever they appear), so one map covers all three call sites below.
+  const STATUS_TONE = {
+    running: "good", success: "good", done: "good", live: "good",
+    failed: "bad", killed: "bad", denied: "bad", "budget-exceeded": "bad", timeout: "bad",
+    waiting: "warn", queued: "warn", parked: "warn", question: "warn", building: "warn",
+    pending: "neutral", paused: "neutral", interrupted: "neutral",
+  };
+  function statusChip(status) {
+    const tone = STATUS_TONE[status] || "neutral";
+    const pulse = status === "running" ? " dot-pulse" : "";
+    return `<span class="chip chip-${tone}"><span class="dot dot-${tone}${pulse}"></span>${status}</span>`;
+  }
+
   async function loadTasks() {
     try {
       const res = await fetch("/api/tasks");
-      if (!res.ok) return;
+      if (!res.ok) { setNotice("tasks-error", `Couldn't load tasks (${res.status}).`); return; }
       const tasks = await res.json();
+      setNotice("tasks-error", null);
       const body = document.getElementById("tasks-body");
       body.innerHTML = tasks.map((t) => `
         <tr>
-          <td>${t.status}</td>
-          <td>${t.priority}</td>
+          <td>${statusChip(t.status)}</td>
+          <td class="num">${t.priority}</td>
           <td>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</td>
           <td>
-            ${t.status === "failed" ? `<button class="action" data-retry="${t.id}">Retry</button>` : ""}
-            ${t.status === "pending" ? `<button class="action danger" data-cancel="${t.id}">Cancel</button>` : ""}
+            ${t.status === "failed" ? `<button class="btn btn-primary btn-sm" data-retry="${t.id}">Retry</button>` : ""}
+            ${t.status === "pending" ? `<button class="btn btn-danger btn-sm" data-cancel="${t.id}">Cancel</button>` : ""}
           </td>
         </tr>
-      `).join("");
+      `).join("") || `<tr><td colspan="4"><span class="empty-state">No tasks in flight.</span></td></tr>`;
 
       for (const btn of body.querySelectorAll("[data-retry]")) {
         btn.addEventListener("click", async () => {
@@ -245,6 +531,7 @@
       }
     } catch (err) {
       console.error("[dashboard]", err);
+      setNotice("tasks-error", "Couldn't reach the server. Check your connection.");
     }
   }
   loaders.tasks = loadTasks;
@@ -252,17 +539,18 @@
   async function loadRuns() {
     try {
       const res = await fetch("/api/runs?limit=20");
-      if (!res.ok) return;
+      if (!res.ok) { setNotice("runs-error", `Couldn't load runs (${res.status}).`); return; }
       const runs = await res.json();
+      setNotice("runs-error", null);
       const body = document.getElementById("runs-body");
       body.innerHTML = runs.map((r) => `
         <tr>
-          <td>${escapeHtml(r.runId)}</td>
-          <td>${r.status}${r.verifiedOutcome && r.verifiedOutcome.verdict !== "achieved" ? ` (${r.verifiedOutcome.verdict})` : ""}</td>
-          <td>$${r.costUsd.toFixed(4)}</td>
-          <td><button class="action" data-detail="${r.runId}">View</button></td>
+          <td class="num">${escapeHtml(r.runId)}</td>
+          <td>${statusChip(r.status)}${r.verifiedOutcome && r.verifiedOutcome.verdict !== "achieved" ? `<span class="status-suffix">(${r.verifiedOutcome.verdict})</span>` : ""}</td>
+          <td class="num">$${r.costUsd.toFixed(4)}</td>
+          <td><button class="btn btn-secondary btn-sm" data-detail="${r.runId}">View</button></td>
         </tr>
-      `).join("");
+      `).join("") || `<tr><td colspan="4"><span class="empty-state">No runs yet.</span></td></tr>`;
 
       for (const btn of body.querySelectorAll("[data-detail]")) {
         btn.addEventListener("click", async () => {
@@ -287,6 +575,7 @@
       }
     } catch (err) {
       console.error("[dashboard]", err);
+      setNotice("runs-error", "Couldn't reach the server. Check your connection.");
     }
   }
   loaders.runs = loadRuns;
@@ -321,10 +610,10 @@
       const t = await res.json();
       resultEl.innerHTML = `
         <div class="row">
-          <strong>${t.status}</strong>
+          ${statusChip(t.status)}
           <span>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</span>
-          ${t.status === "failed" ? `<button class="action" data-lookup-retry="${t.id}">Retry</button>` : ""}
-          ${t.status === "pending" ? `<button class="action danger" data-lookup-cancel="${t.id}">Cancel</button>` : ""}
+          ${t.status === "failed" ? `<button class="btn btn-primary btn-sm" data-lookup-retry="${t.id}">Retry</button>` : ""}
+          ${t.status === "pending" ? `<button class="btn btn-danger btn-sm" data-lookup-cancel="${t.id}">Cancel</button>` : ""}
         </div>
       `;
       const retryBtn = resultEl.querySelector("[data-lookup-retry]");
@@ -353,8 +642,9 @@
   async function loadConfig() {
     try {
       const res = await fetch("/api/config");
-      if (!res.ok) return;
+      if (!res.ok) { setNotice("config-error", `Couldn't load config (${res.status}).`); return; }
       const { resolved } = await res.json();
+      setNotice("config-error", null);
       document.getElementById("config-state").textContent = resolved.stopped ? "STOPPED" : "running";
       const budgetEl = document.getElementById("config-budget");
       if (document.activeElement !== budgetEl) budgetEl.value = resolved.dailyBudgetUsd;
@@ -374,6 +664,7 @@
         ? `Disabled: ${resolved.disabledAgents.join(", ")}` : "No agents disabled";
     } catch (err) {
       console.error("[dashboard]", err);
+      setNotice("config-error", "Couldn't reach the server. Check your connection.");
     }
   }
   loaders.config = loadConfig;
@@ -427,47 +718,117 @@
   async function loadWorld() {
     try {
       const res = await fetch("/api/world");
-      if (!res.ok) return;
+      if (!res.ok) { setNotice("world-error", `Couldn't load world model (${res.status}).`); return; }
       const { portfolio, shelf, findings } = await res.json();
+      setNotice("world-error", null);
 
       document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
-        <tr><td>${escapeHtml(p.slug)}</td><td>${p.status}</td><td>${escapeHtml(p.nextReviewAt)}</td><td>$${p.monthlyCostUsd}</td></tr>
-      `).join("") || `<tr><td colspan="4">none</td></tr>`;
+        <tr><td>${escapeHtml(p.slug)}</td><td>${statusChip(p.status)}</td><td class="num">${escapeHtml(p.nextReviewAt)}</td><td class="num">$${p.monthlyCostUsd}</td></tr>
+      `).join("") || `<tr><td colspan="4"><span class="empty-state">No products in the portfolio yet.</span></td></tr>`;
 
       document.getElementById("world-shelf-list").innerHTML = shelf.length
         ? shelf.map((s) => `<li>${escapeHtml(s.summary)} — <em>${escapeHtml(s.reason)}</em></li>`).join("")
-        : "<li>none</li>";
+        : `<li><span class="empty-state">Nothing shelved.</span></li>`;
 
       document.getElementById("world-findings-list").innerHTML = findings.length
         ? findings.map((f) => `
-            <div class="row" style="align-items:flex-start;">
+            <div class="finding">
               <strong>${escapeHtml(f.topic)}</strong> (${f.confidence}):&nbsp;${escapeHtml(f.conclusion)}
             </div>
           `).join("")
-        : "<p>none</p>";
+        : `<span class="empty-state">No findings recorded yet.</span>`;
     } catch (err) {
       console.error("[dashboard]", err);
+      setNotice("world-error", "Couldn't reach the server. Check your connection.");
     }
   }
   loaders.world = loadWorld;
 
+  const METRIC_DEFS = [
+    { key: "netIncomeUsd", label: "Net income", higherIsBetter: true, format: (v) => `$${v.toFixed(2)}` },
+    { key: "notAchievedRate", label: "Not-achieved rate", higherIsBetter: false, format: (v) => `${Math.round(v * 100)}%` },
+    { key: "costPerCompletedTaskUsd", label: "Cost / task", higherIsBetter: false, format: (v) => `$${v.toFixed(2)}` },
+    { key: "noveltySharePercent", label: "Novelty", higherIsBetter: true, format: (v) => `${Math.round(v)}%` },
+  ];
+
+  function sparklinePoints(values, w, h) {
+    const pts = values.filter((v) => v !== null && v !== undefined);
+    if (pts.length < 2) return null;
+    const min = Math.min(...pts), max = Math.max(...pts);
+    const span = max - min || 1;
+    const stepX = w / (pts.length - 1);
+    const coords = pts.map((v, i) => [i * stepX, h - ((v - min) / span) * h]);
+    const line = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    return { line, area: `0,${h} ${line} ${w},${h}` };
+  }
+
+  function renderSparkline(values) {
+    const w = 96, h = 28;
+    const pts = sparklinePoints(values, w, h);
+    if (!pts) return `<div class="spark-empty">not enough data yet</div>`;
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <polygon points="${pts.area}" class="spark-fill"></polygon>
+      <polyline points="${pts.line}" class="spark-line"></polyline>
+    </svg>`;
+  }
+
+  function renderMetricsSummary(snapshots) {
+    const container = document.getElementById("metrics-summary");
+    if (!snapshots.length) {
+      container.innerHTML = `<div class="tile tile-wide"><span class="empty-state">No metrics recorded yet.</span></div>`;
+      return;
+    }
+    container.innerHTML = METRIC_DEFS.map((def) => {
+      const values = snapshots.map((s) => s[def.key]);
+      const nonNull = values.map((v, i) => [i, v]).filter(([, v]) => v !== null && v !== undefined);
+      if (!nonNull.length) {
+        return `<div class="tile"><div class="tile-label">${def.label}</div><div class="tile-value-text">—</div></div>`;
+      }
+      const latest = nonNull[nonNull.length - 1][1];
+      const prev = nonNull.length > 1 ? nonNull[nonNull.length - 2][1] : null;
+      let deltaHtml = "";
+      if (prev !== null && prev !== 0) {
+        const diff = latest - prev;
+        const pct = (diff / Math.abs(prev)) * 100;
+        if (diff !== 0) {
+          const isUp = diff > 0;
+          const good = isUp === def.higherIsBetter;
+          const arrow = isUp ? "▲" : "▼";
+          deltaHtml = `<span class="tile-delta ${good ? "tile-delta-good" : "tile-delta-bad"}">${arrow} ${Math.abs(pct).toFixed(0)}%</span>`;
+        }
+      }
+      return `
+        <div class="tile">
+          <div class="tile-label">${def.label}</div>
+          <div class="tile-value-row">
+            <span class="tile-value-text">${def.format(latest)}</span>
+            ${deltaHtml}
+          </div>
+          ${renderSparkline(values)}
+        </div>`;
+    }).join("");
+  }
+
   async function loadMetrics() {
     try {
       const res = await fetch("/api/metrics?days=30");
-      if (!res.ok) return;
+      if (!res.ok) { setNotice("metrics-error", `Couldn't load metrics (${res.status}).`); return; }
       const snapshots = await res.json();
+      setNotice("metrics-error", null);
+      renderMetricsSummary(snapshots);
       const body = document.getElementById("metrics-body");
       body.innerHTML = snapshots.slice().reverse().map((m) => `
         <tr>
-          <td>${m.computedAt.slice(0, 10)}</td>
-          <td>$${m.netIncomeUsd.toFixed(2)}${m.revenueUnavailable ? " (unavailable)" : ""}</td>
-          <td>${m.notAchievedRate === null ? "—" : `${Math.round(m.notAchievedRate * 100)}%`}</td>
-          <td>${m.costPerCompletedTaskUsd === null ? "—" : `$${m.costPerCompletedTaskUsd.toFixed(2)}`}</td>
-          <td>${m.noveltySharePercent === null ? "—" : `${Math.round(m.noveltySharePercent)}%`}</td>
+          <td class="num">${m.computedAt.slice(0, 10)}</td>
+          <td class="num">$${m.netIncomeUsd.toFixed(2)}${m.revenueUnavailable ? " (unavailable)" : ""}</td>
+          <td class="num">${m.notAchievedRate === null ? "—" : `${Math.round(m.notAchievedRate * 100)}%`}</td>
+          <td class="num">${m.costPerCompletedTaskUsd === null ? "—" : `$${m.costPerCompletedTaskUsd.toFixed(2)}`}</td>
+          <td class="num">${m.noveltySharePercent === null ? "—" : `${Math.round(m.noveltySharePercent)}%`}</td>
         </tr>
-      `).join("") || `<tr><td colspan="5">no snapshots yet</td></tr>`;
+      `).join("") || `<tr><td colspan="5"><span class="empty-state">No metrics recorded yet.</span></td></tr>`;
     } catch (err) {
       console.error("[dashboard]", err);
+      setNotice("metrics-error", "Couldn't reach the server. Check your connection.");
     }
   }
   loaders.metrics = loadMetrics;
