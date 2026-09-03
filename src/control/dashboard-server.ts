@@ -405,7 +405,20 @@ export class DashboardServer {
         clearRequestTimer();
         if (responseSent) return;
         responseSent = true;
-        const url = new URL(req.url ?? "/", "http://localhost");
+        let url: URL;
+        try {
+          url = new URL(req.url ?? "/", "http://localhost");
+        } catch {
+          // A request-target Node's own HTTP parser accepts as a single token
+          // (e.g. a bare "//") can still be rejected by the stricter WHATWG URL
+          // parser used here. Uncaught, that exception used to escape this
+          // handler as an unhandledException and take the whole process down —
+          // see crash-handlers.ts, which assumes Docker restarts it, which
+          // isn't true for a local `npm start`.
+          res.writeHead(400, { "content-type": "text/plain" });
+          res.end("Bad request");
+          return;
+        }
         void this.handleRequest({
           method: req.method ?? "GET",
           path: url.pathname,
