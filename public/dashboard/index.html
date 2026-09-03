@@ -63,6 +63,13 @@
       </div>
     </div>
     <div class="card">
+      <div class="row">
+        <input id="task-lookup-id" placeholder="Task id or prefix (any status)" style="flex:1; min-width:200px;">
+        <button class="action" id="task-lookup-btn">Look up</button>
+      </div>
+      <div id="task-lookup-result"></div>
+    </div>
+    <div class="card">
       <table>
         <thead><tr><th>Status</th><th>Priority</th><th>Text</th><th>Actions</th></tr></thead>
         <tbody id="tasks-body"></tbody>
@@ -296,6 +303,51 @@
       priorityEl.value = "";
     }
     loadTasks();
+  });
+
+  document.getElementById("task-lookup-btn").addEventListener("click", async () => {
+    const idEl = document.getElementById("task-lookup-id");
+    const id = idEl.value.trim();
+    const resultEl = document.getElementById("task-lookup-result");
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || `Task lookup failed (${res.status})`);
+        resultEl.innerHTML = "";
+        return;
+      }
+      const t = await res.json();
+      resultEl.innerHTML = `
+        <div class="row">
+          <strong>${t.status}</strong>
+          <span>${escapeHtml(t.text.length > 80 ? t.text.slice(0, 77) + "…" : t.text)}</span>
+          ${t.status === "failed" ? `<button class="action" data-lookup-retry="${t.id}">Retry</button>` : ""}
+          ${t.status === "pending" ? `<button class="action danger" data-lookup-cancel="${t.id}">Cancel</button>` : ""}
+        </div>
+      `;
+      const retryBtn = resultEl.querySelector("[data-lookup-retry]");
+      if (retryBtn) {
+        retryBtn.addEventListener("click", async () => {
+          await post(`/api/tasks/${retryBtn.dataset.lookupRetry}/retry`);
+          resultEl.innerHTML = "";
+          idEl.value = "";
+          loadTasks();
+        });
+      }
+      const cancelBtn = resultEl.querySelector("[data-lookup-cancel]");
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", async () => {
+          await post(`/api/tasks/${cancelBtn.dataset.lookupCancel}/cancel`);
+          resultEl.innerHTML = "";
+          idEl.value = "";
+          loadTasks();
+        });
+      }
+    } catch (err) {
+      alert(`Network error: ${err.message || err}`);
+    }
   });
 
   async function loadConfig() {
