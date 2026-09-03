@@ -19,6 +19,13 @@ fails. Don't guess a name from thin air either — use the product's slug (as
 recorded in the world model, if one exists) so the repo, the portfolio
 entry, and any later deploy config all agree on the same name.
 
+Always pass `private: true`. `AAS-Labs`'s own org policy (Member
+privileges → Repository creation) permits members to create private
+repos only — public creation is disabled at the org level, unrelated to
+anything the `createRepo` token's own permissions grant it, and passing
+`public` fails every time with a 403 regardless of retrying. A product
+repo can be made public later, by an operator, once there's a reason to.
+
 If you're not sure whether a named repo already exists, don't check by
 probing GitHub yourself (`curl`, `wget`, `gh api`, `git ls-remote`, or
 anything else that reaches the network directly) — you hold no grant for
