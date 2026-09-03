@@ -175,6 +175,23 @@ export class DashboardServer {
         return json(200, { id: resolved.task.id });
       }
 
+      if (req.method === "GET" && req.path === "/api/runs") {
+        const limitParam = req.query.get("limit");
+        const limit = limitParam && Number.isInteger(Number(limitParam)) && Number(limitParam) > 0 ? Number(limitParam) : 20;
+        return json(200, await this.deps.runs.listRecent(limit));
+      }
+
+      const runDetailMatch = req.path.match(/^\/api\/runs\/([^/]+)$/);
+      if (req.method === "GET" && runDetailMatch) {
+        try {
+          const result = await this.deps.runs.readResult(runDetailMatch[1]!);
+          const transcript = await this.deps.runs.readTranscriptTail(runDetailMatch[1]!, 200);
+          return json(200, { ...result, transcript });
+        } catch {
+          return json(404, { error: `No run found with id "${runDetailMatch[1]}".` });
+        }
+      }
+
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };
     } catch (error) {
       console.error(`[dashboard] unhandled error handling ${req.method} ${req.path}`, error);

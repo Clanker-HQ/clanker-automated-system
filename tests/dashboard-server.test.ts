@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { DashboardServer, type DashboardDeps } from "../src/control/dashboard-server.js";
 import { TaskStore } from "../src/control/task-store.js";
-import { RunStore } from "../src/run-store.js";
+import { RunStore, newRunId } from "../src/run-store.js";
 import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { Governor } from "../src/governor.js";
 import { BreakerStore } from "../src/state/breaker.js";
@@ -194,5 +194,40 @@ describe("POST /api/tasks/:id/cancel", () => {
     });
     expect(result.status).toBe(200);
     expect(await deps.tasks.get(task.id)).toBeNull();
+  });
+});
+
+describe("GET /api/runs", () => {
+  it("returns recent runs, most recent first", async () => {
+    const deps = testDeps();
+    const writer = await deps.runs.open(newRunId("agent"), "agent");
+    await writer.close({ status: "success", summary: "done" });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/runs", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(JSON.parse(result.body)).toHaveLength(1);
+  });
+});
+
+describe("GET /api/runs/:id", () => {
+  it("returns a run's result plus its transcript tail", async () => {
+    const deps = testDeps();
+    const writer = await deps.runs.open(newRunId("agent"), "agent");
+    await writer.append({ type: "assistant", text: "hello" });
+    await writer.close({ status: "success", summary: "done" });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: `/api/runs/${writer.runId}`, query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    const parsed = JSON.parse(result.body);
+    expect(parsed.status).toBe("success");
+    expect(parsed.transcript).toHaveLength(1);
+  });
+
+  it("returns 404 for an unknown run id", async () => {
+    const result = await server().handleRequest({
+      method: "GET", path: "/api/runs/nope", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(404);
   });
 });
