@@ -12,6 +12,8 @@ import type { WorldModel } from "../world/world-model.js";
 import type { TaskStore } from "./task-store.js";
 import { MAX_TASK_TEXT_LENGTH } from "./task-store.js";
 import { resolveTaskByPrefix } from "./resolve-task.js";
+import { QuietHoursSchema } from "../config.js";
+import { formatZodError } from "../errors.js";
 
 export interface DashboardDeps {
   tasks: TaskStore;
@@ -207,6 +209,77 @@ export class DashboardServer {
       if (req.method === "POST" && req.path === "/api/resume") {
         await rm(join(this.deps.dataDir, "STOP"), { force: true });
         return json(200, { stopped: false });
+      }
+
+      if (req.method === "POST" && req.path === "/api/config/budget") {
+        let payload: { value?: unknown };
+        try {
+          payload = JSON.parse(req.body) as typeof payload;
+        } catch {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        if (typeof payload !== "object" || payload === null) {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        const value = Number(payload.value);
+        if (!Number.isFinite(value) || value <= 0) return json(400, { error: `Not a valid budget: ${JSON.stringify(payload.value)}` });
+        await this.deps.overrides.set("dailyBudgetUsd", value, "dashboard");
+        return json(200, { dailyBudgetUsd: value });
+      }
+
+      if (req.method === "POST" && req.path === "/api/config/concurrency") {
+        let payload: { value?: unknown };
+        try {
+          payload = JSON.parse(req.body) as typeof payload;
+        } catch {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        if (typeof payload !== "object" || payload === null) {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        const value = Number(payload.value);
+        if (!Number.isInteger(value) || value <= 0) return json(400, { error: `Not a valid concurrency: ${JSON.stringify(payload.value)}` });
+        await this.deps.overrides.set("maxConcurrent", value, "dashboard");
+        this.deps.governor.adjustConcurrency(value);
+        return json(200, { maxConcurrent: value });
+      }
+
+      if (req.method === "POST" && req.path === "/api/config/quiet-hours") {
+        let payload: { off?: unknown; from?: unknown; to?: unknown; timezone?: unknown };
+        try {
+          payload = JSON.parse(req.body) as typeof payload;
+        } catch {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        if (typeof payload !== "object" || payload === null) {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        if (payload.off === true) {
+          await this.deps.overrides.set("quietHours", null, "dashboard");
+          return json(200, { quietHours: null });
+        }
+        const parsed = QuietHoursSchema.safeParse({ from: payload.from, to: payload.to, timezone: payload.timezone });
+        if (!parsed.success) {
+          const problems = formatZodError("dashboard quiet-hours", parsed.error).lines.join("; ");
+          return json(400, { error: problems });
+        }
+        await this.deps.overrides.set("quietHours", parsed.data, "dashboard");
+        return json(200, { quietHours: parsed.data });
+      }
+
+      if (req.method === "POST" && req.path === "/api/config/breaker") {
+        let payload: { enabled?: unknown };
+        try {
+          payload = JSON.parse(req.body) as typeof payload;
+        } catch {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        if (typeof payload !== "object" || payload === null) {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
+        if (typeof payload.enabled !== "boolean") return json(400, { error: "enabled must be a boolean" });
+        await this.deps.overrides.set("breakerEnabled", payload.enabled, "dashboard");
+        return json(200, { breakerEnabled: payload.enabled });
       }
 
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };

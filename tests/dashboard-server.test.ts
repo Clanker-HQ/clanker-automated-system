@@ -255,3 +255,73 @@ describe("POST /api/stop and /api/resume", () => {
     expect(existsSync(join(deps.dataDir, "STOP"))).toBe(false);
   });
 });
+
+describe("POST /api/config/budget", () => {
+  it("sets the daily budget", async () => {
+    const deps = testDeps();
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/config/budget", query: new URLSearchParams(), authHeader: AUTH, body: JSON.stringify({ value: 25 }),
+    });
+    expect(result.status).toBe(200);
+    expect((await deps.overrides.read()).dailyBudgetUsd).toBe(25);
+  });
+
+  it("rejects a non-positive value", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/config/budget", query: new URLSearchParams(), authHeader: AUTH, body: JSON.stringify({ value: -5 }),
+    });
+    expect(result.status).toBe(400);
+  });
+});
+
+describe("POST /api/config/concurrency", () => {
+  it("sets concurrency and applies it to the live governor", async () => {
+    const deps = testDeps();
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/config/concurrency", query: new URLSearchParams(), authHeader: AUTH, body: JSON.stringify({ value: 5 }),
+    });
+    expect(result.status).toBe(200);
+    expect((await deps.overrides.read()).maxConcurrent).toBe(5);
+  });
+});
+
+describe("POST /api/config/quiet-hours", () => {
+  it("sets validated quiet hours", async () => {
+    const deps = testDeps();
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/config/quiet-hours", query: new URLSearchParams(), authHeader: AUTH,
+      body: JSON.stringify({ from: "02:00", to: "03:00", timezone: "Europe/Berlin" }),
+    });
+    expect(result.status).toBe(200);
+    expect((await deps.overrides.read()).quietHours).toEqual({ from: "02:00", to: "03:00", timezone: "Europe/Berlin" });
+  });
+
+  it("turns quiet hours off", async () => {
+    const deps = testDeps();
+    await deps.overrides.set("quietHours", { from: "02:00", to: "03:00", timezone: "Europe/Berlin" }, "test");
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/config/quiet-hours", query: new URLSearchParams(), authHeader: AUTH, body: JSON.stringify({ off: true }),
+    });
+    expect(result.status).toBe(200);
+    expect((await deps.overrides.read()).quietHours).toBeNull();
+  });
+
+  it("rejects an invalid timezone", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/config/quiet-hours", query: new URLSearchParams(), authHeader: AUTH,
+      body: JSON.stringify({ from: "02:00", to: "03:00", timezone: "not/a-zone" }),
+    });
+    expect(result.status).toBe(400);
+  });
+});
+
+describe("POST /api/config/breaker", () => {
+  it("toggles the circuit breaker", async () => {
+    const deps = testDeps();
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/config/breaker", query: new URLSearchParams(), authHeader: AUTH, body: JSON.stringify({ enabled: false }),
+    });
+    expect(result.status).toBe(200);
+    expect((await deps.overrides.read()).breakerEnabled).toBe(false);
+  });
+});
