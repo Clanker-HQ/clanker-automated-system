@@ -67,3 +67,34 @@ describe("DashboardServer auth", () => {
     expect(result.status).toBe(404);
   });
 });
+
+describe("GET /api/status", () => {
+  it("returns governor status plus task counts by status", async () => {
+    const deps = testDeps();
+    await deps.tasks.create({ text: "a", createdBy: "test" });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/status", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    const parsed = JSON.parse(result.body);
+    expect(parsed.taskCounts).toEqual({ pending: 1, queued: 0, running: 0, waiting: 0 });
+    expect(parsed.dailyBudgetUsd).toBe(10);
+  });
+
+  it("returns 500 without hanging when a dependency throws unexpectedly", async () => {
+    const deps = testDeps();
+    deps.governor = {
+      status: async () => { throw new Error("disk exploded"); },
+      adjustConcurrency: () => {},
+    };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await server(deps).handleRequest({
+        method: "GET", path: "/api/status", query: new URLSearchParams(), authHeader: AUTH, body: "",
+      });
+      expect(result.status).toBe(500);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});

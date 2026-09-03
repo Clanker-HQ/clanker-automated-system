@@ -93,6 +93,15 @@ export class DashboardServer {
     // throw on an unexpected I/O error, and a throw must still produce a
     // real response rather than leaving the request hanging forever.
     try {
+      if (req.method === "GET" && req.path === "/api/status") {
+        const status = await this.deps.governor.status();
+        const active = await this.deps.tasks.list();
+        const counts = { pending: 0, queued: 0, running: 0, waiting: 0 };
+        for (const t of active) {
+          if (t.status === "pending" || t.status === "queued" || t.status === "running" || t.status === "waiting") counts[t.status]++;
+        }
+        return json(200, { ...status, taskCounts: counts });
+      }
       return { status: 404, headers: { "content-type": "text/plain" }, body: "not found" };
     } catch (error) {
       console.error(`[dashboard] unhandled error handling ${req.method} ${req.path}`, error);
