@@ -233,6 +233,13 @@ export class WorldModel {
     return lines.join("\n");
   }
 
+  /** Every finding's full current conclusion — unlike summaryForPrompt's digest, nothing here is truncated. */
+  async listFindings(): Promise<Finding[]> {
+    const topics = await this.listFindingTopics();
+    const findings = await Promise.all(topics.map((topic) => this.readFinding(topic)));
+    return findings.filter((f): f is Finding => f !== null);
+  }
+
   private async listFindingTopics(): Promise<string[]> {
     const names = await readdir(this.findingsDir()).catch(() => [] as string[]);
     return names.filter((n) => n.endsWith(".md")).map((n) => n.slice(0, -".md".length));

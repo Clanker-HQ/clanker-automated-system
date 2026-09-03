@@ -234,3 +234,23 @@ describe("summaryForPrompt caps what each finding contributes", () => {
     rmSync(f.dataDir, { recursive: true, force: true });
   });
 });
+
+describe("WorldModel.listFindings", () => {
+  it("returns every finding's full, untruncated conclusion", async () => {
+    const f = fixture();
+    await f.world.writeFinding("pricing-strategy", finding());
+    await f.world.writeFinding("competitor-scan", finding({ topic: "competitor-scan", conclusion: "Crowded space." }));
+
+    const findings = await f.world.listFindings();
+    expect(findings).toHaveLength(2);
+    expect(findings.map((fd) => fd.topic).sort()).toEqual(["competitor-scan", "pricing-strategy"]);
+
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+
+  it("returns an empty array when no findings exist", async () => {
+    const f = fixture();
+    expect(await f.world.listFindings()).toEqual([]);
+    rmSync(f.dataDir, { recursive: true, force: true });
+  });
+});
