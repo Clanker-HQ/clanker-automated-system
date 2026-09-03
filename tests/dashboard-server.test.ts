@@ -154,6 +154,13 @@ describe("POST /api/tasks", () => {
     });
     expect(result.status).toBe(400);
   });
+
+  it("rejects a null JSON body with 400, not 500", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/tasks", query: new URLSearchParams(), authHeader: AUTH, body: "null",
+    });
+    expect(result.status).toBe(400);
+  });
 });
 
 describe("POST /api/tasks/:id/retry", () => {

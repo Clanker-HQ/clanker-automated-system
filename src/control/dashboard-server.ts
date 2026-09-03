@@ -127,6 +127,9 @@ export class DashboardServer {
         } catch {
           return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
         }
+        if (typeof payload !== "object" || payload === null) {
+          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+        }
         const text = typeof payload.text === "string" ? payload.text.trim() : "";
         if (!text) return json(400, { error: "text is required" });
         if (text.length > MAX_TASK_TEXT_LENGTH) {
