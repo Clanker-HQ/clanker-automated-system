@@ -8,7 +8,7 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "0 5 * * 1"   # Monday 05:00 — after reflection (03:00) and metrics (04:00), so both are fresh
+  schedule: "0 11 * * 1"   # Monday 11:00 — after reflection (09:00) and metrics (10:00), so both are fresh
   timezone: Europe/Berlin
 
 run:

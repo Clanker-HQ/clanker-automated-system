@@ -37,14 +37,14 @@ discord:
 
 digest:
   enabled: true
-  schedule: "0 8 * * *"   # once a day, croner's 5-field cron syntax
+  schedule: "0 14 * * *"   # once a day, croner's 5-field cron syntax
   timezone: Europe/Berlin
   channel: ops            # a key into discord.channels above
 
 retention:
   enabled: true
   days: 30                # delete run transcripts/results and workspace files older than this
-  schedule: "0 4 * * 0"   # weekly (Sunday 04:00) — bulk deletion, not routine reporting
+  schedule: "0 10 * * 0"   # weekly (Sunday 10:00) — bulk deletion, not routine reporting
   timezone: Europe/Berlin
   channel: ops
 
@@ -62,9 +62,21 @@ revenue:
 
 metrics:
   enabled: true
-  schedule: "0 4 * * 1"   # weekly (Monday 04:00) — one hour after memory.reflectionSchedule
+  schedule: "0 10 * * 1"   # weekly (Monday 10:00) — one hour after memory.reflectionSchedule
   timezone: Europe/Berlin
   windowDays: 7
+
+# Explicit override — without this block the schema default (0 3 * * 1,
+# timezone UTC) applies, which drifts against every other Europe/Berlin
+# schedule below whenever CEST/CET disagree with UTC by more than the
+# nominal 1-hour offset baked into the comments here. Local development
+# runs whenever the operator's machine happens to be on, so 09:00 Berlin —
+# not 03:00 UTC — is when this and the rest of the weekly Monday chain
+# (metrics 10:00, overseer/cleanup-scout 11:00) actually have a chance to
+# fire.
+memory:
+  reflectionSchedule: "0 9 * * 1"   # weekly (Monday 09:00)
+  reflectionTimezone: Europe/Berlin
 
 deploy:
   maxLiveDeployments: 5
