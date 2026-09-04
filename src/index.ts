@@ -360,7 +360,7 @@ async function main(): Promise<void> {
       password: dashboardPassword,
       deps: {
         tasks, runs: runStore, overrides, governor, breaker, world,
-        metrics: metricsStore, dispatcher, agents, dataDir: DATA_DIR, router,
+        metrics: metricsStore, dispatcher, agents, dataDir: DATA_DIR, router, strategyStore,
       },
     });
     void dashboard.listen(dashboardPort).then(

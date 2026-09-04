@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentDef } from "../src/registry.js";
-import { cronCadenceMs, stalePasses, staleCronAgents } from "../src/state/liveness.js";
+import { agentLiveness, cronCadenceMs, stalePasses, staleCronAgents } from "../src/state/liveness.js";
 import type { Strategy } from "../src/world/strategy.js";
 
 const NOW = new Date("2026-09-30T08:00:00.000Z");
@@ -52,6 +52,52 @@ describe("cronCadenceMs", () => {
   it("computes the interval for a weekly schedule", () => {
     const ms = cronCadenceMs("0 7 * * 1", "UTC");
     expect(ms).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+});
+
+describe("agentLiveness", () => {
+  it("reports the cadence and marks stale when the agent hasn't run within twice it", () => {
+    const agent = cronAgent();
+    const staleAt = new Date(NOW.getTime() - 3 * 24 * 60 * 60 * 1000);
+    const result = agentLiveness({ agent, strategy: strategy(), lastRunAt: staleAt, now: NOW });
+    expect(result.stale).toBe(true);
+    expect(result.lastRunAt).toEqual(staleAt);
+    expect(result.cadenceMs).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("is not stale when the agent ran recently", () => {
+    const agent = cronAgent();
+    const recentAt = new Date(NOW.getTime() - 6 * 60 * 60 * 1000);
+    const result = agentLiveness({ agent, strategy: strategy(), lastRunAt: recentAt, now: NOW });
+    expect(result.stale).toBe(false);
+  });
+
+  it("is stale when the agent has never run", () => {
+    const agent = cronAgent();
+    const result = agentLiveness({ agent, strategy: strategy(), lastRunAt: null, now: NOW });
+    expect(result.stale).toBe(true);
+    expect(result.lastRunAt).toBeNull();
+  });
+
+  it("is never stale for a disabled agent, regardless of last run", () => {
+    const agent = cronAgent({ enabled: false });
+    const result = agentLiveness({ agent, strategy: strategy(), lastRunAt: null, now: NOW });
+    expect(result.stale).toBe(false);
+  });
+
+  it("is never stale for a non-cron agent, and reports no cadence", () => {
+    const agent = cronAgent({ trigger: { type: "dispatched" } });
+    const result = agentLiveness({ agent, strategy: strategy(), lastRunAt: null, now: NOW });
+    expect(result.stale).toBe(false);
+    expect(result.cadenceMs).toBeNull();
+  });
+
+  it("is never stale when the agent's category is zero-allocated this cycle", () => {
+    const agent = cronAgent({ category: "maintain" });
+    const result = agentLiveness({
+      agent, strategy: strategy({ maintain: 0, research: 50, build: 50 }), lastRunAt: null, now: NOW,
+    });
+    expect(result.stale).toBe(false);
   });
 });
 

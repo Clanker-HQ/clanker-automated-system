@@ -7,7 +7,9 @@ import type { RunStore } from "../run-store.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import type { Governor } from "../governor.js";
 import type { BreakerStore } from "../state/breaker.js";
+import { agentLiveness } from "../state/liveness.js";
 import type { MetricsStore } from "../state/metrics-store.js";
+import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
 import type { TaskStore } from "./task-store.js";
 import { MAX_TASK_TEXT_LENGTH } from "./task-store.js";
@@ -36,6 +38,14 @@ export interface DashboardDeps {
    * human-facing path as well.
    */
   router?: Router;
+  /**
+   * Read for GET /api/agents's staleness column, so an agent this cycle's
+   * strategy has deliberately zero-allocated (cron.ts's own shouldSkip)
+   * isn't shown as stopped. Absent (or no strategy written yet) means every
+   * enabled cron agent is checked with no zero-allocation exemption -- fail
+   * open, same as cron.ts and the digest's own cron-liveness section.
+   */
+  strategyStore?: StrategyStore;
 }
 
 export interface DashboardRequest {
@@ -337,6 +347,31 @@ export class DashboardServer {
         if (typeof payload.enabled !== "boolean") return json(400, { error: "enabled must be a boolean" });
         await this.deps.overrides.set("breakerEnabled", payload.enabled, "dashboard");
         return json(200, { breakerEnabled: payload.enabled });
+      }
+
+      if (req.method === "GET" && req.path === "/api/agents") {
+        const overrides = await this.deps.overrides.read();
+        const disabled = new Set(overrides.disabledAgents ?? []);
+        const strategy = this.deps.strategyStore ? await this.deps.strategyStore.latest() : null;
+        const now = new Date();
+        const result = await Promise.all(
+          this.deps.agents.map(async (agent) => {
+            const lastRun = await this.deps.runs.latestFor(agent.name);
+            const liveness = agentLiveness({
+              agent, strategy, lastRunAt: lastRun ? new Date(lastRun.startedAt) : null, now,
+            });
+            return {
+              name: agent.name,
+              enabled: agent.enabled && !disabled.has(agent.name),
+              category: agent.category ?? null,
+              trigger: agent.trigger,
+              lastRunAt: liveness.lastRunAt?.toISOString() ?? null,
+              lastRunStatus: lastRun?.status ?? null,
+              stale: liveness.stale,
+            };
+          }),
+        );
+        return json(200, result);
       }
 
       const agentDisableMatch = req.path.match(/^\/api\/agents\/([^/]+)\/disable$/);
