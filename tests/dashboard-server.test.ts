@@ -499,6 +499,92 @@ describe("POST /api/agents/:name/disable and /enable", () => {
   });
 });
 
+describe("GET /api/agents", () => {
+  function cronAgent(overrides: Partial<AgentDef> = {}): AgentDef {
+    return {
+      name: "dependency-scout",
+      enabled: true,
+      trigger: { type: "cron", schedule: "0 14 * * *", timezone: "UTC" },
+      category: "maintain",
+      ...overrides,
+    } as AgentDef;
+  }
+
+  it("lists every registered agent with its trigger and category", async () => {
+    const deps = testDeps();
+    deps.agents = [cronAgent(), { name: "builder", enabled: true, trigger: { type: "dispatched" } } as AgentDef];
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/agents", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+    const parsed = JSON.parse(result.body);
+    expect(parsed.map((a: { name: string }) => a.name)).toEqual(["dependency-scout", "builder"]);
+    expect(parsed[0].category).toBe("maintain");
+    expect(parsed[0].trigger).toEqual({ type: "cron", schedule: "0 14 * * *", timezone: "UTC" });
+  });
+
+  it("reflects a dashboard-disabled override even when the yaml itself says enabled", async () => {
+    const deps = testDeps();
+    deps.agents = [cronAgent()];
+    await deps.overrides.set("disabledAgents", ["dependency-scout"], "test");
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/agents", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body);
+    expect(parsed[0].enabled).toBe(false);
+  });
+
+  it("includes the last recorded run's time and status", async () => {
+    const deps = testDeps();
+    deps.agents = [cronAgent()];
+    const writer = await deps.runs.open(newRunId("dependency-scout"), "dependency-scout");
+    await writer.close({ status: "success", summary: "" });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/agents", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body);
+    expect(parsed[0].lastRunStatus).toBe("success");
+    expect(parsed[0].lastRunAt).not.toBeNull();
+  });
+
+  it("flags a cron agent as stale once it's gone well past its own cadence", async () => {
+    const deps = testDeps();
+    deps.agents = [cronAgent()];
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T00:00:00.000Z"));
+    try {
+      const writer = await deps.runs.open(newRunId("dependency-scout"), "dependency-scout");
+      await writer.close({ status: "success", summary: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-05T00:00:00.000Z")); // 4 days later, daily cadence
+    try {
+      const result = await server(deps).handleRequest({
+        method: "GET", path: "/api/agents", query: new URLSearchParams(), authHeader: AUTH, body: "",
+      });
+      const parsed = JSON.parse(result.body);
+      expect(parsed[0].stale).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never flags a disabled or non-cron agent as stale", async () => {
+    const deps = testDeps();
+    deps.agents = [
+      cronAgent({ name: "disabled-scout", enabled: false }),
+      { name: "builder", enabled: true, trigger: { type: "dispatched" } } as AgentDef,
+    ];
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/agents", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body);
+    expect(parsed.every((a: { stale: boolean }) => a.stale === false)).toBe(true);
+  });
+});
+
 describe("GET /api/world", () => {
   it("returns portfolio, shelf, and findings together", async () => {
     const deps = testDeps();
