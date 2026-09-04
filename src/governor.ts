@@ -84,12 +84,16 @@ export class Governor {
   private readonly waiters: Array<() => void> = [];
   private consecutiveRateLimitErrors = 0;
   /**
-   * recordedAt of the last rate-limit snapshot a refusal has already alerted
-   * on — see the alert:false comments below. In-memory only: a restart
-   * re-alerts once for a still-stale snapshot, same posture as
+   * Serialized identity of the last rate-limit snapshot a refusal has already
+   * alerted on — see the alert:false comments below. Keyed on the snapshot's
+   * full content rather than just `recordedAt`: a real rate_limit_event
+   * stream can record two distinct readings (different utilization/status)
+   * within the same millisecond, and `recordedAt` alone would then wrongly
+   * treat the second, possibly-worse reading as a repeat of the first. In-memory
+   * only: a restart re-alerts once for a still-stale snapshot, same posture as
    * consecutiveRateLimitErrors above.
    */
-  private lastAlertedRateLimitAt: string | null = null;
+  private lastAlertedRateLimitSnapshot: string | null = null;
   /** Calendar day (per spentToday's own timezone rule) the budget-reached alert last fired for. */
   private lastAlertedBudgetDay: string | null = null;
 
@@ -161,10 +165,11 @@ export class Governor {
     if (snapshot?.status === "rejected") {
       // alert only the first time THIS snapshot is seen refusing — see the
       // pause-threshold check below, which shares the same reasoning and the
-      // same lastAlertedRateLimitAt marker (one shared "have we already told
-      // Discord about the rate-limit state as of this recordedAt" flag).
-      const alert = this.lastAlertedRateLimitAt !== snapshot.recordedAt;
-      this.lastAlertedRateLimitAt = snapshot.recordedAt;
+      // same lastAlertedRateLimitSnapshot marker (one shared "have we already
+      // told Discord about this exact rate-limit reading" flag).
+      const key = JSON.stringify(snapshot);
+      const alert = this.lastAlertedRateLimitSnapshot !== key;
+      this.lastAlertedRateLimitSnapshot = key;
       return { kind: "refuse", reason: `rate limit currently rejected (as of ${snapshot.recordedAt})`, alert };
     }
     // Utilization can climb toward 1.0 for days under "allowed_warning"
@@ -184,8 +189,9 @@ export class Governor {
       // task) firing every 30s reposted this exact line to Discord for as
       // long as it stayed there. One alert per distinct snapshot; `!status`
       // shows the current utilization thereafter.
-      const alert = this.lastAlertedRateLimitAt !== snapshot.recordedAt;
-      this.lastAlertedRateLimitAt = snapshot.recordedAt;
+      const key = JSON.stringify(snapshot);
+      const alert = this.lastAlertedRateLimitSnapshot !== key;
+      this.lastAlertedRateLimitSnapshot = key;
       return {
         kind: "refuse",
         reason: `rate limit utilization ${(snapshot.utilization * 100).toFixed(0)}% has reached the pause threshold (${(settings.rateLimitPauseThreshold * 100).toFixed(0)}%, as of ${snapshot.recordedAt})`,
