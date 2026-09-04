@@ -129,6 +129,7 @@ export class TaskStore {
     parentId?: string;
     wantsDetail?: boolean;
     category?: TaskCategory;
+    specialistAgent?: string;
   }): Promise<Task> {
     await mkdir(this.dir(), { recursive: true });
     const task: Task = {
@@ -141,6 +142,7 @@ export class TaskStore {
       createdAt: new Date().toISOString(),
       ...(input.parentId ? { parentId: input.parentId } : {}),
       ...(input.wantsDetail ? { wantsDetail: true } : {}),
+      ...(input.specialistAgent ? { specialistAgent: input.specialistAgent } : {}),
     };
     await writeFileAtomic(this.path(task.id), JSON.stringify(task, null, 2) + "\n");
     return task;

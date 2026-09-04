@@ -5,6 +5,7 @@ import type { GitCloner } from "../control/git-cloner.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
 import type { PendingStore } from "../control/pending.js";
+import type { Router } from "../control/router.js";
 import type { TaskReviewer } from "../control/task-reviewer.js";
 import type { TaskStore } from "../control/task-store.js";
 import type { Grant } from "../grants.js";
@@ -39,6 +40,7 @@ export function buildRunner(
     gitCloner?: GitCloner;
     tasks?: TaskStore;
     taskReviewer?: TaskReviewer;
+    router?: Router;
     wake?: () => Promise<void>;
     systemContext?: string;
     memory?: MemoryStore;

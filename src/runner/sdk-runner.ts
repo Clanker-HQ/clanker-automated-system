@@ -4,6 +4,7 @@ import type { MemoryConfig } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import { touchesExcludedPath } from "../control/excluded-paths.js";
 import type { FindingReviewer } from "../control/finding-reviewer.js";
+import { specialistsOf, type Router } from "../control/router.js";
 import type { GitCloner } from "../control/git-cloner.js";
 import type { GitPusher } from "../control/git-pusher.js";
 import type { GithubTransport } from "../control/github-transport.js";
@@ -481,6 +482,15 @@ export class SdkRunner implements Runner {
       wake?: () => Promise<void>;
       /** Optional: without it, queueTask queues exactly what's given, no automated rationale check — same fallback posture as findingReviewer below. */
       taskReviewer?: TaskReviewer;
+      /**
+       * The same Router dispatcher.ts uses, reused here to preflight a
+       * proposal at queue time rather than let it die at dispatch time with a
+       * terminal, non-retryable "no specialist matched this task" the
+       * queueing agent never sees. Requires `agents` (below) too — without
+       * either, queueTask keeps its old behaviour: no preflight, no
+       * pre-assigned specialistAgent.
+       */
+      router?: Router;
       /** docs/system-context.md's contents, read once at boot (src/index.ts). Optional so tests/scripts that don't care can skip it — the systemContext tool is simply not registered without it. */
       systemContext?: string;
       /** Optional, same shape as `tasks`: without it queueTask keeps its old flat-priority behaviour and writes no memory records. */
@@ -1066,6 +1076,8 @@ export class SdkRunner implements Runner {
     const tasksDep = this.deps.tasks;
     const wakeDep = this.deps.wake;
     const taskReviewerDep = this.deps.taskReviewer;
+    const routerDep = this.deps.router;
+    const agentsDep = this.deps.agents;
     // Scoped to research alone: its own prompt.md is the only one instructed
     // to call queueTask off a "something concrete is worth building" research
     // conclusion — the one path that flows straight to `builder` and
@@ -1206,6 +1218,32 @@ export class SdkRunner implements Runner {
                         }
                       }
 
+                      // Runs the same routing decision dispatcher.ts makes at
+                      // claim time, but here — before the proposal ever enters
+                      // the queue — so a task nothing is scoped to execute
+                      // gets refused where the calling agent can still react
+                      // (recast it, or drop it), rather than dying days later
+                      // as a terminal "no specialist matched this task" no
+                      // queueing agent ever sees. Both deps optional and
+                      // required together: without either, behaviour is
+                      // unchanged from before this check existed.
+                      let routedSpecialist: string | undefined;
+                      if (routerDep && agentsDep) {
+                        const chosenName = await routerDep.route(text, specialistsOf(agentsDep));
+                        if (!chosenName) {
+                          queueTaskCalls += 1;
+                          return {
+                            content: [
+                              {
+                                type: "text" as const,
+                                text: "Refused: no registered specialist agent would take this on — recast it as something one of them can execute, or drop this proposal.",
+                              },
+                            ],
+                          };
+                        }
+                        routedSpecialist = chosenName;
+                      }
+
                       queueTaskCalls += 1;
                       const created = await tasksDep.create({
                         // `text` alone was already bounded by the schema's
@@ -1218,6 +1256,7 @@ export class SdkRunner implements Runner {
                         createdBy: `agent:${agent.name}`,
                         wantsDetail: true,
                         category,
+                        specialistAgent: routedSpecialist,
                       });
                       if (memory && cfg?.enabled) {
                         // Best-effort for the same reason as the suppressed

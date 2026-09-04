@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PendingStore } from "../src/control/pending.js";
+import { FakeRouter } from "../src/control/router.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "../src/control/task-store.js";
 import { FakeTaskReviewer } from "../src/control/task-reviewer.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
@@ -496,6 +497,132 @@ describe("SdkRunner queueTask automated review (research only)", () => {
 
     expect(fourth.content[0]!.text).toContain("maximum allowed in one run");
     expect(await tasks.list()).toEqual([]);
+  });
+});
+
+// A task queued for work no registered specialist is scoped to do (a domain
+// registration, a stakeholder-validation checklist, a weeks-long demand-
+// validation campaign) previously sailed straight into the queue and only
+// died later at dispatch with "no specialist matched this task" — a terminal,
+// non-retryable failure the queueing agent never even sees. This gate runs
+// the same routing decision dispatcher.ts makes, but at queue time, so the
+// calling agent can react (recast or drop it) in the same run instead of the
+// proposal silently dying days later.
+describe("SdkRunner queueTask router preflight", () => {
+  const BUILDER_SPECIALIST = {
+    name: "builder",
+    enabled: true,
+    trigger: { type: "dispatched" },
+    description: "Implements a small, well-described code change.",
+  } as unknown as AgentDef;
+
+  it("refuses a proposal no registered specialist would take, without creating a task", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const router = new FakeRouter(null);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({
+      grants: [], pending: new PendingStore(dir), tasks, wake, router, agents: [BUILDER_SPECIALIST],
+    });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Register a domain and configure DNS for the VPS." })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Refused");
+    expect(await tasks.list()).toEqual([]);
+  });
+
+  it("queues the task with the routed specialist pre-assigned when one fits", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const router = new FakeRouter("builder");
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({
+      grants: [], pending: new PendingStore(dir), tasks, wake, router, agents: [BUILDER_SPECIALIST],
+    });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Fix the off-by-one in the pagination helper." })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Queued task");
+    const created = await tasks.list();
+    expect(created[0]?.specialistAgent).toBe("builder");
+  });
+
+  it("counts a routing refusal against the same per-run cap as any other refusal", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const router = new FakeRouter(null);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({
+      grants: [], pending: new PendingStore(dir), tasks, wake, router, agents: [BUILDER_SPECIALIST],
+    });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    await handler({ text: "one" });
+    await handler({ text: "two" });
+    await handler({ text: "three" });
+    const fourth = (await handler({ text: "four" })) as { content: { type: string; text: string }[] };
+
+    expect(fourth.content[0]!.text).toContain("maximum allowed in one run");
+    expect(await tasks.list()).toEqual([]);
+  });
+
+  it("keeps the old behavior (no preflight) when router is not wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({
+      grants: [], pending: new PendingStore(dir), tasks, wake, agents: [BUILDER_SPECIALIST],
+    });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Register a domain and configure DNS for the VPS." })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Queued task");
+    expect(await tasks.list()).toHaveLength(1);
+  });
+
+  it("keeps the old behavior (no preflight) when the agent registry is not wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const wake = vi.fn().mockResolvedValue(undefined);
+    const router = new FakeRouter(null);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks, wake, router });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.queueTask!.handler;
+
+    const result = (await handler({ text: "Register a domain and configure DNS for the VPS." })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]!.text).toContain("Queued task");
+    expect(await tasks.list()).toHaveLength(1);
   });
 });
 
