@@ -184,10 +184,14 @@ call which specialist should handle each one, and runs it through the same
 Governor as every other agent. Claimed tasks run concurrently, not one at a
 time — actual concurrency is bounded by `governor.maxConcurrent`, the same
 limit a cron agent's trigger is already subject to, not by how many tasks
-happen to be queued. Today there is exactly one specialist, `research`: it
-searches and reads the open web and writes up what it finds, with no code
-changes, no publishing, and no spending. When the run finishes, the channel
-gets a
+happen to be queued. Three specialists exist today: `research` searches and
+reads the open web and writes up what it finds, with no code changes, no
+publishing, and no spending; `builder` implements a small, well-described
+code change, commits it, pushes it to a dedicated namespace, and opens a PR
+(never merges — `pr-reviewer` and `mergePR` own that); `repair` does the
+same, but only to fix another dispatched agent's own broken prompt/code
+after re-enabling or un-tripping it hasn't already fixed things. When the
+run finishes, the channel gets a
 task-id-correlated line (`✅ Task <id> done: …` or `❌ Task <id> failed: …`)
 alongside the agent's own run report, and the full artifact is on disk under
 `data/runs/<runId>/`. That completion line is a short summary by default;
