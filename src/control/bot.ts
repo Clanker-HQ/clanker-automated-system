@@ -10,7 +10,17 @@ import { specialistsOf, type Router } from "./router.js";
 import type { GovernorStatus } from "../governor.js";
 import type { RunResult, RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
+import { agentLiveness } from "../state/liveness.js";
+import type { StrategyStore } from "../world/strategy.js";
 import { MAX_TASK_TEXT_LENGTH, type Task, type TaskStore } from "./task-store.js";
+
+/** `!agents`' last-run column: coarse enough for a Discord line, not a precise duration. */
+function timeAgo(at: Date, now: Date): string {
+  const hours = (now.getTime() - at.getTime()) / (60 * 60 * 1000);
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m ago`;
+  if (hours < 48) return `${hours.toFixed(1)}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
 
 export interface IncomingMessage {
   channelId: string;
@@ -123,6 +133,12 @@ export class DiscordBot {
    * (sdk-runner.ts), applied to the human-facing path too.
    */
   private readonly router: Router | undefined;
+  /**
+   * Optional: without it, `!agents` still lists every agent but never marks
+   * one stale from a zero-allocated category (fail open, same as cron.ts and
+   * the digest/dashboard's own cron-liveness checks).
+   */
+  private readonly strategyStore: StrategyStore | undefined;
   /** Pending ids currently mid-resume, so a repeated `approve <id>` cannot start a second resume of the same entry while the first is still running. */
   private readonly resuming = new Set<string>();
 
@@ -134,6 +150,7 @@ export class DiscordBot {
     ownerId: string;
     tasks: TaskStore; dispatcher: WakeableDispatcher; governor: StatusCapableGovernor;
     router?: Router;
+    strategyStore?: StrategyStore;
   }) {
     this.transport = opts.transport;
     this.pending = opts.pending;
@@ -149,6 +166,7 @@ export class DiscordBot {
     this.governor = opts.governor;
     this.dispatcher = opts.dispatcher;
     this.router = opts.router;
+    this.strategyStore = opts.strategyStore;
   }
 
   async postApproval(entry: PendingEntry): Promise<void> {
@@ -332,6 +350,26 @@ export class DiscordBot {
         const { rmSync } = await import("node:fs");
         rmSync(join(this.dataDir, "STOP"), { force: true });
         return void reply("▶️ STOP file cleared. Runs resume on the next trigger.");
+      }
+      case "!agents": {
+        const overrides = await this.overrides.read();
+        const disabledSet = new Set(overrides.disabledAgents ?? []);
+        const strategy = this.strategyStore ? await this.strategyStore.latest() : null;
+        const now = new Date();
+        const lines = await Promise.all(
+          this.agents.map(async (agent) => {
+            const lastRun = await this.store.latestFor(agent.name);
+            const liveness = agentLiveness({
+              agent, strategy, lastRunAt: lastRun ? new Date(lastRun.startedAt) : null, now,
+            });
+            const enabled = agent.enabled && !disabledSet.has(agent.name);
+            const trigger = agent.trigger.type === "cron" ? `cron ${agent.trigger.schedule} (${agent.trigger.timezone})` : agent.trigger.type;
+            const lastRunText = lastRun ? `${lastRun.status} ${timeAgo(new Date(lastRun.startedAt), now)}` : "never run";
+            const staleFlag = liveness.stale ? " ⚠️ stale" : "";
+            return `**${agent.name}** — ${agent.category ?? "no category"} — ${trigger} — ${enabled ? "enabled" : "disabled"} — ${lastRunText}${staleFlag}`;
+          }),
+        );
+        return void reply(lines.length > 0 ? lines.join("\n") : "No agents loaded.");
       }
       case "!disable": {
         if (!arg.trim()) return void reply("Usage: `!disable <agent-name>`");
