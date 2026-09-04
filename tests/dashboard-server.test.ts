@@ -603,6 +603,32 @@ describe("GET /api/world", () => {
     expect(parsed.portfolio).toHaveLength(1);
     expect(parsed.findings).toHaveLength(1);
   });
+
+  it("flags a portfolio entry whose review date has passed", async () => {
+    const deps = testDeps();
+    await deps.world.upsertPortfolioEntry({
+      slug: "widget-api", purpose: "x", status: "live", nextReviewAt: "2020-01-01",
+      bar: "y", monthlyCostUsd: 5, notes: [], extensionCount: 0,
+    });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/world", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body);
+    expect(parsed.portfolio[0].reviewOverdue).toBe(true);
+  });
+
+  it("never flags a killed entry as overdue, however old its review date", async () => {
+    const deps = testDeps();
+    await deps.world.upsertPortfolioEntry({
+      slug: "old-idea", purpose: "x", status: "killed", nextReviewAt: "2020-01-01",
+      bar: "y", monthlyCostUsd: 0, notes: [], extensionCount: 0,
+    });
+    const result = await server(deps).handleRequest({
+      method: "GET", path: "/api/world", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    const parsed = JSON.parse(result.body);
+    expect(parsed.portfolio[0].reviewOverdue).toBe(false);
+  });
 });
 
 describe("GET /api/metrics", () => {

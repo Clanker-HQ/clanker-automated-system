@@ -754,7 +754,7 @@
       setNotice("world-error", null);
 
       document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
-        <tr><td>${escapeHtml(p.slug)}</td><td>${statusChip(p.status)}</td><td class="num">${escapeHtml(p.nextReviewAt)}</td><td class="num">$${p.monthlyCostUsd}</td></tr>
+        <tr><td>${escapeHtml(p.slug)}</td><td>${statusChip(p.status)}</td><td class="num">${escapeHtml(p.nextReviewAt)}${p.reviewOverdue ? " ⚠️ overdue" : ""}</td><td class="num">$${p.monthlyCostUsd}</td></tr>
       `).join("") || `<tr><td colspan="4"><span class="empty-state">No products in the portfolio yet.</span></td></tr>`;
 
       document.getElementById("world-shelf-list").innerHTML = shelf.length

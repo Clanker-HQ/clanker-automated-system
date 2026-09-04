@@ -9,6 +9,7 @@ import type { Governor } from "../governor.js";
 import type { BreakerStore } from "../state/breaker.js";
 import { agentLiveness } from "../state/liveness.js";
 import type { MetricsStore } from "../state/metrics-store.js";
+import { dueReviews } from "../world/reviews.js";
 import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
 import type { TaskStore } from "./task-store.js";
@@ -404,7 +405,9 @@ export class DashboardServer {
         const [portfolio, shelf, findings] = await Promise.all([
           this.deps.world.readPortfolio(), this.deps.world.readShelf(), this.deps.world.listFindings(),
         ]);
-        return json(200, { portfolio, shelf, findings });
+        const overdue = new Set(dueReviews(portfolio, new Date()).map((e) => e.slug));
+        const annotatedPortfolio = portfolio.map((entry) => ({ ...entry, reviewOverdue: overdue.has(entry.slug) }));
+        return json(200, { portfolio: annotatedPortfolio, shelf, findings });
       }
 
       if (req.method === "GET" && req.path === "/api/metrics") {
