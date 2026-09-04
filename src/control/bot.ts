@@ -11,7 +11,9 @@ import type { GovernorStatus } from "../governor.js";
 import type { RunResult, RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
 import { agentLiveness } from "../state/liveness.js";
+import { dueReviews } from "../world/reviews.js";
 import type { StrategyStore } from "../world/strategy.js";
+import type { WorldModel } from "../world/world-model.js";
 import { MAX_TASK_TEXT_LENGTH, type Task, type TaskStore } from "./task-store.js";
 
 /** `!agents`' last-run column: coarse enough for a Discord line, not a precise duration. */
@@ -139,6 +141,8 @@ export class DiscordBot {
    * the digest/dashboard's own cron-liveness checks).
    */
   private readonly strategyStore: StrategyStore | undefined;
+  /** Optional: without it, `!portfolio` replies that no world model is configured. */
+  private readonly world: WorldModel | undefined;
   /** Pending ids currently mid-resume, so a repeated `approve <id>` cannot start a second resume of the same entry while the first is still running. */
   private readonly resuming = new Set<string>();
 
@@ -151,6 +155,7 @@ export class DiscordBot {
     tasks: TaskStore; dispatcher: WakeableDispatcher; governor: StatusCapableGovernor;
     router?: Router;
     strategyStore?: StrategyStore;
+    world?: WorldModel;
   }) {
     this.transport = opts.transport;
     this.pending = opts.pending;
@@ -167,6 +172,7 @@ export class DiscordBot {
     this.dispatcher = opts.dispatcher;
     this.router = opts.router;
     this.strategyStore = opts.strategyStore;
+    this.world = opts.world;
   }
 
   async postApproval(entry: PendingEntry): Promise<void> {
@@ -370,6 +376,18 @@ export class DiscordBot {
           }),
         );
         return void reply(lines.length > 0 ? lines.join("\n") : "No agents loaded.");
+      }
+      case "!portfolio": {
+        if (!this.world) return void reply("No world model configured.");
+        const portfolio = await this.world.readPortfolio();
+        if (portfolio.length === 0) return void reply("No portfolio entries yet.");
+        const overdue = new Set(dueReviews(portfolio, new Date()).map((e) => e.slug));
+        const lines = portfolio.map((entry) => {
+          const flag = overdue.has(entry.slug) ? " ⚠️ review overdue" : "";
+          const latestNote = entry.notes.length > 0 ? entry.notes[entry.notes.length - 1] : "no notes yet";
+          return `**${entry.slug}** — ${entry.status} — $${entry.monthlyCostUsd}/mo — review ${entry.nextReviewAt}${flag} — ${entry.purpose} — latest: ${latestNote}`;
+        });
+        return void reply(lines.join("\n"));
       }
       case "!disable": {
         if (!arg.trim()) return void reply("Usage: `!disable <agent-name>`");
