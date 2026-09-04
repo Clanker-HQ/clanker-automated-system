@@ -242,6 +242,48 @@ describe("POST /api/tasks", () => {
     });
     expect(result.status).toBe(400);
   });
+
+  // Same gap !task had: queueTask's own preflight (sdk-runner.ts) refuses a
+  // proposal no specialist can execute before it enters the queue, but this
+  // human-facing endpoint never got the same check, so a request made here
+  // could still silently queue and die days later at dispatch.
+  it("refuses a request no registered specialist would take, creating nothing", async () => {
+    const { FakeRouter } = await import("../src/control/router.js");
+    const BUILDER = {
+      name: "builder", description: "Implements a small, well-described code change.",
+      enabled: true, trigger: { type: "dispatched" },
+    } as unknown as AgentDef;
+    const deps = { ...testDeps(), router: new FakeRouter(null), agents: [BUILDER] };
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/tasks", query: new URLSearchParams(), authHeader: AUTH,
+      body: JSON.stringify({ text: "register a domain and configure DNS" }),
+    });
+    expect(result.status).toBe(422);
+    expect(await deps.tasks.list()).toEqual([]);
+  });
+
+  it("pre-assigns the routed specialist when one fits", async () => {
+    const { FakeRouter } = await import("../src/control/router.js");
+    const BUILDER = {
+      name: "builder", description: "Implements a small, well-described code change.",
+      enabled: true, trigger: { type: "dispatched" },
+    } as unknown as AgentDef;
+    const deps = { ...testDeps(), router: new FakeRouter("builder"), agents: [BUILDER] };
+    const result = await server(deps).handleRequest({
+      method: "POST", path: "/api/tasks", query: new URLSearchParams(), authHeader: AUTH,
+      body: JSON.stringify({ text: "fix the typo in README" }),
+    });
+    expect(result.status).toBe(201);
+    expect(JSON.parse(result.body).specialistAgent).toBe("builder");
+  });
+
+  it("keeps the old behavior (no routing check) when router is not wired in", async () => {
+    const result = await server().handleRequest({
+      method: "POST", path: "/api/tasks", query: new URLSearchParams(), authHeader: AUTH,
+      body: JSON.stringify({ text: "anything at all" }),
+    });
+    expect(result.status).toBe(201);
+  });
 });
 
 describe("POST /api/tasks/:id/retry", () => {

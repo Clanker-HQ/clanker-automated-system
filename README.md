@@ -178,10 +178,17 @@ finish first.
 
 **The task queue.** `!task <text>` durably queues a free-form request under
 `data/tasks/<id>.json` — it survives a restart. Capped at 4000 characters,
-so an accidental giant paste is rejected up front rather than queued. A
-dispatcher claims pending tasks highest-priority first, asks a cheap routing
-call which specialist should handle each one, and runs it through the same
-Governor as every other agent. Claimed tasks run concurrently, not one at a
+so an accidental giant paste is rejected up front rather than queued.
+Before queuing, it runs the same routing check the dispatcher would make at
+claim time — if no registered specialist fits, it says so immediately
+instead of queuing a task that would otherwise die days later with a
+terminal "no specialist matched this task"; every other task-creation path
+(the dashboard's own `POST /api/tasks`, an agent's own `queueTask` tool)
+runs the identical preflight, pre-assigning the routed specialist so
+dispatch doesn't pay for routing twice. A dispatcher claims pending tasks
+highest-priority first, asks a cheap routing call which specialist should
+handle each one, and runs it through the same Governor as every other
+agent. Claimed tasks run concurrently, not one at a
 time — actual concurrency is bounded by `governor.maxConcurrent`, the same
 limit a cron agent's trigger is already subject to, not by how many tasks
 happen to be queued. Three specialists exist today: `research` searches and

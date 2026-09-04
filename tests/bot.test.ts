@@ -6,17 +6,24 @@ import { DiscordBot, FakeBotTransport } from "../src/control/bot.js";
 import { ConfigOverridesStore } from "../src/config-overrides.js";
 import { PendingStore } from "../src/control/pending.js";
 import type { GovernorStatus } from "../src/governor.js";
+import type { Router } from "../src/control/router.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
 import { BreakerStore } from "../src/state/breaker.js";
 import { TaskStore } from "../src/control/task-store.js";
 
 const AGENTS = [{ name: "smoke", workspace: "/ws/smoke" } as AgentDef];
+const BUILDER = {
+  name: "builder",
+  description: "Implements a small, well-described code change.",
+  enabled: true,
+  trigger: { type: "dispatched" },
+} as unknown as AgentDef;
 
 /** Every `simulateMessage` below sends as this author; anything else must be ignored. */
 const OWNER = "owner";
 
-function setup() {
+function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-bot-"));
   const pending = new PendingStore(dataDir);
   const transport = new FakeBotTransport();
@@ -37,10 +44,10 @@ function setup() {
   };
   const governor = { status: async () => governorStatus, adjustConcurrency: vi.fn() };
   const bot = new DiscordBot({
-    transport, pending, orchestrator: orchestrator as never, agents: AGENTS,
+    transport, pending, orchestrator: orchestrator as never, agents: opts.agents ?? AGENTS,
     channelFor: () => "smoke-channel",
     store, overrides, breaker, dataDir, ownerId: OWNER,
-    tasks, dispatcher, governor,
+    tasks, dispatcher, governor, router: opts.router,
   });
   return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus, governor };
 }
@@ -472,6 +479,43 @@ describe("DiscordBot task commands", () => {
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task" });
     expect(await tasks.list()).toEqual([]);
     expect(transport.sent[0]?.text).toContain("Usage");
+  });
+
+  // The bug this closes: PR #31 taught queueTask (an agent's own tool) to
+  // refuse a proposal no specialist can execute, before it ever enters the
+  // queue -- but !task, the HUMAN-facing path, was never covered, even
+  // though the PR's own motivating example ("register a domain and
+  // configure DNS") is exactly the kind of request a human would type here
+  // too. Without this, a human's own request could still silently queue and
+  // die days later with a terminal "no specialist matched this task".
+  it("!task refuses a request no registered specialist would take, creating nothing", async () => {
+    const { FakeRouter } = await import("../src/control/router.js");
+    const router = new FakeRouter(null);
+    const { transport, bot, tasks } = setup({ router, agents: [BUILDER] });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task register a domain and configure DNS" });
+    expect(await tasks.list()).toEqual([]);
+    expect(transport.sent[0]?.text).toMatch(/no registered specialist/i);
+  });
+
+  it("!task pre-assigns the routed specialist when one fits, so dispatch doesn't route twice", async () => {
+    const { FakeRouter } = await import("../src/control/router.js");
+    const router = new FakeRouter("builder");
+    const { transport, bot, tasks } = setup({ router, agents: [BUILDER] });
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task fix the typo in README" });
+    const all = await tasks.list();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.specialistAgent).toBe("builder");
+    expect(transport.sent[0]?.text).toContain(all[0]!.id);
+  });
+
+  it("!task keeps the old behavior (no routing check) when router is not wired in", async () => {
+    const { transport, bot, tasks } = setup();
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!task anything at all" });
+    expect(await tasks.list()).toHaveLength(1);
+    expect(transport.sent[0]?.text).not.toMatch(/no registered specialist/i);
   });
 
   it("!task rejects text over the length cap, creating nothing", async () => {
