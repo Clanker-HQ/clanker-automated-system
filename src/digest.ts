@@ -152,7 +152,7 @@ export async function buildDigestText(opts: {
   return lines.join("\n");
 }
 
-function formatMetricsLine(latest: Metrics, previous: Metrics | null): string {
+export function formatMetricsLine(latest: Metrics, previous: Metrics | null): string {
   // A delta is only meaningful between two snapshots that both actually read
   // the merchant of record. Against a data gap it invents a collapse (or a
   // recovery) out of a number nobody measured.
