@@ -236,10 +236,14 @@ describe("Governor.admit", () => {
   it("alerts again once a fresh rate-limit snapshot replaces the one already alerted on", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const tracker = new RateLimitTracker(dir);
-    await tracker.record({ status: "allowed_warning", utilization: 0.97 });
+    await tracker.record({ status: "allowed_warning", utilization: 0.97 }, new Date(FIXED_NOW_MS));
     const governor = build(dir);
     expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
-    await tracker.record({ status: "allowed_warning", utilization: 0.98 });
+    // Same recordedAt as the snapshot above (a real rate_limit_event stream can
+    // land two readings in the same millisecond) but a different utilization —
+    // this must still count as a fresh snapshot, not a repeat of the one
+    // already alerted on.
+    await tracker.record({ status: "allowed_warning", utilization: 0.98 }, new Date(FIXED_NOW_MS));
     expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
   });
 
