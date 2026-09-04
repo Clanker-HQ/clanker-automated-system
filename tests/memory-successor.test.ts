@@ -4,8 +4,17 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import { proposeSuccessors, type SuccessorSuggestion } from "../src/memory/successor.js";
+import { FakeRouter } from "../src/control/router.js";
 import { TaskStore } from "../src/control/task-store.js";
 import type { Task } from "../src/control/task-store.js";
+import type { AgentDef } from "../src/registry.js";
+
+const BUILDER = {
+  name: "builder",
+  description: "Implements a small, well-described code change.",
+  enabled: true,
+  trigger: { type: "dispatched" },
+} as unknown as AgentDef;
 
 const NOW = new Date("2026-08-30T00:00:00.000Z");
 
@@ -95,5 +104,37 @@ describe("proposeSuccessors", () => {
 
   it("proposes nothing when memory is disabled", async () => {
     expect(await proposeSuccessors(input({ config: { ...CONFIG, enabled: false } }))).toEqual([]);
+  });
+
+  // The bug this closes: proposeSuccessors used to call tasks.create() with no
+  // routing check at all, unlike queueTask (the MCP tool an agent calls
+  // directly), which got a router preflight so an unroutable proposal is
+  // refused before it ever enters the queue. A successor suggestion nothing
+  // can execute still slipped through this path, silently queuing and dying
+  // days later at dispatch with a terminal "no specialist matched this task" —
+  // the exact failure mode the preflight fix was supposed to eliminate.
+  it("skips a suggestion no registered specialist would take, creating no task for it", async () => {
+    const router = new FakeRouter(null);
+    const args = input({ router, agents: [BUILDER] });
+    expect(await proposeSuccessors(args)).toEqual([]);
+    expect((await args.tasks.list())).toHaveLength(0);
+    expect(router.calls).toHaveLength(1);
+  });
+
+  it("pre-assigns the routed specialist on a created successor task, same as queueTask's preflight", async () => {
+    const router = new FakeRouter("builder");
+    const args = input({ router, agents: [BUILDER] });
+    const created = await proposeSuccessors(args);
+    expect(created).toHaveLength(1);
+    const task = await args.tasks.get(created[0]!);
+    expect(task?.specialistAgent).toBe("builder");
+  });
+
+  it("keeps the old behavior (no routing check, no specialistAgent) when router/agents are not wired in", async () => {
+    const args = input();
+    const created = await proposeSuccessors(args);
+    expect(created).toHaveLength(1);
+    const task = await args.tasks.get(created[0]!);
+    expect(task?.specialistAgent).toBeUndefined();
   });
 });

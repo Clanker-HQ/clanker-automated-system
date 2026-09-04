@@ -1,5 +1,7 @@
 import type { MemoryConfig } from "../config.js";
 import { MAX_TASK_TEXT_LENGTH, type Task, type TaskStore } from "../control/task-store.js";
+import { specialistsOf, type Router } from "../control/router.js";
+import type { AgentDef } from "../registry.js";
 import type { MemoryStore } from "./memory-store.js";
 import { assessNovelty } from "./novelty-gate.js";
 import { priorityScore, toPriority } from "./scoring.js";
@@ -24,6 +26,16 @@ export interface SuccessorInput {
   config: MemoryConfig;
   suggest: SuccessorSuggester;
   now: Date;
+  /**
+   * Optional, and required together (same posture as queueTask's own
+   * preflight in sdk-runner.ts): without both, behaviour is unchanged from
+   * before this check existed. With both, a suggestion nothing can execute
+   * is skipped rather than created — this is the one path that creates tasks
+   * without going through queueTask's MCP tool at all, so it needs its own
+   * copy of the same preflight rather than inheriting the fix for free.
+   */
+  router?: Router;
+  agents?: AgentDef[];
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -68,6 +80,13 @@ export async function proposeSuccessors(input: SuccessorInput): Promise<string[]
       );
       if (verdict.kind === "suppressed") continue;
 
+      let specialistAgent: string | undefined;
+      if (input.router && input.agents) {
+        const chosenName = await input.router.route(suggestion.text, specialistsOf(input.agents));
+        if (!chosenName) continue;
+        specialistAgent = chosenName;
+      }
+
       const priority = toPriority(
         priorityScore(
           {
@@ -90,6 +109,7 @@ export async function proposeSuccessors(input: SuccessorInput): Promise<string[]
         createdBy: `agent:${input.agentName}`,
         parentId: input.parentTask.id,
         wantsDetail: true,
+        specialistAgent,
       });
       await input.memory.append({
         domain: suggestion.domain,
