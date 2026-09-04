@@ -314,6 +314,42 @@ describe("DiscordBot", () => {
     expect(transport.sent.some((m) => m.text.includes("no agent by that name is currently loaded"))).toBe(true);
   });
 
+  describe("!agents", () => {
+    const CRON_AGENT = {
+      name: "dependency-scout", enabled: true, category: "maintain",
+      trigger: { type: "cron", schedule: "0 14 * * *", timezone: "UTC" },
+    } as unknown as AgentDef;
+
+    it("lists every registered agent with category, trigger, and enabled state", async () => {
+      const { transport, bot } = setup({ agents: [CRON_AGENT, BUILDER] });
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!agents" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toContain("dependency-scout");
+      expect(reply).toContain("maintain");
+      expect(reply).toContain("0 14 * * *");
+      expect(reply).toContain("builder");
+      expect(reply).toContain("dispatched");
+    });
+
+    it("reflects a disabled override even when the agent's own yaml says enabled", async () => {
+      const { transport, bot, overrides } = setup({ agents: [CRON_AGENT] });
+      await overrides.set("disabledAgents", ["dependency-scout"], "test");
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!agents" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toMatch(/dependency-scout.*disabled/is);
+    });
+
+    it("shows the last run's status and flags a cron agent that has never run", async () => {
+      const { transport, bot } = setup({ agents: [CRON_AGENT] });
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!agents" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toMatch(/never run/i);
+    });
+  });
+
   // Critical: approve/deny/answer IS the human decision the whole tier/grant
   // system exists to require. Anyone who can see the channel must not be able
   // to supply it, or to run an admin command.

@@ -153,6 +153,7 @@ try again later, the id stays valid. Entries older than
 |---|---|
 | `!stop` | Write the STOP file — no new runs, and no resumes, until `!resume` |
 | `!resume` | Remove the STOP file |
+| `!agents` | List every registered agent: category, trigger (cron schedule or dispatched), enabled/disabled, last run's status and age, and a stale warning if a cron agent has gone well past its own schedule — so `!disable`/`!enable` below don't require already knowing the exact name by heart |
 | `!disable <agent>` | Stop triggering that one agent (a human resume still works). Refused, naming the agents that do exist, if `<agent>` matches none of them — a typo has no legitimate effect to have |
 | `!enable <agent>` | Re-enable it, and reset its circuit breaker. Still applied for a name matching no currently-loaded agent (the only way to clear a stale override left by an agent since removed from config), but the reply says so rather than implying a real agent was re-enabled |
 | `!budget <n>` | Set the daily spend ceiling in USD, e.g. `!budget 25` |

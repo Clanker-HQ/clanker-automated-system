@@ -325,7 +325,7 @@ async function main(): Promise<void> {
       return varName ? (process.env[varName] ?? "") : "";
     },
     store: runStore, overrides, breaker, dataDir: DATA_DIR,
-    tasks, dispatcher, governor, router,
+    tasks, dispatcher, governor, router, strategyStore,
   });
 
   void reconcileAndConnectBot({ pending, bot, timeoutHours: config.governor.pendingTimeoutHours });
