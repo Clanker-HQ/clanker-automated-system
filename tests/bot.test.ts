@@ -11,6 +11,7 @@ import type { AgentDef } from "../src/registry.js";
 import { RunStore } from "../src/run-store.js";
 import { BreakerStore } from "../src/state/breaker.js";
 import { TaskStore } from "../src/control/task-store.js";
+import { WorldModel } from "../src/world/world-model.js";
 
 const AGENTS = [{ name: "smoke", workspace: "/ws/smoke" } as AgentDef];
 const BUILDER = {
@@ -32,6 +33,7 @@ function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
   const overrides = new ConfigOverridesStore(dataDir);
   const breaker = new BreakerStore(dataDir);
   const tasks = new TaskStore(dataDir);
+  const world = new WorldModel(dataDir);
   const dispatcher = { wake: vi.fn().mockResolvedValue(undefined) };
   // Mutable so a test can adjust a field and see !status reflect it, without
   // needing a real Governor (and the config/run-store/rate-limit fixtures
@@ -47,9 +49,9 @@ function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
     transport, pending, orchestrator: orchestrator as never, agents: opts.agents ?? AGENTS,
     channelFor: () => "smoke-channel",
     store, overrides, breaker, dataDir, ownerId: OWNER,
-    tasks, dispatcher, governor, router: opts.router,
+    tasks, dispatcher, governor, router: opts.router, world,
   });
-  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus, governor };
+  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus, governor, world };
 }
 
 describe("DiscordBot", () => {
@@ -347,6 +349,56 @@ describe("DiscordBot", () => {
       await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!agents" });
       const reply = transport.sent.map((m) => m.text).join("\n");
       expect(reply).toMatch(/never run/i);
+    });
+  });
+
+  describe("!portfolio", () => {
+    it("lists every portfolio entry with status, monthly cost, and next review date", async () => {
+      const { transport, bot, world } = setup();
+      await world.upsertPortfolioEntry({
+        slug: "pilot-01", purpose: "PR/cycle-time dashboard on GitHub Marketplace", status: "building",
+        nextReviewAt: "2026-12-01", bar: "one paying stranger by 2026-09-30", monthlyCostUsd: 4, notes: [], extensionCount: 0,
+      });
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!portfolio" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toContain("pilot-01");
+      expect(reply).toContain("building");
+      expect(reply).toContain("4");
+      expect(reply).toContain("2026-12-01");
+    });
+
+    it("flags an entry whose review date has passed", async () => {
+      const { transport, bot, world } = setup();
+      await world.upsertPortfolioEntry({
+        slug: "widget-api", purpose: "x", status: "live", nextReviewAt: "2020-01-01",
+        bar: "y", monthlyCostUsd: 5, notes: [], extensionCount: 0,
+      });
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!portfolio" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toMatch(/widget-api.*overdue/is);
+    });
+
+    it("does not flag a killed entry as overdue, however old its review date", async () => {
+      const { transport, bot, world } = setup();
+      await world.upsertPortfolioEntry({
+        slug: "old-idea", purpose: "x", status: "killed", nextReviewAt: "2020-01-01",
+        bar: "y", monthlyCostUsd: 0, notes: [], extensionCount: 0,
+      });
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!portfolio" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toContain("old-idea");
+      expect(reply).not.toMatch(/overdue/i);
+    });
+
+    it("replies with a plain message when the portfolio is empty", async () => {
+      const { transport, bot } = setup();
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!portfolio" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toMatch(/no portfolio entries/i);
     });
   });
 
