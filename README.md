@@ -155,6 +155,7 @@ try again later, the id stays valid. Entries older than
 | `!resume` | Remove the STOP file |
 | `!agents` | List every registered agent: category, trigger (cron schedule or dispatched), enabled/disabled, last run's status and age, and a stale warning if a cron agent has gone well past its own schedule — so `!disable`/`!enable` below don't require already knowing the exact name by heart |
 | `!portfolio` | List every portfolio entry (slug, status, monthly cost, next review date, purpose, latest note), flagging one whose review date has passed — reusing the same `dueReviews` check the overseer's own prompt uses, so a killed entry's stale date is never flagged (killing is terminal) |
+| `!metrics` | The latest weekly metrics snapshot (net income, not-achieved rate, cost/completed task, novelty share, queue starvation) and its delta against the prior one — the same on-demand view the dashboard's Metrics tab gives, and the same line the daily digest posts automatically once a week |
 | `!disable <agent>` | Stop triggering that one agent (a human resume still works). Refused, naming the agents that do exist, if `<agent>` matches none of them — a typo has no legitimate effect to have |
 | `!enable <agent>` | Re-enable it, and reset its circuit breaker. Still applied for a name matching no currently-loaded agent (the only way to clear a stale override left by an agent since removed from config), but the reply says so rather than implying a real agent was re-enabled |
 | `!budget <n>` | Set the daily spend ceiling in USD, e.g. `!budget 25` |

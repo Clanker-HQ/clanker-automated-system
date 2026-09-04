@@ -12,6 +12,7 @@ import { RunStore } from "../src/run-store.js";
 import { BreakerStore } from "../src/state/breaker.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { WorldModel } from "../src/world/world-model.js";
+import { MetricsStore, type Metrics } from "../src/state/metrics-store.js";
 
 const AGENTS = [{ name: "smoke", workspace: "/ws/smoke" } as AgentDef];
 const BUILDER = {
@@ -24,6 +25,15 @@ const BUILDER = {
 /** Every `simulateMessage` below sends as this author; anything else must be ignored. */
 const OWNER = "owner";
 
+function metricsSnapshot(overrides: Partial<Metrics> = {}): Metrics {
+  return {
+    computedAt: "2026-09-01T00:00:00.000Z", windowDays: 7, netIncomeUsd: 42,
+    notAchievedRate: 0.1, notAchievedByAgent: [], costPerCompletedTaskUsd: 1.5,
+    noveltySharePercent: 90, suppressedProposalCount: 1, queueStarvationHours: 2,
+    ...overrides,
+  };
+}
+
 function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-bot-"));
   const pending = new PendingStore(dataDir);
@@ -34,6 +44,7 @@ function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
   const breaker = new BreakerStore(dataDir);
   const tasks = new TaskStore(dataDir);
   const world = new WorldModel(dataDir);
+  const metricsStore = new MetricsStore(dataDir);
   const dispatcher = { wake: vi.fn().mockResolvedValue(undefined) };
   // Mutable so a test can adjust a field and see !status reflect it, without
   // needing a real Governor (and the config/run-store/rate-limit fixtures
@@ -49,9 +60,9 @@ function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
     transport, pending, orchestrator: orchestrator as never, agents: opts.agents ?? AGENTS,
     channelFor: () => "smoke-channel",
     store, overrides, breaker, dataDir, ownerId: OWNER,
-    tasks, dispatcher, governor, router: opts.router, world,
+    tasks, dispatcher, governor, router: opts.router, world, metricsStore,
   });
-  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus, governor, world };
+  return { dataDir, pending, transport, orchestrator, bot, store, overrides, breaker, tasks, dispatcher, governorStatus, governor, world, metricsStore };
 }
 
 describe("DiscordBot", () => {
@@ -399,6 +410,36 @@ describe("DiscordBot", () => {
       await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!portfolio" });
       const reply = transport.sent.map((m) => m.text).join("\n");
       expect(reply).toMatch(/no portfolio entries/i);
+    });
+  });
+
+  describe("!metrics", () => {
+    it("shows the latest metrics snapshot", async () => {
+      const { transport, bot, metricsStore } = setup();
+      await metricsStore.write(metricsSnapshot({ netIncomeUsd: 42, notAchievedRate: 0.1 }));
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!metrics" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toContain("42");
+      expect(reply).toContain("10% not-achieved");
+    });
+
+    it("shows the delta against the previous snapshot", async () => {
+      const { transport, bot, metricsStore } = setup();
+      await metricsStore.write(metricsSnapshot({ computedAt: "2026-08-25T00:00:00.000Z", netIncomeUsd: 10 }));
+      await metricsStore.write(metricsSnapshot({ computedAt: "2026-09-01T00:00:00.000Z", netIncomeUsd: 42 }));
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!metrics" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toContain("+$32.00 vs prior snapshot");
+    });
+
+    it("replies with a plain message when no metrics have been computed yet", async () => {
+      const { transport, bot } = setup();
+      await bot.start();
+      await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!metrics" });
+      const reply = transport.sent.map((m) => m.text).join("\n");
+      expect(reply).toMatch(/no metrics/i);
     });
   });
 

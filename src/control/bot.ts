@@ -10,7 +10,9 @@ import { specialistsOf, type Router } from "./router.js";
 import type { GovernorStatus } from "../governor.js";
 import type { RunResult, RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
+import { formatMetricsLine } from "../digest.js";
 import { agentLiveness } from "../state/liveness.js";
+import type { MetricsStore } from "../state/metrics-store.js";
 import { dueReviews } from "../world/reviews.js";
 import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
@@ -143,6 +145,8 @@ export class DiscordBot {
   private readonly strategyStore: StrategyStore | undefined;
   /** Optional: without it, `!portfolio` replies that no world model is configured. */
   private readonly world: WorldModel | undefined;
+  /** Optional: without it, `!metrics` replies that no metrics store is configured. */
+  private readonly metricsStore: MetricsStore | undefined;
   /** Pending ids currently mid-resume, so a repeated `approve <id>` cannot start a second resume of the same entry while the first is still running. */
   private readonly resuming = new Set<string>();
 
@@ -156,6 +160,7 @@ export class DiscordBot {
     router?: Router;
     strategyStore?: StrategyStore;
     world?: WorldModel;
+    metricsStore?: MetricsStore;
   }) {
     this.transport = opts.transport;
     this.pending = opts.pending;
@@ -173,6 +178,7 @@ export class DiscordBot {
     this.router = opts.router;
     this.strategyStore = opts.strategyStore;
     this.world = opts.world;
+    this.metricsStore = opts.metricsStore;
   }
 
   async postApproval(entry: PendingEntry): Promise<void> {
@@ -388,6 +394,12 @@ export class DiscordBot {
           return `**${entry.slug}** — ${entry.status} — $${entry.monthlyCostUsd}/mo — review ${entry.nextReviewAt}${flag} — ${entry.purpose} — latest: ${latestNote}`;
         });
         return void reply(lines.join("\n"));
+      }
+      case "!metrics": {
+        if (!this.metricsStore) return void reply("No metrics store configured.");
+        const { latest, previous } = await this.metricsStore.latestTwo();
+        if (!latest) return void reply("No metrics computed yet.");
+        return void reply(formatMetricsLine(latest, previous));
       }
       case "!disable": {
         if (!arg.trim()) return void reply("Usage: `!disable <agent-name>`");
