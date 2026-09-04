@@ -392,6 +392,7 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
             parentTask: task, summary: result.summary, parentDepth: taskChainDepth,
             agentName: agent.name, tasks: deps.tasks, memory: deps.memory,
             config: deps.memoryConfig, suggest: deps.suggestSuccessors, now: now(),
+            router: deps.router, agents: deps.agents,
           });
         } catch (error) {
           // Same posture as rememberBestEffort/notifyBestEffort: this must
