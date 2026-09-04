@@ -6,10 +6,22 @@ import { TaskStore } from "../src/control/task-store.js";
 import { ProbeStore } from "../src/deploy/probe-store.js";
 import { buildDigestText } from "../src/digest.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
+import type { AgentDef } from "../src/registry.js";
 import { RunStore, newRunId } from "../src/run-store.js";
 import type { Metrics } from "../src/state/metrics-store.js";
 import { MetricsStore } from "../src/state/metrics-store.js";
 import { startDigest } from "../src/triggers/digest.js";
+import type { Strategy } from "../src/world/strategy.js";
+
+function cronAgent(overrides: Partial<AgentDef> = {}): AgentDef {
+  return {
+    name: "dependency-scout",
+    enabled: true,
+    trigger: { type: "cron", schedule: "0 14 * * *", timezone: "UTC" },
+    category: "maintain",
+    ...overrides,
+  } as AgentDef;
+}
 
 function stores() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-"));
@@ -441,6 +453,100 @@ describe("buildDigestText — deploy liveness section", () => {
     } finally {
       job.stop();
       rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildDigestText — cron liveness section", () => {
+  it("warns when an enabled cron agent has never run", async () => {
+    const { store, tasks } = stores();
+    const text = await buildDigestText({ store, tasks, since: SINCE, agents: [cronAgent()] });
+    expect(text).toContain("dependency-scout");
+    expect(text).toMatch(/never run/i);
+  });
+
+  it("warns when an enabled cron agent's last run is far older than its own cadence", async () => {
+    const { store, tasks } = stores();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(SINCE.getTime() - 5 * 24 * 60 * 60 * 1000));
+    try {
+      const writer = await store.open(newRunId("dependency-scout"), "dependency-scout");
+      await writer.close({ status: "success", summary: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const text = await buildDigestText({ store, tasks, since: SINCE, agents: [cronAgent()] });
+    expect(text).toContain("dependency-scout");
+    expect(text).toMatch(/hasn't run/i);
+  });
+
+  it("is silent when the agent ran recently relative to its own daily cadence", async () => {
+    const { store, tasks } = stores();
+    await recordRun(store, WITHIN_WINDOW, "success", 0.1);
+    // recordRun always uses agent name "smoke" -- match the fixture to it.
+    const text = await buildDigestText({ store, tasks, since: SINCE, agents: [cronAgent({ name: "smoke" })] });
+    expect(text).not.toMatch(/never run|hasn't run/i);
+  });
+
+  it("is silent when the agent's category is zero-allocated by the current strategy", async () => {
+    const { store, tasks } = stores();
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-digest-strategy-"));
+    const { StrategyStore } = await import("../src/world/strategy.js");
+    const strategyStore = new StrategyStore(dataDir);
+    const zeroed: Strategy = {
+      writtenAt: SINCE.toISOString(),
+      intent: "",
+      allocation: { research: 50, build: 50, maintain: 0 },
+      expectations: [],
+      changeReason: "",
+    };
+    await strategyStore.write(zeroed);
+
+    const text = await buildDigestText({ store, tasks, since: SINCE, agents: [cronAgent()], strategyStore });
+    expect(text).not.toMatch(/never run|hasn't run/i);
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("treats a stale cron agent as activity, not the empty-digest message", async () => {
+    const { store, tasks } = stores();
+    const text = await buildDigestText({ store, tasks, since: SINCE, agents: [cronAgent()] });
+    expect(text).not.toBe("📅 Daily digest: nothing happened in the last 24h.");
+  });
+
+  it("omits the cron liveness section entirely when no agents list is passed", async () => {
+    const { store, tasks } = stores();
+    await recordRun(store, WITHIN_WINDOW, "success", 1);
+    const text = await buildDigestText({ store, tasks, since: SINCE });
+    expect(text).not.toMatch(/never run|hasn't run/i);
+  });
+
+  it("reaches the posted digest through startDigest, the production call site", async () => {
+    const { store, tasks } = stores();
+    const posted: string[] = [];
+    const outbox = {
+      postAlert: async (_channel: string, text: string) => {
+        posted.push(text);
+        return "delivered" as const;
+      },
+    };
+    const NEVER = "0 0 29 2 *";
+    const triggerNow = new Date("2026-09-01T10:00:00.000Z");
+    const job = startDigest({
+      schedule: NEVER,
+      timezone: "UTC",
+      channel: "ops",
+      store,
+      tasks,
+      outbox,
+      agents: [cronAgent()],
+      now: () => triggerNow,
+    });
+    try {
+      await job.trigger();
+      expect(posted).toHaveLength(1);
+      expect(posted[0]).toContain("dependency-scout");
+    } finally {
+      job.stop();
     }
   });
 });

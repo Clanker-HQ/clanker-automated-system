@@ -237,7 +237,15 @@ resets this, so a manual retry always gets its own fresh silent attempt too.
   state back together from `!status`/`!tasks`/memory of what you last
   checked. On the day a fresh weekly metrics snapshot lands, the digest
   also posts its delta: net income, not-achieved rate, cost per completed
-  task, novelty share, and queue starvation.
+  task, novelty share, and queue starvation. It also warns when any enabled
+  cron-triggered agent hasn't run within roughly twice its own schedule's
+  interval — the same "the pass stopped running" detection the weekly
+  metrics snapshot already got, generalised to every cron agent
+  (`dependency-scout`, `cleanup-scout`, `portfolio-sync-scout`, `overseer`,
+  etc.), since a missed tick at restart or a silently-throwing job callback
+  is otherwise invisible until someone notices its output is stale. Skips an
+  agent the current week's strategy has deliberately zero-allocated, so an
+  intentional pause never reads as broken.
 - `retention` runs weekly and deletes run transcripts/results and specialist
   workspace files (e.g. research findings) older than `retention.days`
   (30 by default). A run still in progress (no `result.json` yet) is never

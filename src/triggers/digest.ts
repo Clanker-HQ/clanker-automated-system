@@ -4,8 +4,10 @@ import type { TaskStore } from "../control/task-store.js";
 import type { ProbeStore } from "../deploy/probe-store.js";
 import { buildDigestText } from "../digest.js";
 import type { MemoryStore } from "../memory/memory-store.js";
+import type { AgentDef } from "../registry.js";
 import type { RunStore } from "../run-store.js";
 import type { MetricsStore } from "../state/metrics-store.js";
+import type { StrategyStore } from "../world/strategy.js";
 
 interface DigestOutbox {
   postAlert(channelKey: string, text: string): Promise<"delivered" | "undelivered">;
@@ -28,6 +30,10 @@ export function startDigest(opts: {
   probeStore?: ProbeStore;
   /** Passed straight through: buildDigestText drops its deploy-liveness section when this is absent. */
   declaredSlugs?: string[];
+  /** Passed straight through: buildDigestText drops its cron-liveness section when this is absent. */
+  agents?: AgentDef[];
+  /** Passed straight through: buildDigestText treats every enabled cron agent as un-exempt when this is absent. */
+  strategyStore?: StrategyStore;
 }): Cron {
   const now = opts.now ?? (() => new Date());
   // Async rather than `void run().catch()`: croner awaits an async callback,
@@ -39,6 +45,7 @@ export function startDigest(opts: {
       const text = await buildDigestText({
         store: opts.store, tasks: opts.tasks, since, memory: opts.memory, memoryConfig: opts.memoryConfig,
         metricsStore: opts.metricsStore, probeStore: opts.probeStore, declaredSlugs: opts.declaredSlugs,
+        agents: opts.agents, strategyStore: opts.strategyStore,
       });
       await opts.outbox.postAlert(opts.channel, text);
     } catch (error) {

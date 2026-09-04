@@ -1,7 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { stalePasses } from "../src/state/liveness.js";
+import type { AgentDef } from "../src/registry.js";
+import { cronCadenceMs, stalePasses, staleCronAgents } from "../src/state/liveness.js";
+import type { Strategy } from "../src/world/strategy.js";
 
 const NOW = new Date("2026-09-30T08:00:00.000Z");
+
+function cronAgent(overrides: Partial<AgentDef> = {}): AgentDef {
+  return {
+    name: "dependency-scout",
+    enabled: true,
+    trigger: { type: "cron", schedule: "0 14 * * *", timezone: "Europe/Berlin" },
+    category: "maintain",
+    ...overrides,
+  } as AgentDef;
+}
+
+function strategy(overrides: Partial<Strategy["allocation"]> = {}): Strategy {
+  return {
+    writtenAt: "2026-09-28T00:00:00.000Z",
+    intent: "",
+    allocation: { research: 34, build: 33, maintain: 33, ...overrides },
+    expectations: [],
+    changeReason: "",
+  };
+}
 
 describe("stalePasses", () => {
   it("warns when the newest metrics snapshot is older than the limit", () => {
@@ -18,5 +40,72 @@ describe("stalePasses", () => {
   // broken deploy leaves behind, and it must not read as healthy.
   it("warns when no snapshot has ever been written", () => {
     expect(stalePasses({ latestMetricsAt: null, now: NOW, maxAgeDays: 14 })).toHaveLength(1);
+  });
+});
+
+describe("cronCadenceMs", () => {
+  it("computes the interval between two consecutive fires of a daily schedule", () => {
+    const ms = cronCadenceMs("0 14 * * *", "UTC");
+    expect(ms).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("computes the interval for a weekly schedule", () => {
+    const ms = cronCadenceMs("0 7 * * 1", "UTC");
+    expect(ms).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+});
+
+describe("staleCronAgents", () => {
+  it("warns when an enabled cron agent hasn't run within twice its own cadence", () => {
+    const agent = cronAgent({ name: "dependency-scout" });
+    const staleAt = new Date(NOW.getTime() - 3 * 24 * 60 * 60 * 1000); // 3 days, daily cadence
+    const warnings = staleCronAgents({
+      agents: [agent],
+      strategy: strategy(),
+      lastRunAt: () => staleAt,
+      now: NOW,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("dependency-scout");
+  });
+
+  it("is silent when the agent ran recently relative to its cadence", () => {
+    const agent = cronAgent({ name: "dependency-scout" });
+    const recentAt = new Date(NOW.getTime() - 6 * 60 * 60 * 1000); // 6h ago, daily cadence
+    const warnings = staleCronAgents({ agents: [agent], strategy: strategy(), lastRunAt: () => recentAt, now: NOW });
+    expect(warnings).toEqual([]);
+  });
+
+  it("warns when the agent has never run at all", () => {
+    const agent = cronAgent({ name: "dependency-scout" });
+    const warnings = staleCronAgents({ agents: [agent], strategy: strategy(), lastRunAt: () => null, now: NOW });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/never/i);
+  });
+
+  it("is silent for a disabled agent", () => {
+    const agent = cronAgent({ name: "dependency-scout", enabled: false });
+    const warnings = staleCronAgents({ agents: [agent], strategy: strategy(), lastRunAt: () => null, now: NOW });
+    expect(warnings).toEqual([]);
+  });
+
+  it("is silent for a non-cron (dispatched) agent", () => {
+    const agent = cronAgent({ name: "builder", trigger: { type: "dispatched" } });
+    const warnings = staleCronAgents({ agents: [agent], strategy: strategy(), lastRunAt: () => null, now: NOW });
+    expect(warnings).toEqual([]);
+  });
+
+  // A category the current strategy has zero-allocated is an INTENTIONAL
+  // skip (cron.ts's own shouldSkip) -- flagging it as broken would teach the
+  // operator to distrust every real warning that follows.
+  it("is silent when the agent's category has zero allocation this cycle", () => {
+    const agent = cronAgent({ name: "cleanup-scout", category: "maintain" });
+    const warnings = staleCronAgents({
+      agents: [agent],
+      strategy: strategy({ maintain: 0, research: 50, build: 50 }),
+      lastRunAt: () => null,
+      now: NOW,
+    });
+    expect(warnings).toEqual([]);
   });
 });

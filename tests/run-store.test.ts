@@ -224,6 +224,33 @@ describe("RunStore", () => {
     });
   });
 
+  describe("RunStore.latestFor", () => {
+    it("returns the most recent run for the given agent, ignoring other agents", async () => {
+      const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+      await recordRunAt(store, "a", new Date("2026-08-26T01:00:00.000Z"));
+      const newest = await recordRunAt(store, "a", new Date("2026-08-26T05:00:00.000Z"));
+      await recordRunAt(store, "b", new Date("2026-08-26T09:00:00.000Z"));
+
+      const result = await store.latestFor("a");
+      expect(result?.runId).toBe(newest.runId);
+    });
+
+    it("does not let one agent's name match another's as a prefix", async () => {
+      const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+      // "cleanup" is a prefix of "cleanup-scout"'s runIds -- a naive
+      // startsWith(`${agentName}-`) match would wrongly attribute this run to
+      // "cleanup".
+      await recordRunAt(store, "cleanup-scout", new Date("2026-08-26T05:00:00.000Z"));
+
+      expect(await store.latestFor("cleanup")).toBeNull();
+    });
+
+    it("returns null when the agent has never run", async () => {
+      const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
+      expect(await store.latestFor("never-run")).toBeNull();
+    });
+  });
+
   describe("RunStore.readTranscriptTail", () => {
     it("returns the last N lines of a run's transcript", async () => {
       const store = new RunStore(mkdtempSync(join(tmpdir(), "cai-runs-")));
