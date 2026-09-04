@@ -1,6 +1,14 @@
+import type { AgentDef } from "../registry.js";
+
 export interface Specialist {
   name: string;
   description: string;
+}
+
+export function specialistsOf(agents: AgentDef[]): Specialist[] {
+  return agents
+    .filter((a) => a.enabled && a.trigger.type === "dispatched")
+    .map((a) => ({ name: a.name, description: a.description }));
 }
 
 /** Decides which specialist agent (by name) should handle a task, or null if none fit. */

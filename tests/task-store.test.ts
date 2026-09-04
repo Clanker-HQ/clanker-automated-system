@@ -55,6 +55,14 @@ describe("TaskStore", () => {
     expect(task.parentId).toBe("parent-1");
   });
 
+  it("honours an explicit specialistAgent, and leaves it unset by default", async () => {
+    const s = store();
+    const routed = await s.create({ text: "x", createdBy: "agent:research", specialistAgent: "builder" });
+    expect(routed.specialistAgent).toBe("builder");
+    const unrouted = await s.create({ text: "y", createdBy: "agent:research" });
+    expect(unrouted.specialistAgent).toBeUndefined();
+  });
+
   it("honours wantsDetail, and leaves it unset by default", async () => {
     const s = store();
     const detailed = await s.create({ text: "x", createdBy: "discord:owner", wantsDetail: true });

@@ -7,7 +7,7 @@ import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
 import type { WorldModel } from "../world/world-model.js";
-import type { Router, Specialist } from "./router.js";
+import { specialistsOf, type Router } from "./router.js";
 import type { Task, TaskStore } from "./task-store.js";
 
 export interface RunTrigger {
@@ -139,12 +139,6 @@ const MAX_RETRIES = RETRY_BACKOFF_MS.length;
  * second full attempt, while stopping well short of paying for all 4.
  */
 const RETRY_COST_CAP_MULTIPLIER = 2;
-
-function specialistsOf(agents: AgentDef[]): Specialist[] {
-  return agents
-    .filter((a) => a.enabled && a.trigger.type === "dispatched")
-    .map((a) => ({ name: a.name, description: a.description }));
-}
 
 export interface DispatchOutcome {
   ran: boolean;

@@ -8,6 +8,7 @@ import { buildFindingReviewer } from "./control/build-finding-reviewer.js";
 import { buildOutcomeVerifier } from "./control/build-outcome-verifier.js";
 import { buildReflectionSynthesiser } from "./control/build-reflection-synthesiser.js";
 import { buildRouter } from "./control/build-router.js";
+import type { Router } from "./control/router.js";
 import { buildSuccessorSuggester } from "./control/build-successor-suggester.js";
 import { buildTaskReviewer } from "./control/build-task-reviewer.js";
 import { Dispatcher } from "./control/dispatcher.js";
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
   let agents: AgentDef[];
   let deployments: Deployment[];
   let runner: Runner;
+  let router: Router;
   let credentialMode: string | undefined;
   let botToken: string;
   let ownerId: string;
@@ -167,6 +169,11 @@ async function main(): Promise<void> {
     // tool's own doc comment in sdk-runner.ts, for why this exists.
     const systemContextPath = join(ROOT, "docs/system-context.md");
     const systemContext = existsSync(systemContextPath) ? readFileSync(systemContextPath, "utf8") : undefined;
+    // Built here, once, and shared with Dispatcher below: queueTask's router
+    // preflight (SdkRunner) must weigh proposals against the exact same
+    // specialist menu/decision dispatcher.ts uses at claim time, not a second
+    // independent instance that could in principle answer differently.
+    router = buildRouter();
     runner = buildRunner({
       grants, pending: new PendingStore(DATA_DIR), github,
       // createRepo/openPR resolve their own per-grant token (e.g.
@@ -179,6 +186,7 @@ async function main(): Promise<void> {
       gitCloner: new RealGitCloner(),
       tasks,
       taskReviewer: buildTaskReviewer(),
+      router,
       memory,
       memoryConfig: config.memory,
       systemContext,
@@ -278,7 +286,6 @@ async function main(): Promise<void> {
     },
   });
 
-  const router = buildRouter();
   dispatcher = new Dispatcher({
     tasks,
     router,

@@ -1062,7 +1062,7 @@ describe("repair agent routing (Task C6)", () => {
     expect(updated?.specialistAgent).toBe("repair");
   });
 
-  // specialistsOf (dispatcher.ts) filters candidates on AgentDef.enabled — the
+  // specialistsOf (router.ts) filters candidates on AgentDef.enabled — the
   // static agent.yaml flag, the only lever it has. A disabled agent is
   // therefore never even offered to the router, so it structurally cannot be
   // chosen, regardless of what the router itself might have picked.
