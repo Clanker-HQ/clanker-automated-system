@@ -156,14 +156,15 @@ const GITHUB_PR_AGENTS: ReadonlySet<string> = new Set(["builder", "pr-reviewer",
 /**
  * Agents whose own prompt.md references at least one taskQueue tool -- grep
  * every agents/*\/prompt.md for queueTask/listMyTasks/recentFailures/
- * recallMemory to keep this in sync. builder, pr-reviewer, repair, and
- * e2e-approval-test reference none of them: they build/review/repair tasks
- * already assigned to them rather than discovering or tracking their own,
- * so mounting this server for them paid four tool schemas' worth of
+ * recallMemory/cancelTask to keep this in sync. builder, pr-reviewer, repair,
+ * and e2e-approval-test reference none of them: they build/review/repair
+ * tasks already assigned to them rather than discovering or tracking their
+ * own, so mounting this server for them paid four tool schemas' worth of
  * per-turn weight for a capability they structurally never call into.
  * Gated the same way githubPr is -- by agent name, not by narrowing what
  * the server offers the agents that actually use it (see the per-tool
- * exclusions for research below, which this allowlist does not replace).
+ * exclusions for research below, and cancelTask's own narrower allowlist,
+ * neither of which this allowlist replaces).
  */
 const TASK_QUEUE_AGENTS: ReadonlySet<string> = new Set([
   "research",
@@ -172,6 +173,7 @@ const TASK_QUEUE_AGENTS: ReadonlySet<string> = new Set([
   "dependency-scout",
   "overseer",
   "cleanup-scout",
+  "portfolio-sync-scout",
 ]);
 
 /**
@@ -1085,6 +1087,12 @@ export class SdkRunner implements Runner {
     // propose narrower, more reversible work (this system's own code, or a
     // research question), so review is not applied to them here.
     const TASK_REVIEW_AGENTS: ReadonlySet<string> = new Set(["research"]);
+    // Deliberately narrower than TASK_QUEUE_AGENTS: cancelling someone else's
+    // queued work outright is a different kind of power than proposing your
+    // own, so it is scoped to the one agent whose whole job is reconciling
+    // the task queue against the world model (portfolio-sync-scout), not
+    // handed to every agent that already has queueTask/listMyTasks.
+    const CANCEL_TASK_AGENTS: ReadonlySet<string> = new Set(["portfolio-sync-scout"]);
     const memoryDep = this.deps.memory;
     const memoryConfigDep = this.deps.memoryConfig;
     /**
@@ -1331,6 +1339,37 @@ export class SdkRunner implements Runner {
             ),
                 ]
               : []),
+            ...(CANCEL_TASK_AGENTS.has(agent.name)
+              ? [
+                  tool(
+                    "cancelTask",
+                    "Cancel a task that a newer finding or decision has made obsolete -- only ever a still-\"pending\" or already-\"failed\" task, mirroring the operator's own !cancel command. Refuses outright on anything queued/running/waiting (in flight) or done (already finished); a task in one of those states cannot be un-run by deleting its record.",
+                    { id: z.string().min(1), reason: z.string().min(1) },
+                    async ({ id, reason }) => {
+                      const existing = await tasksDep.get(id);
+                      if (!existing) {
+                        return { content: [{ type: "text" as const, text: `No task "${id}" found -- nothing to cancel.` }] };
+                      }
+                      if (existing.status !== "pending" && existing.status !== "failed") {
+                        return {
+                          content: [
+                            {
+                              type: "text" as const,
+                              text: `Refused: task ${id} is "${existing.status}", not pending or failed -- only a not-yet-run or already-terminal task can be cancelled.`,
+                            },
+                          ],
+                        };
+                      }
+                      await tasksDep.remove(id);
+                      return {
+                        content: [
+                          { type: "text" as const, text: `Cancelled task ${id} (was "${existing.status}"): ${reason}` },
+                        ],
+                      };
+                    },
+                  ),
+                ]
+              : []),
             ...(memoryDep && memoryConfigDep?.enabled && agent.name !== "research"
               ? [
                   tool(
@@ -1371,7 +1410,12 @@ export class SdkRunner implements Runner {
     // scoped to its one real caller rather than mounted for everyone with
     // `worldDep` wired in.
     const RECORD_FINDING_AGENTS: ReadonlySet<string> = new Set(["research"]);
-    const UPDATE_PORTFOLIO_ENTRY_AGENTS: ReadonlySet<string> = new Set(["overseer"]);
+    // portfolio-sync-scout gets this alongside overseer: overseer owns the
+    // weekly kill/extend review (status, bar, nextReviewAt), while this
+    // scout's own, narrower job is keeping an entry's `notes` in sync with
+    // whatever the most recent finding on that product actually concluded,
+    // on a daily cadence -- see agents/portfolio-sync-scout/prompt.md.
+    const UPDATE_PORTFOLIO_ENTRY_AGENTS: ReadonlySet<string> = new Set(["overseer", "portfolio-sync-scout"]);
     const worldModelServer =
       worldDep && (RECORD_FINDING_AGENTS.has(agent.name) || UPDATE_PORTFOLIO_ENTRY_AGENTS.has(agent.name))
         ? createSdkMcpServer({

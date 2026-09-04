@@ -1,0 +1,34 @@
+name: portfolio-sync-scout
+enabled: true
+authoredBy: claude-local
+description: >-
+  Checks each portfolio entry's notes against the most recent world-model
+  finding for that product, and cancels any pending/failed task whose
+  premise a newer finding has since contradicted. Reconciles the record —
+  never decides strategy, never builds, never spends.
+
+trigger:
+  type: cron
+  schedule: "0 14 * * *"   # Daily 14:00 — after opportunity-scout (12:00) and improvement-scout (13:00), so today's proposals are already queued
+  timezone: Europe/Berlin
+
+category: maintain
+
+run:
+  model: claude-haiku-4-5
+  effort: low
+  maxTurns: 30
+  timeoutMinutes: 15
+  maxBudgetUsd: 1.00
+
+permissions:
+  allowedTools: [Read, Glob, Grep]
+  disallowedTools: []
+
+tier: readonly
+approval: notify
+grantRefs: []
+
+outbox:
+  discord: ops
+  notifyOn: [success, failure]

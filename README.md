@@ -264,6 +264,23 @@ audit`/`npm outdated` need `Bash`, which `readonly` categorically forbids —
 consulted and holds no `grantRefs`, but (unlike the other three) it could in
 principle write within its own workspace; its prompt just never asks it to.
 
+**A fifth cron-triggered agent, `portfolio-sync-scout`, reconciles rather
+than proposes.** It runs daily (`tier: readonly`, category `maintain`,
+alongside `cleanup-scout`/`dependency-scout` under overseer's allocation
+split) and holds two narrow tools the other four don't: `cancelTask`,
+scoped to only a still-`pending` or already-`failed` task (mirroring the
+operator's own `!cancel`), and `updatePortfolioEntry`, otherwise exclusive
+to `overseer`. Its job is checking each portfolio entry's `notes` against
+the most recent world-model finding for that product, and cancelling any
+queued task whose premise a newer finding has since contradicted — the
+incident this closes: a research pass killed pilot-01's Chrome-extension
+candidate and recorded the pivot to a different one, but nothing updated
+the portfolio entry or cancelled the payment-integration task that still
+assumed the dead candidate, and it sat wrong for two days before a human
+caught it by hand. `overseer`'s own weekly review still owns `status`,
+`bar`, and `nextReviewAt` — this agent only ever touches `notes`, and only
+when a finding has actually moved past what they say.
+
 **A memory log lets self-queued work avoid repeating itself, and lets an
 agent start a run already knowing what came before.** An append-only log
 (`data/memory/log.jsonl`, gated by `memory.enabled` in `config.yaml`) records

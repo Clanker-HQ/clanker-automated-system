@@ -776,6 +776,90 @@ describe("SdkRunner recentFailures tool", () => {
   });
 });
 
+describe("SdkRunner cancelTask tool", () => {
+  const SCOUT = { ...AGENT, name: "portfolio-sync-scout" } as unknown as AgentDef;
+
+  it("is not registered for an agent outside its allowlist, even though taskQueue is mounted for it", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.recentFailures).toBeDefined();
+    expect(params.options.mcpServers.taskQueue!.instance!._registeredTools.cancelTask).toBeUndefined();
+  });
+
+  it("is registered for portfolio-sync-scout, and cancels a pending task", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const pending = await tasks.create({ text: "stale proposal", createdBy: "operator" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(SCOUT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.cancelTask!.handler;
+
+    const result = await handler({ id: pending.id, reason: "superseded by a newer finding" });
+
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining(pending.id) }] });
+    expect(await tasks.get(pending.id)).toBeNull();
+  });
+
+  it("cancels a failed task the same way", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const created = await tasks.create({ text: "dead-end proposal", createdBy: "agent:research" });
+    await tasks.update(created.id, { status: "failed", failureReason: "no specialist matched this task" });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(SCOUT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.cancelTask!.handler;
+
+    const result = await handler({ id: created.id, reason: "premise superseded" });
+
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining(created.id) }] });
+    expect(await tasks.get(created.id)).toBeNull();
+  });
+
+  it("refuses to cancel a task that is not pending or failed, and leaves it in place", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    const created = await tasks.create({ text: "finished work", createdBy: "agent:research" });
+    await tasks.update(created.id, { status: "done", finishedAt: new Date().toISOString() });
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(SCOUT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.cancelTask!.handler;
+
+    const result = (await handler({ id: created.id, reason: "irrelevant" })) as { content: { type: string; text: string }[] };
+
+    expect(result.content[0]!.text).toMatch(/refus/i);
+    expect(await tasks.get(created.id)).not.toBeNull();
+  });
+
+  it("refuses cancelling a task id that does not exist, without throwing", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const tasks = new TaskStore(dir);
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), tasks });
+    await collect(runner.execute(SCOUT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueueTaskParams;
+    const handler = params.options.mcpServers.taskQueue!.instance!._registeredTools.cancelTask!.handler;
+
+    const result = (await handler({ id: "no-such-task", reason: "irrelevant" })) as { content: { type: string; text: string }[] };
+
+    expect(result.content[0]!.text).toMatch(/no task|not found/i);
+  });
+});
+
 describe("SdkRunner recallMemory tool", () => {
   it("is registered when memory is wired in", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
