@@ -12,6 +12,7 @@ import type { WorldModel } from "../world/world-model.js";
 import type { TaskStore } from "./task-store.js";
 import { MAX_TASK_TEXT_LENGTH } from "./task-store.js";
 import { resolveTaskByPrefix } from "./resolve-task.js";
+import { specialistsOf, type Router } from "./router.js";
 import { QuietHoursSchema } from "../config.js";
 import { formatZodError } from "../errors.js";
 
@@ -26,6 +27,15 @@ export interface DashboardDeps {
   dispatcher: { wake(): Promise<void> };
   agents: AgentDef[];
   dataDir: string;
+  /**
+   * Optional: without it, POST /api/tasks behaves exactly as before this
+   * check existed. With it, a request no registered specialist can execute
+   * is refused here rather than silently queuing and dying days later at
+   * dispatch — the same preflight queueTask's own MCP tool already runs
+   * (sdk-runner.ts) and !task now runs too (bot.ts), applied to this
+   * human-facing path as well.
+   */
+  router?: Router;
 }
 
 export interface DashboardRequest {
@@ -177,11 +187,20 @@ export class DashboardServer {
         if (text.length > MAX_TASK_TEXT_LENGTH) {
           return json(400, { error: `text is ${text.length} characters, over the ${MAX_TASK_TEXT_LENGTH}-character limit` });
         }
+        let specialistAgent: string | undefined;
+        if (this.deps.router) {
+          const chosenName = await this.deps.router.route(text, specialistsOf(this.deps.agents));
+          if (!chosenName) {
+            return json(422, { error: "no registered specialist can execute this — recast it, or drop it" });
+          }
+          specialistAgent = chosenName;
+        }
         const task = await this.deps.tasks.create({
           text,
           createdBy: "dashboard",
           ...(typeof payload.priority === "number" ? { priority: payload.priority } : {}),
           ...(payload.wantsDetail === true ? { wantsDetail: true } : {}),
+          specialistAgent,
         });
         void this.deps.dispatcher.wake().catch((err: unknown) => {
           console.error(`[dashboard] dispatcher wake failed after creating task ${task.id}`, err);

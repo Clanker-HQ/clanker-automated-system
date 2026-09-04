@@ -6,6 +6,7 @@ import { QuietHoursSchema } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
 import { formatZodError } from "../errors.js";
 import { resolveTaskByPrefix } from "./resolve-task.js";
+import { specialistsOf, type Router } from "./router.js";
 import type { GovernorStatus } from "../governor.js";
 import type { RunResult, RunStore } from "../run-store.js";
 import type { BreakerStore } from "../state/breaker.js";
@@ -113,6 +114,15 @@ export class DiscordBot {
   private readonly tasks: TaskStore;
   private readonly dispatcher: WakeableDispatcher;
   private readonly governor: StatusCapableGovernor;
+  /**
+   * Optional: without it, `!task` behaves exactly as before this check
+   * existed. With it, a request no registered specialist can execute is
+   * refused here, in the same reply, rather than silently queuing and dying
+   * days later at dispatch with a terminal "no specialist matched this
+   * task" — the same preflight queueTask's own MCP tool already runs
+   * (sdk-runner.ts), applied to the human-facing path too.
+   */
+  private readonly router: Router | undefined;
   /** Pending ids currently mid-resume, so a repeated `approve <id>` cannot start a second resume of the same entry while the first is still running. */
   private readonly resuming = new Set<string>();
 
@@ -123,6 +133,7 @@ export class DiscordBot {
     /** The one Discord user id allowed to approve/deny/answer or run any `!` admin command. */
     ownerId: string;
     tasks: TaskStore; dispatcher: WakeableDispatcher; governor: StatusCapableGovernor;
+    router?: Router;
   }) {
     this.transport = opts.transport;
     this.pending = opts.pending;
@@ -137,6 +148,7 @@ export class DiscordBot {
     this.tasks = opts.tasks;
     this.governor = opts.governor;
     this.dispatcher = opts.dispatcher;
+    this.router = opts.router;
   }
 
   async postApproval(entry: PendingEntry): Promise<void> {
@@ -437,11 +449,22 @@ export class DiscordBot {
         if (text.length > MAX_TASK_TEXT_LENGTH) {
           return void reply(`Task text is ${text.length} characters, over the ${MAX_TASK_TEXT_LENGTH}-character limit — trim it and try again.`);
         }
+        let specialistAgent: string | undefined;
+        if (this.router) {
+          const chosenName = await this.router.route(text, specialistsOf(this.agents));
+          if (!chosenName) {
+            return void reply(
+              "⚠️ No registered specialist can execute this — recast it as something one of them can do, or drop it.",
+            );
+          }
+          specialistAgent = chosenName;
+        }
         const task = await this.tasks.create({
           text,
           createdBy: `discord:${msg.authorId}`,
           ...(wantsDetail ? { wantsDetail: true } : {}),
           ...(priority !== undefined ? { priority } : {}),
+          specialistAgent,
         });
         void this.dispatcher.wake().catch((err: unknown) => {
           console.error(`[bot] dispatcher wake failed after !task ${task.id}:`, err);

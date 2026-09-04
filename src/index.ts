@@ -325,7 +325,7 @@ async function main(): Promise<void> {
       return varName ? (process.env[varName] ?? "") : "";
     },
     store: runStore, overrides, breaker, dataDir: DATA_DIR,
-    tasks, dispatcher, governor,
+    tasks, dispatcher, governor, router,
   });
 
   void reconcileAndConnectBot({ pending, bot, timeoutHours: config.governor.pendingTimeoutHours });
@@ -360,7 +360,7 @@ async function main(): Promise<void> {
       password: dashboardPassword,
       deps: {
         tasks, runs: runStore, overrides, governor, breaker, world,
-        metrics: metricsStore, dispatcher, agents, dataDir: DATA_DIR,
+        metrics: metricsStore, dispatcher, agents, dataDir: DATA_DIR, router,
       },
     });
     void dashboard.listen(dashboardPort).then(
