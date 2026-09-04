@@ -11,7 +11,7 @@ import type { WorldModel } from "../world/world-model.js";
  * A system that quietly stops scheduling itself because the overseer hasn't
  * had its first Monday yet is a far worse failure than one that over-runs.
  */
-function shouldSkip(agent: AgentDef, strategy: Strategy | null): boolean {
+export function shouldSkip(agent: AgentDef, strategy: Strategy | null): boolean {
   if (!agent.category) return false;
   if (!strategy) return false;
   return strategy.allocation[agent.category] === 0;

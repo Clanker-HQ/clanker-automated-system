@@ -46,6 +46,13 @@ function runIdTimestamp(runId: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/** The agent name embedded in a runId, recovered by stripping the timestamp suffix newRunId appended -- never by prefix-matching, which would let "cleanup" wrongly match "cleanup-scout-...". */
+function runIdAgentName(runId: string): string | null {
+  const match = runId.match(RUN_ID_TIMESTAMP);
+  if (!match) return null;
+  return runId.slice(0, runId.length - match[1]!.length - 1);
+}
+
 export interface RunWriter {
   readonly runId: string;
   append(event: RunEvent): Promise<void>;
@@ -166,6 +173,27 @@ export class RunStore {
     const updated: RunResult = { ...existing, verifiedOutcome };
     await writeFile(join(this.runDir(runId), "result.json"), JSON.stringify(updated, null, 2) + "\n");
     return updated;
+  }
+
+  /**
+   * The most recent run for one agent, or null if it has never run -- used
+   * by the digest's cron-liveness check to answer "when did this agent last
+   * actually run" without reading every result.json ever retained. Only
+   * filenames are read here (via the runId-embedded timestamp); the winning
+   * directory's result.json is read once, at the end.
+   */
+  async latestFor(agentName: string): Promise<RunResult | null> {
+    const root = join(this.dataDir, "runs");
+    const dirs = await readdir(root).catch(() => [] as string[]);
+    let best: { runId: string; at: Date } | null = null;
+    for (const runId of dirs) {
+      if (runIdAgentName(runId) !== agentName) continue;
+      const at = runIdTimestamp(runId);
+      if (!at) continue;
+      if (!best || at.getTime() > best.at.getTime()) best = { runId, at };
+    }
+    if (!best) return null;
+    return this.readResult(best.runId).catch(() => null);
   }
 
   async listRecent(limit: number): Promise<RunResult[]> {

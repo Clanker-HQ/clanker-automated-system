@@ -391,6 +391,8 @@ async function main(): Promise<void> {
           metricsStore,
           probeStore,
           declaredSlugs: deployments.map((d) => d.slug),
+          agents,
+          strategyStore,
         });
       })
       .catch((error: unknown) => {

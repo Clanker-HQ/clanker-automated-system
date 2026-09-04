@@ -3,9 +3,11 @@ import type { TaskStore } from "./control/task-store.js";
 import type { ProbeStore } from "./deploy/probe-store.js";
 import { probeWarnings } from "./deploy/probe-warnings.js";
 import type { MemoryStore } from "./memory/memory-store.js";
+import type { AgentDef } from "./registry.js";
 import type { RunStore } from "./run-store.js";
-import { stalePasses } from "./state/liveness.js";
+import { staleCronAgents, stalePasses } from "./state/liveness.js";
 import type { Metrics, MetricsStore } from "./state/metrics-store.js";
+import type { StrategyStore } from "./world/strategy.js";
 
 /** Twice the weekly metrics cadence, so one missed run is not an alarm. */
 const MAX_METRICS_AGE_DAYS = 14;
@@ -35,6 +37,10 @@ export async function buildDigestText(opts: {
   probeStore?: ProbeStore;
   /** Slugs currently declared in deploys.yaml, for probeWarnings' "declared but never probed" check. Only consulted when probeStore is also present. */
   declaredSlugs?: string[];
+  /** Every registered agent, for the cron-liveness check below. Absent means the check is skipped entirely -- existing fixtures that pass neither this nor strategyStore keep working, same posture as metricsStore/probeStore. */
+  agents?: AgentDef[];
+  /** Read for the current cycle's category allocation, so an agent correctly skipped this cycle (cron.ts's own shouldSkip) isn't reported as stopped. Absent (or a store with no strategy written yet) means every enabled cron agent is checked with no zero-allocation exemption -- fail open, same as cron.ts. */
+  strategyStore?: StrategyStore;
 }): Promise<string> {
   // listSince, not listRecent(10_000): the digest only ever looks at the last
   // 24h, so there's no reason to read/parse every result.json retention has
@@ -75,10 +81,26 @@ export async function buildDigestText(opts: {
   const livenessWarnings = opts.metricsStore
     ? stalePasses({ latestMetricsAt: freshMetrics?.latest?.computedAt ?? null, now, maxAgeDays: MAX_METRICS_AGE_DAYS })
     : [];
+  const cronLastRunAt = new Map<string, Date | null>();
+  if (opts.agents) {
+    for (const agent of opts.agents) {
+      if (!agent.enabled || agent.trigger.type !== "cron") continue;
+      const latest = await opts.store.latestFor(agent.name);
+      cronLastRunAt.set(agent.name, latest ? new Date(latest.startedAt) : null);
+    }
+  }
   const deployWarnings =
     opts.probeStore && opts.declaredSlugs
       ? probeWarnings({ probes: await opts.probeStore.read(), declaredSlugs: opts.declaredSlugs, now, maxAgeMinutes: MAX_PROBE_AGE_MINUTES })
       : [];
+  const cronWarnings = opts.agents
+    ? staleCronAgents({
+        agents: opts.agents,
+        strategy: opts.strategyStore ? await opts.strategyStore.latest() : null,
+        lastRunAt: (agentName) => cronLastRunAt.get(agentName) ?? null,
+        now,
+      })
+    : [];
 
   if (
     recentRuns.length === 0 &&
@@ -86,7 +108,8 @@ export async function buildDigestText(opts: {
     waitingTasks.length === 0 &&
     !hasFreshMetrics &&
     livenessWarnings.length === 0 &&
-    deployWarnings.length === 0
+    deployWarnings.length === 0 &&
+    cronWarnings.length === 0
   ) {
     return "📅 Daily digest: nothing happened in the last 24h.";
   }
@@ -122,6 +145,7 @@ export async function buildDigestText(opts: {
   }
   for (const warning of livenessWarnings) lines.push(warning);
   for (const warning of deployWarnings) lines.push(warning);
+  for (const warning of cronWarnings) lines.push(warning);
   if (hasFreshMetrics && freshMetrics?.latest) {
     lines.push(formatMetricsLine(freshMetrics.latest, freshMetrics.previous));
   }
