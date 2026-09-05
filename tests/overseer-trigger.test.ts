@@ -7,6 +7,7 @@ import type { Deployment } from "../src/deploy/deploys-schema.js";
 import { ProbeStore } from "../src/deploy/probe-store.js";
 import type { Orchestrator } from "../src/orchestrator.js";
 import type { AgentDef } from "../src/registry.js";
+import type { RunStore } from "../src/run-store.js";
 import { MetricsStore, type Metrics } from "../src/state/metrics-store.js";
 import { startOverseer } from "../src/triggers/overseer.js";
 import { StrategyStore } from "../src/world/strategy.js";
@@ -78,6 +79,61 @@ describe("startOverseer", () => {
     });
     try {
       expect(job.getPattern()).toBe("0 5 * * 1");
+    } finally {
+      job.stop();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("catches up a missed weekly cycle at boot when given a runStore (the machine was off at the scheduled time)", async () => {
+    const f = fixtures();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const runStore = { latestFor: vi.fn().mockResolvedValue(null) } as unknown as RunStore;
+    const job = startOverseer({
+      agent: agent({ trigger: { type: "cron", schedule: "0 5 * * 1", timezone: "UTC" } }),
+      orchestrator,
+      strategyStore: f.strategyStore,
+      world: f.world,
+      metricsStore: f.metricsStore,
+      revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
+      goalsPath: f.goalsPath,
+      runStore,
+    });
+    try {
+      // catchUpIfMissed is fire-and-forget from startOverseer's side (matches
+      // production, where index.ts doesn't await it either) and its own
+      // chain crosses several real fs reads (goals, strategy, world model,
+      // metrics), so poll rather than assume a fixed number of ticks is enough.
+      await vi.waitFor(() => expect(executeRun).toHaveBeenCalledTimes(1));
+    } finally {
+      job.stop();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not catch up when no runStore is given", async () => {
+    const f = fixtures();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const job = startOverseer({
+      agent: agent({ trigger: { type: "cron", schedule: "0 5 * * 1", timezone: "UTC" } }),
+      orchestrator,
+      strategyStore: f.strategyStore,
+      world: f.world,
+      metricsStore: f.metricsStore,
+      revenue: f.revenue,
+      deployments: [],
+      probeStore: f.probeStore,
+      goalsPath: f.goalsPath,
+    });
+    try {
+      // Give any (erroneous) catch-up chain the same runway the positive
+      // test above needs, then confirm it never fired.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(executeRun).not.toHaveBeenCalled();
     } finally {
       job.stop();
       rmSync(f.dataDir, { recursive: true, force: true });
