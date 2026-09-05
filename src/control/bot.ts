@@ -209,7 +209,20 @@ export class DiscordBot {
       // unrecognised one — nothing happens.
       if (msg.authorId !== this.ownerId) return;
 
-      if (msg.content.startsWith("!")) return this.handleCommand(msg);
+      // Same crash risk as the approve/deny/answer path below, and for the
+      // same reason: a real EventEmitter-based transport won't await this
+      // listener, so a throw anywhere in handleCommand (a malformed stored
+      // snapshot, an unexpected store error) would otherwise become an
+      // unhandled rejection that takes the whole bot down instead of just
+      // failing the one command.
+      if (msg.content.startsWith("!")) {
+        try {
+          await this.handleCommand(msg);
+        } catch (error) {
+          console.error(`[bot] command handler threw for "${msg.content}":`, error);
+        }
+        return;
+      }
 
       const approve = msg.content.match(/^approve\s+(\S+)/i);
       const deny = msg.content.match(/^deny\s+(\S+)/i);

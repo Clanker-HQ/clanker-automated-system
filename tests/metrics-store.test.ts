@@ -2,27 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Metrics } from "../src/state/metrics-store.js";
 import { MetricsStore } from "../src/state/metrics-store.js";
+import { metricsSnapshot as metrics } from "./helpers/metrics.js";
 
 function makeStore() {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-metrics-store-"));
   return { dataDir, store: new MetricsStore(dataDir) };
-}
-
-function metrics(overrides: Partial<Metrics> = {}): Metrics {
-  return {
-    computedAt: "2026-09-07T04:00:00.000Z",
-    windowDays: 7,
-    netIncomeUsd: 42,
-    notAchievedRate: 0.1,
-    notAchievedByAgent: [],
-    costPerCompletedTaskUsd: 1.5,
-    noveltySharePercent: 90,
-    suppressedProposalCount: 1,
-    queueStarvationHours: 2,
-    ...overrides,
-  };
 }
 
 describe("MetricsStore", () => {
@@ -82,6 +67,17 @@ describe("MetricsStore", () => {
     const all = await store.listAll();
     expect(all).toHaveLength(1);
     expect(all).toEqual([valid]);
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("latestTwo skips a corrupt most-recent snapshot and falls back to the next valid ones", async () => {
+    const { dataDir, store } = makeStore();
+    await store.write(metrics({ computedAt: "2026-08-24T04:00:00.000Z", netIncomeUsd: 1 }));
+    await store.write(metrics({ computedAt: "2026-08-31T04:00:00.000Z", netIncomeUsd: 2 }));
+    writeFileSync(join(dataDir, "state", "metrics-2026-09-07.json"), "{ not valid json");
+    const result = await store.latestTwo();
+    expect(result.latest?.netIncomeUsd).toBe(2);
+    expect(result.previous?.netIncomeUsd).toBe(1);
     rmSync(dataDir, { recursive: true, force: true });
   });
 

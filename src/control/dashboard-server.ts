@@ -94,6 +94,20 @@ function json(status: number, data: unknown): DashboardResponse {
   return { status, headers: { "content-type": "application/json" }, body: JSON.stringify(data) };
 }
 
+const INVALID_JSON: DashboardResponse = { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
+
+/** Every POST route needs this same shape check before touching its own fields — factored out so each route states only what fields it expects. */
+function parseJsonBody<T>(body: string): { ok: true; data: T } | { ok: false; response: DashboardResponse } {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return { ok: false, response: INVALID_JSON };
+  }
+  if (typeof payload !== "object" || payload === null) return { ok: false, response: INVALID_JSON };
+  return { ok: true, data: payload as T };
+}
+
 const UNAUTHORIZED: DashboardResponse = {
   status: 401,
   headers: { "content-type": "text/plain", "www-authenticate": 'Basic realm="dashboard"' },
@@ -184,15 +198,9 @@ export class DashboardServer {
       }
 
       if (req.method === "POST" && req.path === "/api/tasks") {
-        let payload: { text?: unknown; priority?: unknown; wantsDetail?: unknown };
-        try {
-          payload = JSON.parse(req.body) as typeof payload;
-        } catch {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
-        if (typeof payload !== "object" || payload === null) {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
+        const parsed = parseJsonBody<{ text?: unknown; priority?: unknown; wantsDetail?: unknown }>(req.body);
+        if (!parsed.ok) return parsed.response;
+        const payload = parsed.data;
         const text = typeof payload.text === "string" ? payload.text.trim() : "";
         if (!text) return json(400, { error: "text is required" });
         if (text.length > MAX_TASK_TEXT_LENGTH) {
@@ -280,15 +288,9 @@ export class DashboardServer {
       }
 
       if (req.method === "POST" && req.path === "/api/config/budget") {
-        let payload: { value?: unknown };
-        try {
-          payload = JSON.parse(req.body) as typeof payload;
-        } catch {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
-        if (typeof payload !== "object" || payload === null) {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
+        const parsed = parseJsonBody<{ value?: unknown }>(req.body);
+        if (!parsed.ok) return parsed.response;
+        const payload = parsed.data;
         const value = Number(payload.value);
         if (!Number.isFinite(value) || value <= 0) return json(400, { error: `Not a valid budget: ${JSON.stringify(payload.value)}` });
         await this.deps.overrides.set("dailyBudgetUsd", value, "dashboard");
@@ -296,15 +298,9 @@ export class DashboardServer {
       }
 
       if (req.method === "POST" && req.path === "/api/config/concurrency") {
-        let payload: { value?: unknown };
-        try {
-          payload = JSON.parse(req.body) as typeof payload;
-        } catch {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
-        if (typeof payload !== "object" || payload === null) {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
+        const parsed = parseJsonBody<{ value?: unknown }>(req.body);
+        if (!parsed.ok) return parsed.response;
+        const payload = parsed.data;
         const value = Number(payload.value);
         if (!Number.isInteger(value) || value <= 0) return json(400, { error: `Not a valid concurrency: ${JSON.stringify(payload.value)}` });
         await this.deps.overrides.set("maxConcurrent", value, "dashboard");
@@ -313,38 +309,26 @@ export class DashboardServer {
       }
 
       if (req.method === "POST" && req.path === "/api/config/quiet-hours") {
-        let payload: { off?: unknown; from?: unknown; to?: unknown; timezone?: unknown };
-        try {
-          payload = JSON.parse(req.body) as typeof payload;
-        } catch {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
-        if (typeof payload !== "object" || payload === null) {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
+        const parsed = parseJsonBody<{ off?: unknown; from?: unknown; to?: unknown; timezone?: unknown }>(req.body);
+        if (!parsed.ok) return parsed.response;
+        const payload = parsed.data;
         if (payload.off === true) {
           await this.deps.overrides.set("quietHours", null, "dashboard");
           return json(200, { quietHours: null });
         }
-        const parsed = QuietHoursSchema.safeParse({ from: payload.from, to: payload.to, timezone: payload.timezone });
-        if (!parsed.success) {
-          const problems = formatZodError("dashboard quiet-hours", parsed.error).lines.join("; ");
+        const quietHours = QuietHoursSchema.safeParse({ from: payload.from, to: payload.to, timezone: payload.timezone });
+        if (!quietHours.success) {
+          const problems = formatZodError("dashboard quiet-hours", quietHours.error).lines.join("; ");
           return json(400, { error: problems });
         }
-        await this.deps.overrides.set("quietHours", parsed.data, "dashboard");
-        return json(200, { quietHours: parsed.data });
+        await this.deps.overrides.set("quietHours", quietHours.data, "dashboard");
+        return json(200, { quietHours: quietHours.data });
       }
 
       if (req.method === "POST" && req.path === "/api/config/breaker") {
-        let payload: { enabled?: unknown };
-        try {
-          payload = JSON.parse(req.body) as typeof payload;
-        } catch {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
-        if (typeof payload !== "object" || payload === null) {
-          return { status: 400, headers: { "content-type": "text/plain" }, body: "invalid JSON" };
-        }
+        const parsed = parseJsonBody<{ enabled?: unknown }>(req.body);
+        if (!parsed.ok) return parsed.response;
+        const payload = parsed.data;
         if (typeof payload.enabled !== "boolean") return json(400, { error: "enabled must be a boolean" });
         await this.deps.overrides.set("breakerEnabled", payload.enabled, "dashboard");
         return json(200, { breakerEnabled: payload.enabled });
