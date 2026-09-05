@@ -81,9 +81,31 @@ export class MetricsStore {
     return all;
   }
 
-  /** The most recent snapshot and the one before it. Either or both are null when fewer exist. */
+  /**
+   * The most recent snapshot and the one before it. Either or both are null
+   * when fewer exist.
+   *
+   * Reads filenames newest-first and parses only as many as it takes to find
+   * two valid ones, rather than routing through listAll() — retention is
+   * unbounded (see the class doc comment), so a full-history parse here would
+   * make this call's cost grow with the store's entire lifetime instead of
+   * staying O(1), and unlike the weekly digest this is now also reachable
+   * on-demand from a human-triggered Discord command.
+   */
   async latestTwo(): Promise<{ latest: Metrics | null; previous: Metrics | null }> {
-    const all = await this.listAll();
-    return { latest: all[all.length - 1] ?? null, previous: all[all.length - 2] ?? null };
+    const names = (await readdir(this.dir()).catch(() => [] as string[]))
+      .filter((n) => FILENAME.test(n))
+      .sort()
+      .reverse();
+    const found: Metrics[] = [];
+    for (const name of names) {
+      if (found.length === 2) break;
+      try {
+        found.push(JSON.parse(await readFile(join(this.dir(), name), "utf8")) as Metrics);
+      } catch (error) {
+        console.error(`[metrics-store] skipping unparseable snapshot "${name}"`, error);
+      }
+    }
+    return { latest: found[0] ?? null, previous: found[1] ?? null };
   }
 }

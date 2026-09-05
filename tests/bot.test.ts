@@ -12,7 +12,8 @@ import { RunStore } from "../src/run-store.js";
 import { BreakerStore } from "../src/state/breaker.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { WorldModel } from "../src/world/world-model.js";
-import { MetricsStore, type Metrics } from "../src/state/metrics-store.js";
+import { MetricsStore } from "../src/state/metrics-store.js";
+import { metricsSnapshot } from "./helpers/metrics.js";
 
 const AGENTS = [{ name: "smoke", workspace: "/ws/smoke" } as AgentDef];
 const BUILDER = {
@@ -24,15 +25,6 @@ const BUILDER = {
 
 /** Every `simulateMessage` below sends as this author; anything else must be ignored. */
 const OWNER = "owner";
-
-function metricsSnapshot(overrides: Partial<Metrics> = {}): Metrics {
-  return {
-    computedAt: "2026-09-01T00:00:00.000Z", windowDays: 7, netIncomeUsd: 42,
-    notAchievedRate: 0.1, notAchievedByAgent: [], costPerCompletedTaskUsd: 1.5,
-    noveltySharePercent: 90, suppressedProposalCount: 1, queueStarvationHours: 2,
-    ...overrides,
-  };
-}
 
 function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-bot-"));
@@ -441,6 +433,26 @@ describe("DiscordBot", () => {
       const reply = transport.sent.map((m) => m.text).join("\n");
       expect(reply).toMatch(/no metrics/i);
     });
+  });
+
+  it("logs and recovers when a command handler throws, instead of taking down the whole listener", async () => {
+    const { transport, bot, metricsStore } = setup();
+    vi.spyOn(metricsStore, "latestTwo").mockRejectedValueOnce(new Error("disk exploded"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await bot.start();
+
+    await expect(
+      transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!metrics" }),
+    ).resolves.toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("!metrics"), expect.any(Error));
+
+    // The listener must still be alive for the next message — this is the
+    // whole point: one command throwing must not kill every command after it.
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: "owner", content: "!status" });
+    const reply = transport.sent.map((m) => m.text).join("\n");
+    expect(reply).toMatch(/running|STOPPED/);
+
+    errorSpy.mockRestore();
   });
 
   // Critical: approve/deny/answer IS the human decision the whole tier/grant

@@ -12,6 +12,7 @@ import type { Metrics } from "../src/state/metrics-store.js";
 import { MetricsStore } from "../src/state/metrics-store.js";
 import { startDigest } from "../src/triggers/digest.js";
 import type { Strategy } from "../src/world/strategy.js";
+import { metricsSnapshot as baseMetricsSnapshot } from "./helpers/metrics.js";
 
 function cronAgent(overrides: Partial<AgentDef> = {}): AgentDef {
   return {
@@ -204,19 +205,9 @@ describe("buildDigestText", () => {
   });
 });
 
+/** This suite's snapshots default to landing inside the digest window unless a test deliberately backdates one — the shared fixture has no opinion on that, so it's applied here. */
 function metricsSnapshot(overrides: Partial<Metrics> = {}): Metrics {
-  return {
-    computedAt: WITHIN_WINDOW.toISOString(),
-    windowDays: 7,
-    netIncomeUsd: 42,
-    notAchievedRate: 0.1,
-    notAchievedByAgent: [],
-    costPerCompletedTaskUsd: 1.5,
-    noveltySharePercent: 90,
-    suppressedProposalCount: 1,
-    queueStarvationHours: 2,
-    ...overrides,
-  };
+  return baseMetricsSnapshot({ computedAt: WITHIN_WINDOW.toISOString(), ...overrides });
 }
 
 describe("buildDigestText — metrics section", () => {
