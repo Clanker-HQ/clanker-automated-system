@@ -21,7 +21,7 @@ import { DashboardServer } from "./control/dashboard-server.js";
 import { LemonSqueezyRevenueTransport } from "./control/lemonsqueezy-revenue-transport.js";
 import { FakeRevenueTransport, type RevenueTransport } from "./control/revenue-transport.js";
 import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
-import { TaskStore } from "./control/task-store.js";
+import { MAX_TASK_TEXT_LENGTH, TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
@@ -283,6 +283,36 @@ async function main(): Promise<void> {
       if (!entry) return;
       if (kind === "approval") await bot.postApproval(entry);
       else await bot.postQuestion(entry);
+    },
+    // Closes the loop the Discord "circuit breaker tripped" alert used to
+    // leave open: without this, a disabled agent stayed disabled until a
+    // human noticed the alert and ran `!enable` (or the overseer's weekly
+    // pass got around to it). specialistAgent is pre-set to skip the LLM
+    // router entirely — a system-generated repair task must never be routed
+    // anywhere else. Excludes "repair" itself: fixing a broken repair still
+    // needs a human's eyes, same as today, rather than a self-targeting loop.
+    // `dispatcher` is read via closure, not passed by value, for the same
+    // reason the `wake` callback above is: this only ever fires long after
+    // Dispatcher below is constructed.
+    onBreakerTripped: async (agentName, reason) => {
+      if (agentName === "repair") return;
+      try {
+        const text =
+          `${agentName} was automatically disabled after 3 consecutive failures (its circuit breaker tripped). ` +
+          `Its most recent failure: ${reason}\n\n` +
+          `Diagnose the underlying problem (check its agents/${agentName}/agent.yaml, agents/${agentName}/prompt.md, ` +
+          `and its recent transcripts under data/runs/) and fix it, opening a PR the same way builder does. ` +
+          `Once you're confident the fix addresses this, call reEnableAgent to bring ${agentName} back online.`;
+        await tasks.create({
+          text: text.slice(0, MAX_TASK_TEXT_LENGTH),
+          priority: 90,
+          createdBy: "breaker",
+          specialistAgent: "repair",
+        });
+        await dispatcher?.wake();
+      } catch (error) {
+        console.error(`[boot] failed to auto-queue a repair task for ${agentName}`, error);
+      }
     },
   });
 

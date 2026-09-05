@@ -1630,6 +1630,59 @@ export class SdkRunner implements Runner {
           })
         : undefined;
 
+    /**
+     * `repair` gets exactly one write power, gated by agent name the same way
+     * `overseerServer` above is — a Discord/dashboard `!enable`, or the
+     * overseer's own `setAgentEnabled`, used to be the only way a
+     * breaker-tripped agent came back online, which meant every automatic
+     * repair (queued by orchestrator.ts's `onBreakerTripped`, see index.ts)
+     * still ended with a human needing to notice and flip the switch back on.
+     * Deliberately enable-only, unlike `setAgentEnabled`: repair has no
+     * legitimate reason to disable an agent, only to undo a trip once it
+     * believes its own fix addresses it.
+     */
+    const repairServer =
+      agent.name === "repair" && overridesDep && breakerDep && knownAgents
+        ? createSdkMcpServer({
+            name: "repair",
+            tools: [
+              tool(
+                "reEnableAgent",
+                "Re-enable an agent you have just fixed: clears its disabled/probation override AND resets its circuit breaker (either alone can stop it from running again). Call this once you're confident the fix you made addresses the failure — not before you've actually changed something.",
+                {
+                  agent: z.string().min(1),
+                  reason: z.string().min(1),
+                },
+                async ({ agent: targetName, reason }) => {
+                  if (!knownAgents.some((a) => a.name === targetName)) {
+                    const known = knownAgents.map((a) => a.name).join(", ") || "(none loaded)";
+                    return {
+                      content: [
+                        { type: "text" as const, text: `Refused: no agent named "${targetName}" is loaded. Known agents: ${known}` },
+                      ],
+                    };
+                  }
+
+                  const current = await overridesDep.read();
+                  const disabled = new Set(current.disabledAgents ?? []);
+                  disabled.delete(targetName);
+                  await overridesDep.set("disabledAgents", [...disabled], `agent:${agent.name}`);
+                  await breakerDep.reset(targetName);
+
+                  // Best-effort, same posture as setAgentEnabled's own alert above.
+                  await outboxDep
+                    ?.postAlert("ops", `▶️ ${targetName} re-enabled by repair: ${reason}`)
+                    .catch((error: unknown) => {
+                      console.error(`[reEnableAgent] failed to post alert for ${targetName}`, error);
+                    });
+
+                  return { content: [{ type: "text" as const, text: `${targetName} re-enabled.` }] };
+                },
+              ),
+            ],
+          })
+        : undefined;
+
     const stream = query({
       prompt: ctx.prompt,
       options: {
@@ -1686,6 +1739,7 @@ export class SdkRunner implements Runner {
           ...(systemContextServer ? { systemContext: systemContextServer } : {}),
           ...(worldModelServer ? { worldModel: worldModelServer } : {}),
           ...(overseerServer ? { overseer: overseerServer } : {}),
+          ...(repairServer ? { repair: repairServer } : {}),
         },
         ...(ctx.resume ? { resume: ctx.resume } : {}),
       },
