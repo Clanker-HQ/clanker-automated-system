@@ -18,15 +18,15 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.246",
-    "@anthropic-ai/claude-code": "^2.1.246",
+    "@anthropic-ai/claude-code": "^2.1.261",
     "croner": "^10.0.1",
     "discord.js": "^14.27.0",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@types/node": "^26.3.0",
-    "tsx": "^4.23.12",
+    "@types/node": "^26.4.1",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }
