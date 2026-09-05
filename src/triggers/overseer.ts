@@ -5,7 +5,9 @@ import type { ProbeResult, ProbeStore } from "../deploy/probe-store.js";
 import { loadGoals } from "../goals.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
+import type { RunStore } from "../run-store.js";
 import type { MetricsStore } from "../state/metrics-store.js";
+import { catchUpIfMissed } from "./cron.js";
 import { gradeExpectations, type Verdict } from "../world/grade-expectations.js";
 import { canExtend, dueReviews } from "../world/reviews.js";
 import type { Strategy, StrategyStore } from "../world/strategy.js";
@@ -144,6 +146,14 @@ export function startOverseer(opts: {
   deployments: Deployment[];
   probeStore: ProbeStore;
   now?: () => Date;
+  /**
+   * Optional so existing tests (and any other caller with nothing to
+   * check against) keep working unchanged -- when given, a missed weekly
+   * cycle (the machine was off at Monday 11:00, see cron.ts's
+   * catchUpIfMissed) runs as soon as this process next starts, instead of
+   * silently waiting a further week.
+   */
+  runStore?: RunStore;
 }): Cron {
   if (opts.agent.trigger.type !== "cron") {
     throw new Error(`startOverseer requires a cron-triggered agent; "${opts.agent.name}" has trigger.type "${opts.agent.trigger.type}"`);
@@ -175,5 +185,6 @@ export function startOverseer(opts: {
   console.log(
     `[overseer] scheduled "${trigger.schedule}" (${trigger.timezone}); next run ${job.nextRun()?.toISOString() ?? "never"}`,
   );
+  if (opts.runStore) void catchUpIfMissed(opts.agent, job, opts.runStore);
   return job;
 }
