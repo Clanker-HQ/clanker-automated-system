@@ -626,3 +626,113 @@ describe("SdkRunner overseer tools", () => {
     expect(await breaker.isTripped("builder")).toBe(false);
   });
 });
+
+const REPAIR_AGENT = {
+  name: "repair",
+  run: { model: "claude-sonnet-5", effort: "medium", maxTurns: 60, timeoutMinutes: 30, maxBudgetUsd: 3 },
+  permissions: { allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"], disallowedTools: [] },
+} as unknown as AgentDef;
+
+const REPAIR_CTX = { runId: "repair-run", workspace: "/tmp/ws/repair", prompt: "Fix cleanup-scout." };
+
+describe("SdkRunner repair tools", () => {
+  function repairFixture() {
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-overrides-"));
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const overrides = new ConfigOverridesStore(dataDir);
+    const breaker = new BreakerStore(dataDir);
+    const agents = [{ name: "repair" }, { name: "cleanup-scout" }] as unknown as AgentDef[];
+    const outbox = { postAlert: vi.fn().mockResolvedValue("delivered" as const) };
+    return { dataDir, dir, overrides, breaker, agents, outbox };
+  }
+
+  it("registers reEnableAgent only for the repair agent, and only once every dep is wired in", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = repairFixture();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(AGENT, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    expect(params.options.mcpServers.repair).toBeUndefined();
+  });
+
+  it("does not register repair's server when its deps are missing, even for the repair agent itself", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir) });
+    await collect(runner.execute(REPAIR_AGENT, REPAIR_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    expect(params.options.mcpServers.repair).toBeUndefined();
+  });
+
+  it("refuses an unknown agent name, naming the agents that do exist", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = repairFixture();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(REPAIR_AGENT, REPAIR_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.repair!.instance!._registeredTools.reEnableAgent!.handler;
+
+    const result = (await handler({ agent: "nonexistent", reason: "test" })) as { content: { type: string; text: string }[] };
+
+    expect(result.content[0]!.text).toContain("nonexistent");
+    expect(result.content[0]!.text).toContain("cleanup-scout");
+  });
+
+  it("clears the disabled override, resets the circuit breaker, and posts to Discord", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = repairFixture();
+    await overrides.set("disabledAgents", ["cleanup-scout"], "test-setup");
+    await breaker.recordResult("cleanup-scout", "failed");
+    await breaker.recordResult("cleanup-scout", "failed");
+    await breaker.recordResult("cleanup-scout", "failed");
+    expect(await breaker.isTripped("cleanup-scout")).toBe(true);
+
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(REPAIR_AGENT, REPAIR_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+    const handler = params.options.mcpServers.repair!.instance!._registeredTools.reEnableAgent!.handler;
+
+    const result = await handler({ agent: "cleanup-scout", reason: "raised maxTurns from 40 to 60, PR #45" });
+
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("re-enabled") }] });
+    expect((await overrides.read()).disabledAgents ?? []).not.toContain("cleanup-scout");
+    expect(await breaker.isTripped("cleanup-scout")).toBe(false);
+    expect(outbox.postAlert).toHaveBeenCalledTimes(1);
+    const [channel, text] = outbox.postAlert.mock.calls[0]!;
+    expect(channel).toBe("ops");
+    expect(text).toContain("cleanup-scout");
+    expect(text).toContain("PR #45");
+  });
+
+  it("has no disable capability at all -- only agent/reason are accepted, with no enabled flag", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { dir, overrides, breaker, agents, outbox } = repairFixture();
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const runner = new SdkRunner({ grants: [], pending: new PendingStore(dir), overrides, breaker, agents, outbox: outbox as never });
+    await collect(runner.execute(REPAIR_AGENT, REPAIR_CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as WorldToolParams;
+
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const instance = params.options.mcpServers.repair!.instance as unknown as { connect: (t: unknown) => Promise<void> };
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    await Promise.all([instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: "reEnableAgent",
+      arguments: { agent: "cleanup-scout", reason: "fixed", enabled: false },
+    });
+
+    // The extra `enabled` field is simply ignored (not `.strict()`'d away) --
+    // the point of this test is that there is no way to ask this tool to
+    // *disable* anything; it always enables regardless of what's passed.
+    expect(result.isError).toBeFalsy();
+    expect((await overrides.read()).disabledAgents ?? []).not.toContain("cleanup-scout");
+    await client.close();
+  });
+});

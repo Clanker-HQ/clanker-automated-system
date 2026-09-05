@@ -64,6 +64,7 @@ function harness(
   agentOverrides: Partial<AgentDef> = {},
   runner: Runner = new FakeRunner(script),
   verifier?: OutcomeVerifier,
+  onBreakerTripped?: (agentName: string, reason: string) => void | Promise<void>,
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "cai-orch-"));
   const promptPath = join(dataDir, "prompt.md");
@@ -106,6 +107,7 @@ function harness(
     breaker: new BreakerStore(dataDir),
     approvedGrants,
     ...(verifier ? { verifier } : {}),
+    ...(onBreakerTripped ? { onBreakerTripped } : {}),
   });
   return { agent, orchestrator, dataDir, fetchImpl, approvedGrants, runner, store };
 }
@@ -951,5 +953,42 @@ describe("Orchestrator breaker announcement", () => {
     const trip = posted.filter((t) => /circuit breaker/i.test(t));
     expect(trip).toHaveLength(1);
     expect(trip[0]).toContain("!enable smoke");
+  });
+
+  it("calls onBreakerTripped once, with the agent name and its most recent failure, when the breaker trips", async () => {
+    const onBreakerTripped = vi.fn().mockResolvedValue(undefined);
+    const { agent, orchestrator } = harness(
+      { events: [{ type: "error", message: "TypeError: boom" }] },
+      {},
+      undefined,
+      undefined,
+      onBreakerTripped,
+    );
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    expect(onBreakerTripped).not.toHaveBeenCalled();
+    await orchestrator.executeRun(agent);
+
+    expect(onBreakerTripped).toHaveBeenCalledTimes(1);
+    expect(onBreakerTripped).toHaveBeenCalledWith("smoke", expect.stringContaining("boom"));
+  });
+
+  it("does not fail the run when onBreakerTripped rejects", async () => {
+    const onBreakerTripped = vi.fn().mockRejectedValue(new Error("queueTask exploded"));
+    const { agent, orchestrator } = harness(
+      { events: [{ type: "error", message: "TypeError: boom" }] },
+      {},
+      undefined,
+      undefined,
+      onBreakerTripped,
+    );
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    const result = await orchestrator.executeRun(agent);
+
+    expect(onBreakerTripped).toHaveBeenCalledTimes(1);
+    expect(result?.status).toBe("failed");
   });
 });

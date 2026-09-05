@@ -10,9 +10,14 @@ import { configDefaults, defineConfig } from "vitest/config";
  * worktree. Excluded here rather than fixed per-test, because the problem is
  * discovery, not any individual test. A worktree runs its own suite from
  * inside itself, where this exclude does not apply.
+ *
+ * `data/workspaces/` is the same problem from a different source: builder and
+ * repair each `git clone` this repo into their own workspace to do real work,
+ * so a live supervisor process routinely leaves a second full checkout
+ * sitting there too.
  */
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, ".worktrees/**"],
+    exclude: [...configDefaults.exclude, ".worktrees/**", "data/workspaces/**"],
   },
 });

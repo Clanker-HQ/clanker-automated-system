@@ -54,6 +54,7 @@ export class Orchestrator {
   private readonly breaker: BreakerStore;
   private readonly approvedGrants: ApprovedGrantsStore;
   private readonly onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
+  private readonly onBreakerTripped?: (agentName: string, reason: string) => void | Promise<void>;
   private readonly verifier?: OutcomeVerifier;
 
   constructor(opts: {
@@ -72,6 +73,19 @@ export class Orchestrator {
      */
     onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
     /**
+     * Fires once, the same moment the "circuit breaker tripped" Discord alert
+     * does — i.e. exactly when `disabledAt` is freshly set, not on every
+     * subsequent refused trigger. Lets the caller queue a fix (see index.ts,
+     * which turns this into a `repair` task) instead of leaving recovery to a
+     * human noticing the alert and running `!enable`. Optional, and
+     * deliberately unaware of TaskStore/Dispatcher — Orchestrator's job is
+     * running one agent, not deciding how the rest of the system reacts to a
+     * trip; that decision lives entirely in whatever the caller wires here.
+     * Best-effort like onParked: a failure inside it is caught and logged,
+     * never allowed to fail the run whose completion triggered it.
+     */
+    onBreakerTripped?: (agentName: string, reason: string) => void | Promise<void>;
+    /**
      * Grades a status "success" run's own objective, not just that the SDK
      * finished without erroring. Optional so tests that don't care about
      * verification need not supply one — no verifier means no grading, not a
@@ -87,6 +101,7 @@ export class Orchestrator {
     this.breaker = opts.breaker;
     this.approvedGrants = opts.approvedGrants;
     this.onParked = opts.onParked;
+    this.onBreakerTripped = opts.onBreakerTripped;
     this.verifier = opts.verifier;
   }
 
@@ -160,6 +175,11 @@ export class Orchestrator {
               `No further runs will start until you clear it with \`!enable ${agent.name}\`.`,
           )
           .catch((err: unknown) => console.error(`[orchestrator] failed to announce breaker trip for ${agent.name}`, err));
+        if (this.onBreakerTripped) {
+          await Promise.resolve(this.onBreakerTripped(agent.name, result.error ?? result.summary)).catch((err: unknown) => {
+            console.error(`[orchestrator] onBreakerTripped callback failed for ${agent.name}`, err);
+          });
+        }
       }
       return result;
     } finally {
