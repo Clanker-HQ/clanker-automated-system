@@ -66,6 +66,8 @@
   .tile-delta { font-size: 0.72rem; font-family: var(--font-mono); }
   .tile-delta-good { color: var(--good); }
   .tile-delta-bad { color: var(--bad); }
+  .tile-caption { font-size: 0.74rem; line-height: 1.35; color: var(--text-muted); }
+  .tile-caption[hidden] { display: none; }
 
   .skel:empty {
     display: inline-block; width: 4.5em; height: 0.9em; border-radius: 3px;
@@ -248,7 +250,8 @@
       </div>
       <div class="tile">
         <div class="tile-label">Rate limit</div>
-        <div class="tile-value-text skel" id="status-ratelimit"></div>
+        <div class="tile-value-row"><span class="dot" id="status-ratelimit-dot"></span><span class="tile-value-text skel" id="status-ratelimit"></span></div>
+        <div class="tile-caption" id="status-ratelimit-caption" hidden></div>
       </div>
       <div class="tile">
         <div class="tile-label">Disabled agents</div>
@@ -436,20 +439,31 @@
     if (btn && loaders[btn.dataset.noticeRetry]) loaders[btn.dataset.noticeRetry]();
   });
 
+  const RATE_LIMIT_LABELS = { allowed: "Allowed", allowed_warning: "Warning", rejected: "Rejected" };
+  const RATE_LIMIT_DOTS = { allowed: "dot-good", allowed_warning: "dot-warn", rejected: "dot-bad" };
+
   /**
    * s.rateLimitStatus === null means no (unexpired) snapshot exists at all.
    * s.rateLimitUtilization === null with a non-null status means a snapshot
    * exists but the SDK's rate_limit_event carried no numeric percentage —
-   * that's a real reading, not "no reading yet", so it gets its own message.
+   * that's a real reading, so it gets its own dot color and a short status
+   * word instead of collapsing into the empty state.
    */
-  function formatRateLimit(s) {
-    if (s.rateLimitStatus === null) return "no reading yet";
+  function renderRateLimit(s) {
+    if (s.rateLimitStatus === null) return { dot: "dot-neutral", value: "No reading yet", caption: "" };
+    const dot = RATE_LIMIT_DOTS[s.rateLimitStatus] ?? "dot-neutral";
     if (s.rateLimitUtilization !== null) {
-      return `${Math.round(s.rateLimitUtilization * 100)}% (pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%)`;
+      return {
+        dot,
+        value: `${Math.round(s.rateLimitUtilization * 100)}%`,
+        caption: `pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%`,
+      };
     }
-    const window = s.rateLimitType ? ` (${s.rateLimitType})` : "";
-    const resets = s.rateLimitResetsAt ? `, resets ${new Date(s.rateLimitResetsAt * 1000).toLocaleTimeString()}` : "";
-    return `${s.rateLimitStatus}${window}${resets} — no % reported`;
+    const window = s.rateLimitType ? `${s.rateLimitType.replace(/_/g, " ")} window` : "unknown window";
+    const resets = s.rateLimitResetsAt
+      ? `, resets ${new Date(s.rateLimitResetsAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "";
+    return { dot, value: RATE_LIMIT_LABELS[s.rateLimitStatus] ?? s.rateLimitStatus, caption: `${window}${resets}` };
   }
 
   async function loadStatus() {
@@ -468,7 +482,12 @@
       document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
       document.getElementById("status-breaker-dot").className = "dot " + (s.breakerEnabled ? "dot-good" : "dot-neutral");
       document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
-      document.getElementById("status-ratelimit").textContent = formatRateLimit(s);
+      const rl = renderRateLimit(s);
+      document.getElementById("status-ratelimit-dot").className = "dot " + rl.dot;
+      document.getElementById("status-ratelimit").textContent = rl.value;
+      const rlCaption = document.getElementById("status-ratelimit-caption");
+      rlCaption.textContent = rl.caption;
+      rlCaption.hidden = !rl.caption;
       const c = s.taskCounts;
       document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
     } catch (err) {
