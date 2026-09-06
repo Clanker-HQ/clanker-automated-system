@@ -327,6 +327,16 @@ export class Orchestrator {
             .recordRateLimitError()
             .catch((err: unknown) => console.error("[orchestrator] failed to record rate-limit backoff", err));
         }
+        // Display-only enrichment from the experimental usage_EXPERIMENTAL...
+        // control method (see SdkRunner) — same non-fatal posture as the two
+        // calls above, but routed to a dedicated Governor method that never
+        // touches admission gating (see recordRateLimitWindows's own doc
+        // comment for why that separation matters).
+        if (event.type === "rate_limit_snapshot") {
+          await this.governor
+            .recordRateLimitWindows(event.windows)
+            .catch((err: unknown) => console.error("[orchestrator] failed to record rate-limit windows", err));
+        }
       }
     } catch (thrown) {
       // `status` may already have been set to "timeout" by the setTimeout

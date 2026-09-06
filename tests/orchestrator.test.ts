@@ -431,6 +431,26 @@ describe("Orchestrator.executeRun", () => {
     });
   });
 
+  it("feeds a rate_limit_snapshot (the experimental multi-window reading) to the governor's window-only recorder", async () => {
+    const governor = {
+      admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn(),
+      recordRateLimit: vi.fn(), recordRateLimitError: vi.fn(), recordRateLimitWindows: vi.fn(),
+    };
+    const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };
+    const windows = { five_hour: { utilization: 0.4, resetsAt: null }, seven_day: { utilization: 0.1, resetsAt: null } };
+    const orchestrator = new Orchestrator({
+      runner: new FakeRunner({ events: [
+        { type: "rate_limit_snapshot", windows },
+        { type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, durationMs: 1 },
+      ] }),
+      store: new RunStore(mkdtempSync(join(tmpdir(), "cai-orch-"))),
+      outbox: outbox as never, dataDir: "unused", governor: governor as never, breaker: new BreakerStore(mkdtempSync(join(tmpdir(), "cai-orch-brk-"))),
+      approvedGrants: new ApprovedGrantsStore(mkdtempSync(join(tmpdir(), "cai-orch-appr-"))),
+    });
+    await orchestrator.executeRun(AGENT);
+    expect(governor.recordRateLimitWindows).toHaveBeenCalledWith(windows);
+  });
+
   it("calls the governor's reactive backoff when an assistant error reports rate_limit", async () => {
     const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn(), recordRateLimit: vi.fn(), recordRateLimitError: vi.fn() };
     const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };

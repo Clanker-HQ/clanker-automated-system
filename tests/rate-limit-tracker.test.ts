@@ -64,4 +64,27 @@ describe("RateLimitTracker", () => {
     await tracker.record({ status: "rejected" });
     expect(await tracker.readWindows()).toEqual({});
   });
+
+  it("recordWindows writes multiple windows at once, without touching the single latest snapshot admit() gates on", async () => {
+    const tracker = new RateLimitTracker(mkdtempSync(join(tmpdir(), "cai-rl-")));
+    await tracker.recordWindows({
+      five_hour: { status: "allowed", rateLimitType: "five_hour", utilization: 0.4 },
+      seven_day: { status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.97 },
+    });
+    const windows = await tracker.readWindows();
+    expect(windows.five_hour?.utilization).toBe(0.4);
+    expect(windows.seven_day?.utilization).toBe(0.97);
+    // The single "latest" snapshot admit() reads from must stay untouched —
+    // this proactive, multi-window source must never itself gate admission.
+    expect(await tracker.read()).toBeNull();
+  });
+
+  it("recordWindows merges into existing windows rather than replacing the whole map", async () => {
+    const tracker = new RateLimitTracker(mkdtempSync(join(tmpdir(), "cai-rl-")));
+    await tracker.record({ status: "allowed", rateLimitType: "five_hour", utilization: 0.2 });
+    await tracker.recordWindows({ seven_day: { status: "allowed", rateLimitType: "seven_day", utilization: 0.1 } });
+    const windows = await tracker.readWindows();
+    expect(windows.five_hour?.utilization).toBe(0.2);
+    expect(windows.seven_day?.utilization).toBe(0.1);
+  });
 });
