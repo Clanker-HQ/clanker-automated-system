@@ -46,6 +46,7 @@ function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
     dailyBudgetUsd: 10, spentTodayUsd: 0, maxConcurrent: 2,
     breakerEnabled: true, disabledAgents: [],
     rateLimitUtilization: null, rateLimitPauseThreshold: 0.95,
+    rateLimitStatus: null, rateLimitType: null, rateLimitResetsAt: null,
   };
   const governor = { status: async () => governorStatus, adjustConcurrency: vi.fn() };
   const bot = new DiscordBot({
@@ -834,10 +835,24 @@ describe("DiscordBot task commands", () => {
 
   it("!status reports rate-limit utilization once a reading exists", async () => {
     const { transport, bot, governorStatus } = setup();
+    governorStatus.rateLimitStatus = "allowed_warning";
     governorStatus.rateLimitUtilization = 0.84;
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
     expect(transport.sent[0]!.text).toContain("Rate limit: 84% of window (pauses at 95%)");
+  });
+
+  it("!status reports a snapshot's status/type/reset time when it carries no numeric utilization, distinct from no reading at all", async () => {
+    const { transport, bot, governorStatus } = setup();
+    governorStatus.rateLimitStatus = "allowed";
+    governorStatus.rateLimitType = "five_hour";
+    governorStatus.rateLimitResetsAt = 1788714000;
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
+    const reply = transport.sent[0]!.text;
+    expect(reply).toContain("Rate limit: allowed (five_hour), resets");
+    expect(reply).toContain("— no % reported");
+    expect(reply).not.toContain("no reading yet");
   });
 
   it("!status reflects a stopped, quiet-hours-active, breaker-off state with disabled agents", async () => {

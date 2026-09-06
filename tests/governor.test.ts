@@ -458,7 +458,20 @@ describe("Governor.status", () => {
       disabledAgents: [],
       rateLimitUtilization: null,
       rateLimitPauseThreshold: 0.95,
+      rateLimitStatus: null,
+      rateLimitType: null,
+      rateLimitResetsAt: null,
     });
+  });
+
+  it("reports status/type/resetsAt from a snapshot that carries no numeric utilization, distinct from no snapshot at all", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed", rateLimitType: "five_hour", resetsAt: FIXED_NOW_SECONDS + 600 }, new Date(FIXED_NOW_MS));
+    const status = await build(dir, () => new Date(FIXED_NOW_MS)).status();
+    expect(status.rateLimitUtilization).toBeNull();
+    expect(status.rateLimitStatus).toBe("allowed");
+    expect(status.rateLimitType).toBe("five_hour");
+    expect(status.rateLimitResetsAt).toBe(FIXED_NOW_SECONDS + 600);
   });
 
   it("reflects the STOP file, quiet-hours-active, overrides, and today's spend", async () => {

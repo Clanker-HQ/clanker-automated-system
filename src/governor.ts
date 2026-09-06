@@ -18,9 +18,13 @@ export interface GovernorStatus {
   maxConcurrent: number;
   breakerEnabled: boolean;
   disabledAgents: string[];
-  /** null when no rate_limit_event has ever been recorded — distinct from 0, which is a real reading. */
+  /** null when there's no numeric utilization to report — either no rate_limit_event has ever been recorded, or the latest one didn't carry a percentage (see rateLimitStatus/rateLimitType/rateLimitResetsAt for that case). Distinct from 0, which is a real reading. */
   rateLimitUtilization: number | null;
   rateLimitPauseThreshold: number;
+  /** null only when no (unexpired) rate-limit snapshot exists at all — set together with rateLimitUtilization from the same snapshot, so callers can tell "no reading yet" apart from "a reading exists but carries no percentage". */
+  rateLimitStatus: RateLimitSnapshot["status"] | null;
+  rateLimitType: string | null;
+  rateLimitResetsAt: number | null;
 }
 
 function isWithinQuietHours(quietHours: QuietHours, now: Date): boolean {
@@ -240,6 +244,9 @@ export class Governor {
       disabledAgents: overrides.disabledAgents ?? [],
       rateLimitUtilization: snapshot?.utilization ?? null,
       rateLimitPauseThreshold: settings.rateLimitPauseThreshold,
+      rateLimitStatus: snapshot?.status ?? null,
+      rateLimitType: snapshot?.rateLimitType ?? null,
+      rateLimitResetsAt: snapshot?.resetsAt ?? null,
     };
   }
 

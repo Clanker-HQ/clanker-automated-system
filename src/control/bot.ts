@@ -26,6 +26,22 @@ function timeAgo(at: Date, now: Date): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+/**
+ * `rateLimitStatus === null` means no (unexpired) snapshot exists at all.
+ * `rateLimitUtilization === null` with a non-null status means a snapshot
+ * exists but the SDK's rate_limit_event carried no numeric percentage —
+ * that's a real reading, not "no reading yet", so it gets its own message.
+ */
+function formatRateLimit(status: GovernorStatus): string {
+  if (status.rateLimitStatus === null) return "no reading yet";
+  if (status.rateLimitUtilization !== null) {
+    return `${(status.rateLimitUtilization * 100).toFixed(0)}% of window (pauses at ${(status.rateLimitPauseThreshold * 100).toFixed(0)}%)`;
+  }
+  const window = status.rateLimitType ? ` (${status.rateLimitType})` : "";
+  const resets = status.rateLimitResetsAt ? `, resets ${new Date(status.rateLimitResetsAt * 1000).toISOString()}` : "";
+  return `${status.rateLimitStatus}${window}${resets} — no % reported`;
+}
+
 export interface IncomingMessage {
   channelId: string;
   authorId: string;
@@ -613,9 +629,7 @@ export class DiscordBot {
             : "Quiet hours: off",
           `Circuit breaker: ${status.breakerEnabled ? "on" : "off"}`,
           `Disabled agents: ${status.disabledAgents.length > 0 ? status.disabledAgents.join(", ") : "none"}`,
-          status.rateLimitUtilization === null
-            ? "Rate limit: no reading yet"
-            : `Rate limit: ${(status.rateLimitUtilization * 100).toFixed(0)}% of window (pauses at ${(status.rateLimitPauseThreshold * 100).toFixed(0)}%)`,
+          `Rate limit: ${formatRateLimit(status)}`,
           `Tasks: ${counts.pending} pending, ${counts.queued} queued, ${counts.running} running, ${counts.waiting} waiting`,
         ];
         return void reply(lines.join("\n"));
