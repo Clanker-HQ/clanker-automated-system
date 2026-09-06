@@ -126,6 +126,31 @@ const RESEARCH_SOURCE_SUBAGENT: {
 const REGISTERED_SUBAGENT_TYPES: ReadonlySet<string> = new Set([PR_REVIEW_SUBAGENT_TYPE, RESEARCH_SOURCE_SUBAGENT_TYPE]);
 
 /**
+ * The subagent type each agent's own prompt.md actually dispatches via Task —
+ * keyed by agent name, same idiom as GITHUB_PR_AGENTS below. Exists solely to
+ * scope the top-level `tools` union (see `execute()`) to the one subagent
+ * each parent can actually reach, instead of unioning in every registered
+ * subagent's tools for every agent regardless of whether it ever spawns one.
+ *
+ * That distinction matters: the SDK's top-level `tools` option is the base
+ * set loaded for the WHOLE session, main thread included (confirmed live —
+ * three separate `research-source` runs reported no WebFetch even though
+ * RESEARCH_SOURCE_SUBAGENT.tools names it, because `tools` below was built
+ * from `research`'s own allowedTools alone, which deliberately omits WebFetch
+ * so page-reading stays delegated). Fixing that by unioning ALL registered
+ * subagents' tools into every agent's top-level list would hand `research`
+ * PR_REVIEW_SUBAGENT's `Read` too — exactly the exfiltration path
+ * (`Read` + this agent's own broad `web-read` grant) `research`'s own
+ * agent.yaml deliberately withholds `Read` to prevent. Scoping the union to
+ * just the one subagent type each parent's prompt actually names keeps that
+ * closed while still letting the subagent load the tool it's declared.
+ */
+const SUBAGENT_TOOLS_BY_PARENT: ReadonlyMap<string, readonly string[]> = new Map([
+  ["research", RESEARCH_SOURCE_SUBAGENT.tools],
+  ["pr-reviewer", PR_REVIEW_SUBAGENT.tools],
+]);
+
+/**
  * Agents whose own prompt.md actually calls a githubPr tool (mergePR,
  * postReviewComment, createRepo, pushBranch, or openPR) — grep
  * `agents/*\/prompt.md` for those names to keep this in sync as prompts
@@ -548,10 +573,42 @@ export class SdkRunner implements Runner {
     // and stash the RunEvent to yield here once the stream loop notices.
     let terminalEvent: RunEvent | undefined;
 
+    // The subagent this agent's own prompt actually dispatches (if any) may
+    // declare tools this agent's own `allowedTools` doesn't — see
+    // SUBAGENT_TOOLS_BY_PARENT's doc comment. Union those into what the SDK
+    // loads for the whole session so the subagent can actually load them,
+    // and track which ones are subagent-only so canUseTool (below) can still
+    // refuse them when THIS agent's own top-level turn tries to call one
+    // directly rather than delegating.
+    const ownTools: readonly string[] = agent.permissions.allowedTools;
+    const reachableSubagentTools = SUBAGENT_TOOLS_BY_PARENT.get(agent.name) ?? [];
+    const subagentOnlyTools = reachableSubagentTools.filter((t) => !ownTools.includes(t));
+    const sessionTools = subagentOnlyTools.length ? [...new Set([...ownTools, ...subagentOnlyTools])] : [...ownTools];
+
     const canUseTool = async (
       toolName: string,
       input: Record<string, unknown>,
+      toolCtx: { agentID?: string } = {},
     ): Promise<{ behavior: "allow" } | { behavior: "deny"; message: string; interrupt?: boolean }> => {
+      // A tool loaded ONLY because a dispatched subagent declares it (see
+      // sessionTools above) must still be refused on this agent's OWN turn —
+      // `agentID` is set by the SDK only when the call originates inside a
+      // spawned subagent, never the parent thread. Without this, unioning the
+      // tool into `tools` below to fix the subagent's access would also hand
+      // it to the parent silently: exactly the bug (research being one tool
+      // call away from WebFetch-ing a file it Read, with no grant check at
+      // all) research's own agent.yaml deliberately keeps closed by omitting
+      // `Read` from its allowedTools. Checked first, ahead of `Task`'s own
+      // handling below, since a subagent-only tool is never `Task` itself.
+      if (!toolCtx.agentID && subagentOnlyTools.includes(toolName)) {
+        return {
+          behavior: "deny",
+          message:
+            `"${toolName}" is only available to a dispatched subagent, not this agent's own turn — ` +
+            `delegate via Task instead of calling it directly.`,
+        };
+      }
+
       // `Task` carries no outward effect, so decide() below allows it — but
       // the SDK falls back to its built-in "general-purpose" agent for any
       // subagent_type it does not recognise, and that agent is uncapped and
@@ -1710,7 +1767,11 @@ export class SdkRunner implements Runner {
         // get `{kind: "allow"}` immediately, just with one extra async
         // round-trip.
         disallowedTools: agent.permissions.disallowedTools,
-        tools: agent.permissions.allowedTools,
+        // sessionTools (computed above canUseTool) is agent.permissions.allowedTools
+        // plus any subagent-only tools this agent's own prompt dispatches via
+        // Task, so the SDK actually loads them for that subagent — canUseTool
+        // still refuses them on this agent's own turn.
+        tools: sessionTools,
         permissionMode: "default",
         settingSources: [],
         // Explicitly request the 1-hour cache TTL rather than relying on
