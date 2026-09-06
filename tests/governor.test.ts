@@ -461,7 +461,20 @@ describe("Governor.status", () => {
       rateLimitStatus: null,
       rateLimitType: null,
       rateLimitResetsAt: null,
+      rateLimitWindows: {},
     });
+  });
+
+  it("reports each rate-limit window's own utilization, keyed by type, independent of the single latest snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed", rateLimitType: "five_hour", utilization: 0.4 }, new Date(FIXED_NOW_MS));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.8 }, new Date(FIXED_NOW_MS));
+    const status = await build(dir, () => new Date(FIXED_NOW_MS)).status();
+    expect(status.rateLimitWindows.five_hour?.utilization).toBe(0.4);
+    expect(status.rateLimitWindows.seven_day?.utilization).toBe(0.8);
+    // The single "latest" snapshot still reflects whichever event landed last —
+    // rateLimitWindows is additive, not a replacement for that gating value.
+    expect(status.rateLimitType).toBe("seven_day");
   });
 
   it("reports status/type/resetsAt from a snapshot that carries no numeric utilization, distinct from no snapshot at all", async () => {
