@@ -1,4 +1,5 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKControlGetUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { MemoryConfig } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
@@ -462,6 +463,33 @@ export function toRunEvents(message: unknown): RunEvent[] {
     default:
       return [];
   }
+}
+
+const KNOWN_RATE_LIMIT_WINDOWS = ["five_hour", "seven_day"] as const;
+
+/**
+ * Maps the SDK's experimental `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`
+ * response into a `rate_limit_snapshot` RunEvent, normalizing its 0-100
+ * percentages and ISO reset timestamps to the 0-1 fraction / unix-seconds
+ * convention `rate_limit_event` already uses. Returns null when there's
+ * nothing usable to report — no rate limits on this plan, or every known
+ * window came back with no numeric utilization — rather than a technically-
+ * present but empty event the caller would still yield.
+ */
+export function toRateLimitSnapshotEvent(
+  usage: Pick<SDKControlGetUsageResponse, "rate_limits">,
+): Extract<RunEvent, { type: "rate_limit_snapshot" }> | null {
+  if (!usage.rate_limits) return null;
+  const windows: Record<string, { utilization: number; resetsAt: number | null }> = {};
+  for (const type of KNOWN_RATE_LIMIT_WINDOWS) {
+    const w = usage.rate_limits[type];
+    if (!w || w.utilization === null || w.utilization === undefined) continue;
+    windows[type] = {
+      utilization: w.utilization / 100,
+      resetsAt: w.resets_at ? Math.floor(new Date(w.resets_at).getTime() / 1000) : null,
+    };
+  }
+  return Object.keys(windows).length > 0 ? { type: "rate_limit_snapshot", windows } : null;
 }
 
 /**
@@ -1806,6 +1834,26 @@ export class SdkRunner implements Runner {
       },
     });
 
+    // Started now so its network round-trip overlaps the run's own turns
+    // instead of adding latency up front, and only awaited once the run is
+    // done streaming (below). Experimental control method — Anthropic's own
+    // doc comment says it "may change or be removed in any release without
+    // notice" — so a failure must never fail the run itself, only skip this
+    // one display-only event. Wrapped in an async IIFE (not just a `.catch()`
+    // chained onto the call) because a REMOVED method — as opposed to one
+    // that exists but rejects — throws synchronously from the property
+    // access itself, before there is any promise to attach `.catch()` to;
+    // without this wrapper that throw would escape uncaught and crash the
+    // whole run over a dashboard nicety.
+    const rateLimitSnapshotPromise: Promise<RunEvent | null> = (async () => {
+      try {
+        return toRateLimitSnapshotEvent(await stream.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET());
+      } catch (err) {
+        console.error(`[sdk-runner] usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET failed for ${agent.name}`, err);
+        return null;
+      }
+    })();
+
     let partial: PartialUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     let sawTerminalUsage = false;
     // Counted across ALL tools, with any success resetting it, rather than
@@ -1924,5 +1972,11 @@ export class SdkRunner implements Runner {
       }
       if (terminalEvent) yield terminalEvent;
     }
+
+    // Awaited last so its network round-trip (started right after `query()`
+    // above) has had the whole run to overlap with, instead of adding its
+    // own latency here.
+    const rateLimitSnapshotEvent = await rateLimitSnapshotPromise;
+    if (rateLimitSnapshotEvent) yield rateLimitSnapshotEvent;
   }
 }

@@ -477,6 +477,38 @@ describe("Governor.status", () => {
     expect(status.rateLimitType).toBe("seven_day");
   });
 
+  it("recordRateLimitWindows derives each window's status from the configured pause threshold", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir, () => new Date(FIXED_NOW_MS));
+    await governor.recordRateLimitWindows({
+      five_hour: { utilization: 0.4, resetsAt: FIXED_NOW_SECONDS + 600 },
+      seven_day: { utilization: 0.97, resetsAt: null },
+    });
+    const status = await governor.status();
+    expect(status.rateLimitWindows.five_hour).toEqual({
+      status: "allowed", rateLimitType: "five_hour", utilization: 0.4, resetsAt: FIXED_NOW_SECONDS + 600,
+      recordedAt: new Date(FIXED_NOW_MS).toISOString(),
+    });
+    // Default rateLimitPauseThreshold (config.ts) is 0.95 — 0.97 crosses it.
+    expect(status.rateLimitWindows.seven_day?.status).toBe("allowed_warning");
+  });
+
+  it("recordRateLimitWindows never touches the single snapshot admit() gates on, even when a window is over threshold", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir, () => new Date(FIXED_NOW_MS));
+    await governor.recordRateLimitWindows({ seven_day: { utilization: 1, resetsAt: null } });
+    // An experimental, display-only reading — however alarming — must never
+    // itself refuse a real run; only a genuine rate_limit_event can do that.
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  it("recordRateLimitWindows ignores a window with no numeric utilization rather than recording a bogus reading", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir, () => new Date(FIXED_NOW_MS));
+    await governor.recordRateLimitWindows({ five_hour: { utilization: null, resetsAt: null } });
+    expect((await governor.status()).rateLimitWindows).toEqual({});
+  });
+
   it("reports status/type/resetsAt from a snapshot that carries no numeric utilization, distinct from no snapshot at all", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     await new RateLimitTracker(dir).record({ status: "allowed", rateLimitType: "five_hour", resetsAt: FIXED_NOW_SECONDS + 600 }, new Date(FIXED_NOW_MS));

@@ -34,6 +34,19 @@ export type RunEvent =
       utilization?: number;
       resetsAt?: number;
     }
+  /**
+   * A proactive, multi-window reading from the SDK's experimental
+   * `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` control
+   * method — unlike `rate_limit_event` above (one window per event, pushed
+   * only when the SDK feels like it), this carries every window's own
+   * utilization at once. Display-only: nothing reads this to gate admission,
+   * so a change or removal of that unstable API can only ever degrade the
+   * dashboard, never block a run.
+   */
+  | {
+      type: "rate_limit_snapshot";
+      windows: Record<string, { utilization: number; resetsAt: number | null }>;
+    }
   | { type: "parked"; kind: "approval" | "question"; pendingId: string }
   | { type: "denied"; reason: string }
   /**

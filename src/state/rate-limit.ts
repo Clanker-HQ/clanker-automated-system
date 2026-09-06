@@ -28,11 +28,27 @@ export class RateLimitTracker {
     // independently — keeping a per-type reading alongside the single
     // "latest" snapshot above lets callers show both at once instead of
     // whichever window's event happened to arrive most recently.
-    if (info.rateLimitType) {
-      const windows = await this.readWindows();
-      windows[info.rateLimitType] = snapshot;
-      await writeFile(this.windowsPath(), JSON.stringify(windows, null, 2) + "\n");
+    if (info.rateLimitType) await this.writeWindow(info.rateLimitType, snapshot);
+  }
+
+  /**
+   * Writes several windows' readings at once — e.g. a proactive, multi-window
+   * snapshot from a source other than the live rate_limit_event stream (see
+   * Governor.recordRateLimitWindows). Deliberately separate from `record()`
+   * above: this NEVER touches the single "latest" snapshot admit() gates on,
+   * so a source feeding this can only ever affect display, never admission.
+   */
+  async recordWindows(windows: Record<string, Omit<RateLimitSnapshot, "recordedAt">>, now: Date = new Date()): Promise<void> {
+    for (const [type, info] of Object.entries(windows)) {
+      await this.writeWindow(type, { ...info, recordedAt: now.toISOString() });
     }
+  }
+
+  private async writeWindow(type: string, snapshot: RateLimitSnapshot): Promise<void> {
+    await mkdir(join(this.dataDir, "state"), { recursive: true });
+    const windows = await this.readWindows();
+    windows[type] = snapshot;
+    await writeFile(this.windowsPath(), JSON.stringify(windows, null, 2) + "\n");
   }
 
   /** Empty object means no typed reading has ever been recorded — never null, since there's no "unreadable file" state worth distinguishing here (callers already treat a missing type as "no data" for that window). */

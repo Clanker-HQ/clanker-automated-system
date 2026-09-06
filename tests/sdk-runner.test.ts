@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linkAbort, toRunEvents } from "../src/runner/sdk-runner.js";
+import { linkAbort, toRateLimitSnapshotEvent, toRunEvents } from "../src/runner/sdk-runner.js";
 
 // These messages are synthetic: modeled on the SDKMessage shapes documented
 // in the installed @anthropic-ai/claude-agent-sdk type declarations
@@ -283,6 +283,47 @@ describe("toRunEvents", () => {
 
   it("ignores a system message that isn't a compact boundary", () => {
     expect(toRunEvents({ type: "system", subtype: "init", session_id: "s1" })).toEqual([]);
+  });
+});
+
+// toRateLimitSnapshotEvent maps the SDK's experimental, multi-window
+// usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() response (0-100
+// percentages, ISO reset timestamps) into a rate_limit_snapshot RunEvent
+// (0-1 fractions, unix-seconds resets — the same convention rate_limit_event
+// already uses). Display-only: this must never throw on a shape it doesn't
+// recognise, since a bad response here would otherwise crash a run over a
+// dashboard nicety.
+describe("toRateLimitSnapshotEvent", () => {
+  it("converts five_hour and seven_day utilization/reset time to the rate_limit_event convention", () => {
+    const event = toRateLimitSnapshotEvent({
+      rate_limits: {
+        five_hour: { utilization: 91.4, resets_at: "2026-09-07T02:00:00.000Z" },
+        seven_day: { utilization: 12, resets_at: null },
+      },
+    });
+    expect(event).toEqual({
+      type: "rate_limit_snapshot",
+      windows: {
+        five_hour: { utilization: 0.914, resetsAt: Math.floor(new Date("2026-09-07T02:00:00.000Z").getTime() / 1000) },
+        seven_day: { utilization: 0.12, resetsAt: null },
+      },
+    });
+  });
+
+  it("returns null when the plan has no rate limits available (API key/Bedrock/Vertex sessions)", () => {
+    expect(toRateLimitSnapshotEvent({ rate_limits: null })).toBeNull();
+  });
+
+  it("omits a window whose utilization is null rather than fabricating a 0%", () => {
+    const event = toRateLimitSnapshotEvent({
+      rate_limits: { five_hour: { utilization: null, resets_at: null }, seven_day: { utilization: 40, resets_at: null } },
+    });
+    expect(event?.windows.five_hour).toBeUndefined();
+    expect(event?.windows.seven_day).toEqual({ utilization: 0.4, resetsAt: null });
+  });
+
+  it("returns null when neither known window has a usable reading", () => {
+    expect(toRateLimitSnapshotEvent({ rate_limits: { five_hour: { utilization: null, resets_at: null } } })).toBeNull();
   });
 });
 

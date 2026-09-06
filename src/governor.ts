@@ -296,6 +296,33 @@ export class Governor {
   }
 
   /**
+   * Feeds the dashboard-only per-window store (GovernorStatus.rateLimitWindows)
+   * from a proactive, multi-window source — the SDK's experimental
+   * `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` control
+   * method, at the time of writing. Deliberately routed through
+   * `RateLimitTracker.recordWindows` rather than `record()`: this must NEVER
+   * touch the single "latest" snapshot `admit()` gates on, so a change or
+   * removal of that unstable API can only ever degrade a display, never
+   * block a real run. A window with no numeric utilization is skipped
+   * outright rather than recorded with a fabricated status.
+   */
+  async recordRateLimitWindows(windows: Record<string, { utilization: number | null; resetsAt: number | null }>): Promise<void> {
+    const overrides = await this.overrides.read();
+    const settings = resolveGovernorSettings(this.config, overrides);
+    const toRecord: Record<string, Omit<RateLimitSnapshot, "recordedAt">> = {};
+    for (const [type, w] of Object.entries(windows)) {
+      if (w.utilization === null || w.utilization === undefined) continue;
+      const status: RateLimitSnapshot["status"] =
+        w.utilization >= 1 ? "rejected" : w.utilization >= settings.rateLimitPauseThreshold ? "allowed_warning" : "allowed";
+      toRecord[type] = {
+        status, rateLimitType: type, utilization: w.utilization,
+        ...(w.resetsAt !== null ? { resetsAt: w.resetsAt } : {}),
+      };
+    }
+    if (Object.keys(toRecord).length > 0) await this.rateLimits.recordWindows(toRecord, this.now());
+  }
+
+  /**
    * Reactive backoff: called when the SDK itself reports a rate_limit error
    * (distinct from recordRateLimit, which reflects the SDK's own live
    * utilization figure — this fires when no such figure caught it in time).
