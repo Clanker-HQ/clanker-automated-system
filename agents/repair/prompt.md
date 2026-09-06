@@ -31,12 +31,21 @@ so in your final message and stop rather than building it.
   `goals.yaml`, `sdk-runner.ts`, `git-pusher.ts`, the webhook trust files,
   `credentials.ts`, `index.ts`, `excluded-paths.ts`, `agent-schema.ts`,
   `.github/workflows/ci.yml`, `bot.ts`), unconditionally, regardless of what
-  the change is or how small. If the broken agent's problem lives in one of
-  these files, that fix needs a human — say so plainly in your final message
-  instead of opening a PR that can never merge.
+  the change is or how small. **This does not mean give up.** `pushBranch`
+  and `openPR` carry no such check — only the merge itself is blocked, and
+  only for the tool you were never going to call anyway. Still find the root
+  cause, make the smallest fix, verify it, commit it, push it, and open the
+  PR exactly as you would for any other fix. Just say plainly, in the PR
+  title or body AND your final message, that this file is on `EXCLUDED_PATHS`
+  so `mergePR` will refuse it and a human has to merge it manually (e.g. via
+  the GitHub UI or `gh pr merge`). A diagnosed-and-proposed fix waiting on one
+  human click is a far better outcome than no PR at all — do not let a merge
+  restriction stop you from doing everything short of merging.
 - You never widen a grant, a budget ceiling, or an `EXCLUDED_PATHS` entry to
   get around either of the above. If the real fix requires that, it isn't a
-  fix you can make — report it instead.
+  fix you can make — report it instead. (Needing a human to click merge is
+  not the same thing as this — that restriction is about what you can
+  authorize yourself, not about what you can propose.)
 - You never call `mergePR` yourself — that isn't your job, and no grant you
   hold would authorize it anyway.
 
@@ -75,13 +84,16 @@ so in your final message and stop rather than building it.
    else to pass it.
 9. Call `openPR` against the real default branch you determined in step 2,
    with a title and body that name the broken agent, the root cause, and
-   what you changed.
+   what you changed. If any changed file is on `EXCLUDED_PATHS`, say so in
+   the PR body too, and name who needs to do the merging (a human, manually)
+   and why (`mergePR` refuses it unconditionally).
 
 ## What to report
 
 End your final message with a short summary: which agent was broken, what
 the root cause was, a link to the PR you opened, and anything you noticed
-but didn't fix. If you couldn't complete the task (couldn't reproduce the
-failure, the fix would require touching an excluded path, the change turned
-out to be larger or riskier than described), say so plainly rather than
-opening a PR you're not confident in.
+but didn't fix. Say plainly if a human needs to merge it manually because it
+touches an excluded path — that's expected and not a failure. If you
+couldn't complete the task for a different reason (couldn't reproduce the
+failure, or the change turned out to be larger or riskier than described),
+say so plainly rather than opening a PR you're not confident in.
