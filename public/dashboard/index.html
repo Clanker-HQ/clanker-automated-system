@@ -436,6 +436,22 @@
     if (btn && loaders[btn.dataset.noticeRetry]) loaders[btn.dataset.noticeRetry]();
   });
 
+  /**
+   * s.rateLimitStatus === null means no (unexpired) snapshot exists at all.
+   * s.rateLimitUtilization === null with a non-null status means a snapshot
+   * exists but the SDK's rate_limit_event carried no numeric percentage —
+   * that's a real reading, not "no reading yet", so it gets its own message.
+   */
+  function formatRateLimit(s) {
+    if (s.rateLimitStatus === null) return "no reading yet";
+    if (s.rateLimitUtilization !== null) {
+      return `${Math.round(s.rateLimitUtilization * 100)}% (pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%)`;
+    }
+    const window = s.rateLimitType ? ` (${s.rateLimitType})` : "";
+    const resets = s.rateLimitResetsAt ? `, resets ${new Date(s.rateLimitResetsAt * 1000).toLocaleTimeString()}` : "";
+    return `${s.rateLimitStatus}${window}${resets} — no % reported`;
+  }
+
   async function loadStatus() {
     try {
       const res = await fetch("/api/status");
@@ -452,9 +468,7 @@
       document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
       document.getElementById("status-breaker-dot").className = "dot " + (s.breakerEnabled ? "dot-good" : "dot-neutral");
       document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
-      document.getElementById("status-ratelimit").textContent = s.rateLimitUtilization === null
-        ? "no reading yet"
-        : `${Math.round(s.rateLimitUtilization * 100)}% (pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%)`;
+      document.getElementById("status-ratelimit").textContent = formatRateLimit(s);
       const c = s.taskCounts;
       document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
     } catch (err) {
