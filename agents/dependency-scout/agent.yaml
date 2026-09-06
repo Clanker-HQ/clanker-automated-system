@@ -8,7 +8,7 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "0 11 * * 3"
+  schedule: "15 11 * * *"   # weekly -> daily (2026-09-06), 15min after cleanup-scout; same reasoning -- more chances to land on an "on" window
   timezone: Europe/Berlin
 
 category: maintain

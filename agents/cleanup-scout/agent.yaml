@@ -8,7 +8,7 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "0 11 * * 1"
+  schedule: "0 11 * * *"   # weekly -> daily (2026-09-06): a local-only process that isn't always on needs more chances per week to actually land on an "on" window, not just one
   timezone: Europe/Berlin
 
 category: maintain
