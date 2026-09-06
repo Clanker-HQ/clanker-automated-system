@@ -154,6 +154,73 @@ describe("runDispatchTick", () => {
     expect(updated?.failureReason).toBe("boom");
   });
 
+  describe("a failure carrying a rate/session-limit reset time", () => {
+    it("schedules the retry at the parsed reset time instead of the fixed backoff, without spending a retry", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ status: "failed", error: "You've hit your session limit · resets 3:00pm (UTC)" }),
+      );
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const now = () => new Date("2026-01-01T10:00:00.000Z");
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir, world, now,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("pending");
+      expect(updated?.nextRetryAt).toBe("2026-01-01T15:00:00.000Z");
+      // Not counted against the normal retry budget: a rate/session limit
+      // says nothing about whether the task itself is achievable.
+      expect(updated?.retryCount ?? 0).toBe(0);
+      expect(updated?.rateLimitDeferCount).toBe(1);
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("still defers to the reset time even when the task's normal retry budget is already exhausted", async () => {
+      // Reproduces the actual incident: a task that had already burned all 3
+      // of its normal retries on unrelated not-achieved grading then hit a
+      // session-limit error on its next attempt and was killed permanently,
+      // hours before the limit even reset.
+      const { tasks, dataDir, world } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await tasks.update(task.id, { retryCount: 3 });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ status: "failed", error: "You've hit your session limit · resets 3:00pm (UTC)" }),
+      );
+      const now = () => new Date("2026-01-01T10:00:00.000Z");
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, world, now,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("pending");
+      expect(updated?.nextRetryAt).toBe("2026-01-01T15:00:00.000Z");
+    });
+
+    it("falls back to the normal (also-exhausted) retry budget once rate-limit defers themselves are exhausted", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      await tasks.update(task.id, { rateLimitDeferCount: 5, retryCount: 3 });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ status: "failed", error: "You've hit your session limit · resets 3:00pm (UTC)" }),
+      );
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const now = () => new Date("2026-01-01T10:00:00.000Z");
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify, dataDir, world, now,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id });
+      const updated = await tasks.get(task.id);
+      expect(updated?.status).toBe("failed");
+      expect(updated?.failureReason).toContain("session limit");
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+  });
+
   for (const status of ["denied", "timeout"] as const) {
     it(`fails the task immediately, on the very first attempt, when the run ends "${status}" (a deterministic outcome backoff can't fix)`, async () => {
       const { tasks, dataDir, world } = taskStore();

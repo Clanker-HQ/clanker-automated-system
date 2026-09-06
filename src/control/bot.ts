@@ -586,12 +586,13 @@ export class DiscordBot {
         }
         // specialistAgent is deliberately kept: the earlier routing decision
         // still stands, same as a dispatcher-deferred retry — only a task that
-        // was never routed pays for another router call. retryCount is reset:
-        // a manual retry is a fresh, deliberate attempt, and should get its
-        // own silent auto-retry if this next run also fails transiently.
+        // was never routed pays for another router call. retryCount and
+        // rateLimitDeferCount are both reset: a manual retry is a fresh,
+        // deliberate attempt, and should get its own silent auto-retry (or
+        // rate-limit defer) budget if this next run also fails.
         await this.tasks.update(task.id, {
-          status: "pending", failureReason: undefined, finishedAt: undefined, startedAt: undefined, retryCount: undefined,
-          nextRetryAt: undefined,
+          status: "pending", failureReason: undefined, finishedAt: undefined, startedAt: undefined,
+          retryCount: undefined, rateLimitDeferCount: undefined, nextRetryAt: undefined,
         });
         void this.dispatcher.wake().catch((err: unknown) => {
           console.error(`[bot] dispatcher wake failed after !retry ${task.id}:`, err);

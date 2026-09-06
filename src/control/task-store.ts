@@ -105,6 +105,15 @@ export interface Task {
    * reads it after that.
    */
   spentUsd?: number;
+  /**
+   * How many times this task has been deferred to a parsed rate/session-limit
+   * reset time (see parseRateLimitReset and MAX_RATE_LIMIT_DEFERS in
+   * dispatcher.ts) rather than backed off with the normal RETRY_BACKOFF_MS
+   * schedule. Tracked separately from retryCount: a limit resetting hours
+   * from now says nothing about whether the task itself is achievable, so it
+   * must not compete with (or be blocked by) the task's normal retry budget.
+   */
+  rateLimitDeferCount?: number;
 }
 
 export class TaskStore {
