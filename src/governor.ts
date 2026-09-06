@@ -25,6 +25,8 @@ export interface GovernorStatus {
   rateLimitStatus: RateLimitSnapshot["status"] | null;
   rateLimitType: string | null;
   rateLimitResetsAt: number | null;
+  /** Each window's (e.g. "five_hour", "seven_day") own latest reading, keyed by rateLimitType — independent of the single snapshot above, which only ever reflects whichever window's event arrived most recently. */
+  rateLimitWindows: Record<string, RateLimitSnapshot>;
 }
 
 function isWithinQuietHours(quietHours: QuietHours, now: Date): boolean {
@@ -247,6 +249,7 @@ export class Governor {
       rateLimitStatus: snapshot?.status ?? null,
       rateLimitType: snapshot?.rateLimitType ?? null,
       rateLimitResetsAt: snapshot?.resetsAt ?? null,
+      rateLimitWindows: await this.rateLimits.readWindows(),
     };
   }
 

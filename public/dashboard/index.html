@@ -441,29 +441,45 @@
 
   const RATE_LIMIT_LABELS = { allowed: "Allowed", allowed_warning: "Warning", rejected: "Rejected" };
   const RATE_LIMIT_DOTS = { allowed: "dot-good", allowed_warning: "dot-warn", rejected: "dot-bad" };
+  const RATE_LIMIT_SEVERITY = { allowed: 0, allowed_warning: 1, rejected: 2 };
+  const WINDOW_LABELS = { five_hour: "5h", seven_day: "7d" };
+
+  function formatResetTime(resetsAt) {
+    return new Date(resetsAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  /** One rate-limit window's own reading (utilization if the SDK reported one, else its status), for the dashboard tile. */
+  function formatWindow(type, w) {
+    const label = WINDOW_LABELS[type] ?? type.replace(/_/g, " ");
+    const text = w.utilization !== undefined && w.utilization !== null
+      ? `${label} ${Math.round(w.utilization * 100)}%`
+      : `${label} ${RATE_LIMIT_LABELS[w.status] ?? w.status}`;
+    return { label, text, status: w.status, resetsAt: w.resetsAt };
+  }
 
   /**
    * s.rateLimitStatus === null means no (unexpired) snapshot exists at all.
-   * s.rateLimitUtilization === null with a non-null status means a snapshot
-   * exists but the SDK's rate_limit_event carried no numeric percentage —
-   * that's a real reading, so it gets its own dot color and a short status
-   * word instead of collapsing into the empty state.
+   * s.rateLimitWindows carries each window's (five_hour, seven_day, ...) own
+   * latest reading, keyed by type — shown side by side so neither window's
+   * event can silently overwrite the other's display. Falls back to the
+   * single latest snapshot only when no typed window reading exists yet
+   * (e.g. only the type-less "rejected" backoff snapshot has landed).
    */
   function renderRateLimit(s) {
-    if (s.rateLimitStatus === null) return { dot: "dot-neutral", value: "No reading yet", caption: "" };
-    const dot = RATE_LIMIT_DOTS[s.rateLimitStatus] ?? "dot-neutral";
-    if (s.rateLimitUtilization !== null) {
-      return {
-        dot,
-        value: `${Math.round(s.rateLimitUtilization * 100)}%`,
-        caption: `pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%`,
-      };
+    const entries = Object.entries(s.rateLimitWindows ?? {}).map(([type, w]) => formatWindow(type, w));
+    if (entries.length === 0) {
+      if (s.rateLimitStatus === null) return { dot: "dot-neutral", value: "No reading yet", caption: "" };
+      const dot = RATE_LIMIT_DOTS[s.rateLimitStatus] ?? "dot-neutral";
+      const window = s.rateLimitType ? `${s.rateLimitType.replace(/_/g, " ")} window` : "unknown window";
+      const resets = s.rateLimitResetsAt ? `, resets ${formatResetTime(s.rateLimitResetsAt)}` : "";
+      return { dot, value: RATE_LIMIT_LABELS[s.rateLimitStatus] ?? s.rateLimitStatus, caption: `${window}${resets}` };
     }
-    const window = s.rateLimitType ? `${s.rateLimitType.replace(/_/g, " ")} window` : "unknown window";
-    const resets = s.rateLimitResetsAt
-      ? `, resets ${new Date(s.rateLimitResetsAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-      : "";
-    return { dot, value: RATE_LIMIT_LABELS[s.rateLimitStatus] ?? s.rateLimitStatus, caption: `${window}${resets}` };
+    const worst = entries.reduce((a, b) => (RATE_LIMIT_SEVERITY[b.status] ?? 0) > (RATE_LIMIT_SEVERITY[a.status] ?? 0) ? b : a);
+    const dot = RATE_LIMIT_DOTS[worst.status] ?? "dot-neutral";
+    const value = entries.map((e) => e.text).join(" · ");
+    const resetParts = entries.filter((e) => e.resetsAt).map((e) => `${e.label} resets ${formatResetTime(e.resetsAt)}`);
+    const caption = resetParts.length ? resetParts.join(" · ") : `pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%`;
+    return { dot, value, caption };
   }
 
   async function loadStatus() {

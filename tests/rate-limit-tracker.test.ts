@@ -33,4 +33,35 @@ describe("RateLimitTracker", () => {
     await writeFile(join(dir, "state", "rate-limit.json"), "not json");
     expect(await new RateLimitTracker(dir).read()).toBeNull();
   });
+
+  it("readWindows returns an empty object when nothing typed has ever been recorded", async () => {
+    const tracker = new RateLimitTracker(mkdtempSync(join(tmpdir(), "cai-rl-")));
+    expect(await tracker.readWindows()).toEqual({});
+  });
+
+  it("keeps a separate latest reading per rate-limit type, so one window's event can't clobber another's", async () => {
+    const tracker = new RateLimitTracker(mkdtempSync(join(tmpdir(), "cai-rl-")));
+    await tracker.record({ status: "allowed", rateLimitType: "five_hour", utilization: 0.4, resetsAt: 1787766600 });
+    await tracker.record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.8 });
+    const windows = await tracker.readWindows();
+    expect(windows.five_hour?.utilization).toBe(0.4);
+    expect(windows.five_hour?.resetsAt).toBe(1787766600);
+    expect(windows.seven_day?.utilization).toBe(0.8);
+  });
+
+  it("a later reading for one type overwrites only that type's window", async () => {
+    const tracker = new RateLimitTracker(mkdtempSync(join(tmpdir(), "cai-rl-")));
+    await tracker.record({ status: "allowed", rateLimitType: "five_hour", utilization: 0.4 });
+    await tracker.record({ status: "allowed", rateLimitType: "seven_day", utilization: 0.5 });
+    await tracker.record({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.9 });
+    const windows = await tracker.readWindows();
+    expect(windows.five_hour?.utilization).toBe(0.9);
+    expect(windows.seven_day?.utilization).toBe(0.5);
+  });
+
+  it("does not add a window entry for a reading recorded without a rateLimitType", async () => {
+    const tracker = new RateLimitTracker(mkdtempSync(join(tmpdir(), "cai-rl-")));
+    await tracker.record({ status: "rejected" });
+    expect(await tracker.readWindows()).toEqual({});
+  });
 });

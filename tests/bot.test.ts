@@ -47,6 +47,7 @@ function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
     breakerEnabled: true, disabledAgents: [],
     rateLimitUtilization: null, rateLimitPauseThreshold: 0.95,
     rateLimitStatus: null, rateLimitType: null, rateLimitResetsAt: null,
+    rateLimitWindows: {},
   };
   const governor = { status: async () => governorStatus, adjustConcurrency: vi.fn() };
   const bot = new DiscordBot({
