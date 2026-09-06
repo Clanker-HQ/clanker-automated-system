@@ -57,17 +57,25 @@
     gap: 1px; background: var(--border); border: 1px solid var(--border);
     border-radius: 16px; overflow: hidden; margin-bottom: 1rem;
   }
-  .tile { background: var(--surface); padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+  .tile { background: var(--surface); padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; transition: background-color 0.2s ease, box-shadow 0.2s ease; }
   .tile-wide { grid-column: 1 / -1; }
-  .tile-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+  .tile-alert { background: rgba(var(--bad-rgb), 0.08); box-shadow: inset 0 0 0 1px rgba(var(--bad-rgb), 0.35); }
+  .tile-label { font-size: 0.72rem; color: var(--text-muted); }
   .tile-value-row { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
-  .tile-value-text { font-family: var(--font-mono); font-size: 1.1rem; font-weight: 600; color: var(--text); }
+  .tile-value-text { font-family: var(--font-mono); font-size: 1.1rem; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
   .tile-value-text--sm { font-size: 0.88rem; font-weight: 500; }
+  .tile-value-text--muted { color: var(--text-dim); font-weight: 400; }
   .tile-delta { font-size: 0.72rem; font-family: var(--font-mono); }
   .tile-delta-good { color: var(--good); }
   .tile-delta-bad { color: var(--bad); }
   .tile-caption { font-size: 0.74rem; line-height: 1.35; color: var(--text-muted); }
   .tile-caption[hidden] { display: none; }
+
+  .meter { height: 5px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 0.15rem; }
+  .meter[hidden] { display: none; }
+  .meter-fill { height: 100%; width: 0%; border-radius: inherit; background: var(--good); transition: width 0.3s ease, background-color 0.2s ease; }
+  .meter-fill.meter-warn { background: var(--accent); }
+  .meter-fill.meter-bad { background: var(--bad); }
 
   .skel:empty {
     display: inline-block; width: 4.5em; height: 0.9em; border-radius: 3px;
@@ -228,13 +236,14 @@
       <button class="btn btn-secondary btn-sm" data-notice-retry="status">Retry now</button>
     </div>
     <div class="tile-grid">
-      <div class="tile">
+      <div class="tile" id="tile-state">
         <div class="tile-label">State</div>
         <div class="tile-value-row"><span class="dot" id="status-state-dot"></span><span class="tile-value-text skel" id="status-state"></span></div>
       </div>
       <div class="tile">
         <div class="tile-label">Budget</div>
         <div class="tile-value-text skel" id="status-budget"></div>
+        <div class="meter"><div class="meter-fill" id="status-budget-meter"></div></div>
       </div>
       <div class="tile">
         <div class="tile-label">Concurrency</div>
@@ -252,8 +261,9 @@
         <div class="tile-label">Rate limit</div>
         <div class="tile-value-row"><span class="dot" id="status-ratelimit-dot"></span><span class="tile-value-text skel" id="status-ratelimit"></span></div>
         <div class="tile-caption" id="status-ratelimit-caption" hidden></div>
+        <div class="meter" id="status-ratelimit-meter-track" hidden><div class="meter-fill" id="status-ratelimit-meter"></div></div>
       </div>
-      <div class="tile">
+      <div class="tile tile-wide">
         <div class="tile-label">Disabled agents</div>
         <div class="tile-value-text tile-value-text--sm skel" id="status-disabled"></div>
       </div>
@@ -466,6 +476,16 @@
     return { dot, value: RATE_LIMIT_LABELS[s.rateLimitStatus] ?? s.rateLimitStatus, caption: `${window}${resets}` };
   }
 
+  /** Reuses a tile's dot-color verdict as the matching meter-fill color, so a single threshold decision always paints both the same way. */
+  function meterSeverityClass(dotClass) {
+    return dotClass === "dot-bad" ? "meter-bad" : dotClass === "dot-warn" ? "meter-warn" : "";
+  }
+
+  function setMeter(el, fraction, severityClass) {
+    el.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+    el.className = "meter-fill " + severityClass;
+  }
+
   async function loadStatus() {
     try {
       const res = await fetch("/api/status");
@@ -474,20 +494,35 @@
       setNotice("status-error", null);
       document.getElementById("status-state").textContent = s.stopped ? "STOPPED" : "running";
       document.getElementById("status-state-dot").className = "dot " + (s.stopped ? "dot-bad" : "dot-good dot-pulse");
+      document.getElementById("tile-state").classList.toggle("tile-alert", s.stopped);
       document.getElementById("status-budget").textContent = `$${s.spentTodayUsd.toFixed(2)} of $${s.dailyBudgetUsd}`;
+      const spentFraction = s.dailyBudgetUsd > 0 ? s.spentTodayUsd / s.dailyBudgetUsd : 0;
+      setMeter(
+        document.getElementById("status-budget-meter"),
+        spentFraction,
+        spentFraction >= 0.9 ? "meter-bad" : spentFraction >= 0.7 ? "meter-warn" : "",
+      );
       document.getElementById("status-concurrency").textContent = s.maxConcurrent;
-      document.getElementById("status-quiet").textContent = s.quietHours
-        ? `${s.quietHours.from}-${s.quietHours.to} ${s.quietHours.timezone}${s.quietHoursActive ? " (active)" : ""}`
+      document.getElementById("status-quiet").innerHTML = s.quietHours
+        ? `${escapeHtml(s.quietHours.from)}-${escapeHtml(s.quietHours.to)} ${escapeHtml(s.quietHours.timezone).replace(/\//g, "/<wbr>")}${s.quietHoursActive ? " (active)" : ""}`
         : "off";
       document.getElementById("status-breaker").textContent = s.breakerEnabled ? "on" : "off";
       document.getElementById("status-breaker-dot").className = "dot " + (s.breakerEnabled ? "dot-good" : "dot-neutral");
-      document.getElementById("status-disabled").textContent = s.disabledAgents.length ? s.disabledAgents.join(", ") : "none";
+      const disabledEl = document.getElementById("status-disabled");
+      const hasDisabled = s.disabledAgents.length > 0;
+      disabledEl.textContent = hasDisabled ? s.disabledAgents.join(", ") : "none";
+      disabledEl.classList.toggle("tile-value-text--muted", !hasDisabled);
       const rl = renderRateLimit(s);
       document.getElementById("status-ratelimit-dot").className = "dot " + rl.dot;
       document.getElementById("status-ratelimit").textContent = rl.value;
       const rlCaption = document.getElementById("status-ratelimit-caption");
       rlCaption.textContent = rl.caption;
       rlCaption.hidden = !rl.caption;
+      const rlMeterTrack = document.getElementById("status-ratelimit-meter-track");
+      rlMeterTrack.hidden = s.rateLimitUtilization === null;
+      if (s.rateLimitUtilization !== null) {
+        setMeter(document.getElementById("status-ratelimit-meter"), s.rateLimitUtilization, meterSeverityClass(rl.dot));
+      }
       const c = s.taskCounts;
       document.getElementById("status-tasks").textContent = `${c.pending} pending, ${c.queued} queued, ${c.running} running, ${c.waiting} waiting`;
     } catch (err) {
