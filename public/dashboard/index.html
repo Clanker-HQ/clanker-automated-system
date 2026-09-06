@@ -133,6 +133,22 @@
   .finding { padding-bottom: 0.6rem; margin-bottom: 0.6rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; line-height: 1.5; overflow-wrap: break-word; }
   .finding:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 
+  .portfolio-toggle {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 0.75rem; padding: 0.2rem 0.35rem; line-height: 1; transition: transform 0.15s ease, color 0.15s ease;
+  }
+  .portfolio-toggle:hover { color: var(--accent); }
+  .portfolio-toggle[aria-expanded="true"] { transform: rotate(90deg); color: var(--accent); }
+  tr.portfolio-detail td { background: var(--surface-raised); vertical-align: top; }
+  .portfolio-detail-body { display: flex; flex-direction: column; gap: 0.7rem; padding: 0.3rem 0; }
+  .portfolio-detail-body h4 {
+    margin: 0 0 0.25rem; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);
+  }
+  .portfolio-detail-body p { margin: 0; font-size: 0.85rem; line-height: 1.5; overflow-wrap: break-word; }
+  .portfolio-detail-body ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.35rem; }
+  .portfolio-detail-body li { font-size: 0.82rem; line-height: 1.5; overflow-wrap: break-word; }
+  .portfolio-detail-body li:last-child { color: var(--text); }
+
   .btn {
     display: inline-flex; align-items: center; gap: 0.35rem; border: 1px solid transparent;
     border-radius: 999px; padding: 0.45rem 1rem; font-size: 0.82rem; font-family: inherit;
@@ -372,9 +388,9 @@
     <div class="card">
       <div class="card-title">Portfolio</div>
       <table>
-        <thead><tr><th>Slug</th><th>Status</th><th>Next review</th><th>Monthly cost</th></tr></thead>
+        <thead><tr><th></th><th>Slug</th><th>Status</th><th>Next review</th><th>Monthly cost</th></tr></thead>
         <tbody id="world-portfolio-body">
-          <tr class="skel-row"><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--md"></span></td><td><span class="skel-bar skel-bar--sm"></span></td></tr>
+          <tr class="skel-row"><td></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--sm"></span></td><td><span class="skel-bar skel-bar--md"></span></td><td><span class="skel-bar skel-bar--sm"></span></td></tr>
         </tbody>
       </table>
     </div>
@@ -407,6 +423,7 @@
   const REFRESH_MS = 10000;
   let refreshTimer = null;
   const loaders = {};
+  const portfolioExpanded = new Set();
 
   function showTab(name) {
     for (const btn of document.querySelectorAll("nav button")) {
@@ -437,6 +454,20 @@
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-notice-retry]");
     if (btn && loaders[btn.dataset.noticeRetry]) loaders[btn.dataset.noticeRetry]();
+  });
+
+  document.getElementById("world-portfolio-body").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-portfolio-toggle]");
+    if (!btn) return;
+    const slug = btn.dataset.portfolioToggle;
+    if (portfolioExpanded.has(slug)) portfolioExpanded.delete(slug);
+    else portfolioExpanded.add(slug);
+    const row = btn.closest("tr");
+    const detailRow = row.nextElementSibling;
+    const expanded = portfolioExpanded.has(slug);
+    btn.setAttribute("aria-expanded", String(expanded));
+    btn.title = `${expanded ? "Hide" : "Show"} details`;
+    detailRow.hidden = !expanded;
   });
 
   const RATE_LIMIT_LABELS = { allowed: "Allowed", allowed_warning: "Warning", rejected: "Rejected" };
@@ -802,9 +833,29 @@
       const { portfolio, shelf, findings } = await res.json();
       setNotice("world-error", null);
 
-      document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => `
-        <tr><td>${escapeHtml(p.slug)}</td><td>${statusChip(p.status)}</td><td class="num">${escapeHtml(p.nextReviewAt)}${p.reviewOverdue ? " ⚠️ overdue" : ""}</td><td class="num">$${p.monthlyCostUsd}</td></tr>
-      `).join("") || `<tr><td colspan="4"><span class="empty-state">No products in the portfolio yet.</span></td></tr>`;
+      document.getElementById("world-portfolio-body").innerHTML = portfolio.map((p) => {
+        const expanded = portfolioExpanded.has(p.slug);
+        const notes = Array.isArray(p.notes) ? p.notes : [];
+        return `
+        <tr>
+          <td><button class="portfolio-toggle" data-portfolio-toggle="${escapeHtml(p.slug)}" aria-expanded="${expanded}" title="${expanded ? "Hide" : "Show"} details">▸</button></td>
+          <td>${escapeHtml(p.slug)}</td>
+          <td>${statusChip(p.status)}</td>
+          <td class="num">${escapeHtml(p.nextReviewAt)}${p.reviewOverdue ? " ⚠️ overdue" : ""}</td>
+          <td class="num">$${p.monthlyCostUsd}</td>
+        </tr>
+        <tr class="portfolio-detail" ${expanded ? "" : "hidden"}>
+          <td></td>
+          <td colspan="4">
+            <div class="portfolio-detail-body">
+              <div><h4>What it is</h4><p>${p.purpose ? escapeHtml(p.purpose) : "<em>Not recorded.</em>"}</p></div>
+              <div><h4>Bar to clear</h4><p>${p.bar ? escapeHtml(p.bar) : "<em>Not recorded.</em>"}</p></div>
+              <div><h4>History</h4>${notes.length ? `<ul>${notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : "<p><em>No notes recorded.</em></p>"}</div>
+            </div>
+          </td>
+        </tr>
+      `;
+      }).join("") || `<tr><td colspan="5"><span class="empty-state">No products in the portfolio yet.</span></td></tr>`;
 
       document.getElementById("world-shelf-list").innerHTML = shelf.length
         ? shelf.map((s) => `<li>${escapeHtml(s.summary)} — <em>${escapeHtml(s.reason)}</em></li>`).join("")
