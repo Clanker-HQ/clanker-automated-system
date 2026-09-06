@@ -50,6 +50,7 @@ interface QueryParams {
     canUseTool?: (
       toolName: string,
       input: Record<string, unknown>,
+      toolCtx?: { agentID?: string },
     ) => Promise<{ behavior: "allow" } | { behavior: "deny"; message: string; interrupt?: boolean }>;
   };
 }
@@ -416,6 +417,80 @@ describe("SdkRunner query options", () => {
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     await collect(new SdkRunner().execute(bare, CTX, new AbortController().signal));
     expect((queryMock.mock.calls[0]![0] as QueryParams).options.tools).toEqual([]);
+  });
+
+  // research's own allowedTools deliberately omits WebFetch (agents/research/agent.yaml)
+  // so page-reading stays delegated to the research-source subagent, which
+  // declares WebFetch on its OWN tools list (RESEARCH_SOURCE_SUBAGENT). But the
+  // SDK's top-level `tools` option is the base pool subagent tool names resolve
+  // against — confirmed live: a subagent whose declared tools don't appear there
+  // fails to spawn ("tools list resolved to nothing: unrecognized [...]") or,
+  // when at least one tool does resolve, silently drops the rest. Either way
+  // research-source would load without WebFetch unless research's own
+  // top-level `tools` also carries it.
+  it("unions a reachable subagent's own tools into the top-level tools list so the SDK can actually resolve them", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const research = {
+      ...AGENT,
+      name: "research",
+      permissions: { allowedTools: ["WebSearch", "Write", "Task"], disallowedTools: [] },
+    } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(new SdkRunner().execute(research, CTX, new AbortController().signal));
+    const tools = (queryMock.mock.calls[0]![0] as QueryParams).options.tools;
+    expect(tools).toEqual(expect.arrayContaining(["WebSearch", "Write", "Task", "WebFetch"]));
+  });
+
+  it("does not widen an unrelated agent's tools list just because some OTHER agent reaches a subagent needing them", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const { params } = await run([RESULT_MESSAGE]);
+    // AGENT (name "smoke") maps to no entry in SUBAGENT_TOOLS_BY_PARENT, so its
+    // tools list must stay exactly what its own allowedTools says — no WebFetch,
+    // no research-source leakage.
+    expect(params.options.tools).toEqual(["Read", "Glob"]);
+  });
+
+  // The union above closes the "dropped tool" bug, but doing it naively (folding
+  // every registered subagent's tools into every agent that can reach ANY
+  // subagent) would hand research a tool it never declared and was never meant
+  // to hold directly — the exact exfiltration shape research's own agent.yaml
+  // deliberately avoids by withholding `Read`. `agentID` is set by the SDK only
+  // when a call originates inside a spawned subagent, never the parent's own
+  // turn, so canUseTool uses its absence to refuse a subagent-only tool called
+  // directly.
+  it("refuses a subagent-only tool on the agent's own top-level turn, even though it's now in the tools list", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const research = {
+      ...AGENT,
+      name: "research",
+      permissions: { allowedTools: ["WebSearch", "Write", "Task"], disallowedTools: [] },
+    } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(new SdkRunner().execute(research, CTX, new AbortController().signal));
+    const canUseTool = (queryMock.mock.calls[0]![0] as QueryParams).options.canUseTool!;
+
+    const direct = await canUseTool("WebFetch", { url: "https://example.com" }, {});
+    expect(direct.behavior).toBe("deny");
+    expect((direct as { message: string }).message).toMatch(/only available to a dispatched subagent/);
+  });
+
+  it("lets a genuine subagent call (agentID present) fall through to the normal grant check instead of the subagent-only refusal", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const research = {
+      ...AGENT,
+      name: "research",
+      permissions: { allowedTools: ["WebSearch", "Write", "Task"], disallowedTools: [] },
+    } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(new SdkRunner().execute(research, CTX, new AbortController().signal));
+    const canUseTool = (queryMock.mock.calls[0]![0] as QueryParams).options.canUseTool!;
+
+    const fromSubagent = await canUseTool("WebFetch", { url: "https://example.com" }, { agentID: "sub-1" });
+    // No grants are configured on this SdkRunner, so decide() denies it too —
+    // but for the DIFFERENT, generic reason, proving the subagent-only gate
+    // was not what refused it.
+    expect(fromSubagent.behavior).toBe("deny");
+    expect((fromSubagent as { message: string }).message).not.toMatch(/only available to a dispatched subagent/);
   });
 
   // research's own conversation is what's resent on every turn — the
