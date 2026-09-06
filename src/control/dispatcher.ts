@@ -7,6 +7,7 @@ import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
 import type { WorldModel } from "../world/world-model.js";
+import { parseRateLimitReset } from "./rate-limit-reset.js";
 import { specialistsOf, type Router } from "./router.js";
 import type { Task, TaskStore } from "./task-store.js";
 
@@ -118,6 +119,23 @@ const DETAIL_INSTRUCTION =
 /** 1min, 5min, 15min — index i is the delay after the (i+1)th failure. */
 const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000];
 const MAX_RETRIES = RETRY_BACKOFF_MS.length;
+
+/**
+ * A failure whose message names a wall-clock reset time (Claude Code's own
+ * "You've hit your session limit · resets 1:50pm (Europe/Bratislava)", or
+ * similar) is deferred to that instant instead of RETRY_BACKOFF_MS, and does
+ * NOT spend one of the task's normal retryCount attempts: unlike a real
+ * failure or a not-achieved verdict, a limit resetting hours from now says
+ * nothing about whether the task itself is achievable, and none of the fixed
+ * 1/5/15-minute delays could ever bridge a multi-hour window anyway — that
+ * combination is exactly what let a real task exhaust all 3 retries and get
+ * marked permanently failed 2.5 hours before its own session limit reset.
+ *
+ * Capped separately (rather than left unbounded) so a message that always
+ * parses to "reset time already just passed" — a bug in parseRateLimitReset,
+ * or a limit that genuinely never clears — can't defer a task forever.
+ */
+const MAX_RATE_LIMIT_DEFERS = 5;
 
 /**
  * Caps cumulative spend across not-achieved retries at this multiple of the
@@ -422,6 +440,21 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       // this schedule exists for — so they skip straight to failing instead of
       // burning all 3 attempts (21 minutes + up to 4x the run's budget) first.
       const isDeterministic = result.status === "denied" || result.status === "timeout";
+      const rateLimitResetAt = isDeterministic ? undefined : parseRateLimitReset(reason, now());
+      const previousRateLimitDefers = task.rateLimitDeferCount ?? 0;
+      if (rateLimitResetAt && previousRateLimitDefers < MAX_RATE_LIMIT_DEFERS) {
+        console.log(
+          `[dispatcher] task ${task.id} failed on a rate/session limit (${reason}); deferring to ` +
+            `${rateLimitResetAt.toISOString()} (defer ${previousRateLimitDefers + 1}/${MAX_RATE_LIMIT_DEFERS}), not spending a retry`,
+        );
+        await deps.tasks.update(task.id, {
+          status: "pending",
+          startedAt: undefined,
+          rateLimitDeferCount: previousRateLimitDefers + 1,
+          nextRetryAt: rateLimitResetAt.toISOString(),
+        });
+        return { ran: true, taskId: task.id, deferred: true };
+      }
       if (!isDeterministic && previousRetries < MAX_RETRIES) {
         // Exponential backoff before bothering the owner: a lot of these are
         // transient (a flaky fetch, a momentary rate limit) rather than a

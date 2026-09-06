@@ -747,7 +747,8 @@ describe("DiscordBot task commands", () => {
     const { transport, bot, tasks, dispatcher } = setup();
     const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
     await tasks.update(task.id, {
-      status: "failed", failureReason: "boom", specialistAgent: "research", finishedAt: "t", retryCount: 1,
+      status: "failed", failureReason: "boom", specialistAgent: "research", finishedAt: "t",
+      retryCount: 1, rateLimitDeferCount: 2,
     });
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: `!retry ${task.id.slice(0, 8)}` });
@@ -759,6 +760,7 @@ describe("DiscordBot task commands", () => {
     // A manual retry is a fresh attempt: it gets its own silent auto-retry
     // from the dispatcher if this next run also fails transiently.
     expect(after?.retryCount).toBeUndefined();
+    expect(after?.rateLimitDeferCount).toBeUndefined();
     expect(dispatcher.wake).toHaveBeenCalled();
     expect(transport.sent[0]!.text).toContain("requeued");
   });
