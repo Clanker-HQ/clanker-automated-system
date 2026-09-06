@@ -1,11 +1,16 @@
 # Architectural decisions & accepted risks
 
-This is the permanent home for design rationale that used to live scattered
-across the per-project spec/plan documents this repo carried during
-development (`docs/superpowers/specs/`, `docs/superpowers/plans/`). Those were
-deleted once every project they described had shipped and merged — the code,
-tests, and README are the record of *what* was built. This file is the record
-of *why*, kept because it's still actively read: by `improvement-scout` (see
+This is the permanent home for design rationale that would otherwise be
+scattered across the per-project spec/plan documents this repo carries during
+development (`docs/superpowers/specs/`, `docs/superpowers/plans/`). Those
+documents are retained even after the project they describe has shipped and
+merged — they're still linked from the README (see "Not built yet" and the
+per-feature sections) as the detailed design record, and deleting them would
+break those references. The code, tests, and README remain the record of
+*what* was built; the spec/plan docs are the record of *how* it was designed
+to be built. This file is the record of *why* a given approach — or an
+alternative to it — was chosen, kept because it's still actively read: by
+`improvement-scout` (see
 `agents/improvement-scout/prompt.md`), so it doesn't re-propose an idea
 already considered and rejected, and by code comments citing the reasoning
 behind a specific safety mechanism.
