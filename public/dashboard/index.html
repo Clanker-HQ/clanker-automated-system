@@ -479,13 +479,33 @@
     return new Date(resetsAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
 
+  /**
+   * A window's reading is only ever as fresh as the last run that reported
+   * it — the API streams events for whichever window is currently binding, so
+   * the other one can sit untouched for hours. Anything older than this gets
+   * its age shown next to the number, so a figure that stopped moving at
+   * lunchtime can't be read as live. (A reading whose window has actually
+   * reset is dropped server-side and never reaches here — see
+   * Governor.currentWindowReading.)
+   */
+  const WINDOW_READING_FRESH_MS = 60 * 60 * 1000;
+
+  function formatAge(recordedAt) {
+    const ms = Date.now() - new Date(recordedAt).getTime();
+    if (ms < WINDOW_READING_FRESH_MS) return null;
+    const hours = ms / (60 * 60 * 1000);
+    return hours < 24 ? `${Math.round(hours)}h ago` : `${Math.round(hours / 24)}d ago`;
+  }
+
   /** One rate-limit window's own reading (utilization if the SDK reported one, else its status), for the dashboard tile. */
   function formatWindow(type, w, exemptWindows) {
     const label = WINDOW_LABELS[type] ?? type.replace(/_/g, " ");
     const exempt = (exemptWindows ?? []).includes(type);
-    const text = w.utilization !== undefined && w.utilization !== null
-      ? `${label} ${Math.round(w.utilization * 100)}%`
-      : `${label} ${RATE_LIMIT_LABELS[w.status] ?? w.status}`;
+    const reading = w.utilization !== undefined && w.utilization !== null
+      ? `${Math.round(w.utilization * 100)}%`
+      : RATE_LIMIT_LABELS[w.status] ?? w.status;
+    const age = w.recordedAt ? formatAge(w.recordedAt) : null;
+    const text = `${label} ${reading}${age ? ` (${age})` : ""}`;
     return { label, text, status: w.status, resetsAt: w.resetsAt, exempt };
   }
 

@@ -468,6 +468,13 @@ export function toRunEvents(message: unknown): RunEvent[] {
 const KNOWN_RATE_LIMIT_WINDOWS = ["five_hour", "seven_day"] as const;
 
 /**
+ * Once per process, not once per run: `rate_limits_available: false` is a
+ * property of the credential, not of the run, so it would otherwise repeat
+ * on every single run forever.
+ */
+let warnedRateLimitsUnavailable = false;
+
+/**
  * Maps the SDK's experimental `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`
  * response into a `rate_limit_snapshot` RunEvent, normalizing its 0-100
  * percentages and ISO reset timestamps to the 0-1 fraction / unix-seconds
@@ -1847,7 +1854,27 @@ export class SdkRunner implements Runner {
     // whole run over a dashboard nicety.
     const rateLimitSnapshotPromise: Promise<RunEvent | null> = (async () => {
       try {
-        return toRateLimitSnapshotEvent(await stream.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET());
+        const usage = await stream.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+        // Distinct from the catch below, and worth saying out loud once: the
+        // endpoint answered, and its answer was "not for this credential"
+        // (API key, Bedrock/Vertex, or an OAuth token without the profile
+        // scope). Mapping that straight to null — as this did — is silent and
+        // permanent, so the proactive per-window figures never appear and
+        // nothing anywhere says why. Confirmed 2026-09-07: zero of 193 runs
+        // had ever produced one. `npm run probe:usage` prints the raw payload.
+        if (usage.rate_limits_available === false) {
+          if (!warnedRateLimitsUnavailable) {
+            warnedRateLimitsUnavailable = true;
+            console.warn(
+              "[sdk-runner] the usage endpoint reports rate_limits_available=false " +
+                `(subscription_type=${String(usage.subscription_type)}) — proactive per-window rate-limit ` +
+                "readings are unavailable for this credential, so the dashboard's 5h/7d tile can only show " +
+                "whichever window the live event stream happens to report. Run `npm run probe:usage` to confirm.",
+            );
+          }
+          return null;
+        }
+        return toRateLimitSnapshotEvent(usage);
       } catch (err) {
         console.error(`[sdk-runner] usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET failed for ${agent.name}`, err);
         return null;

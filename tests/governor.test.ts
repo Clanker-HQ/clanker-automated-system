@@ -561,6 +561,68 @@ describe("Governor.status", () => {
     expect((await governor.status()).rateLimitWindows).toEqual({});
   });
 
+  // 2026-09-07: the dashboard showed "5h Rejected" all evening from a
+  // five-hour window that had reset 46 minutes earlier. That entry was the
+  // last five_hour reading ever recorded (16:46, rejected, no utilization
+  // figure at all), and nothing overwrites a window's entry except a fresh
+  // reading of that same window — which never came, because the API streams
+  // events only for whichever window is currently binding.
+  it("drops a window reading whose own window has already reset", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "rejected", rateLimitType: "five_hour", resetsAt: FIXED_NOW_SECONDS - 60 },
+      new Date(FIXED_NOW_MS - 5 * 60 * 60 * 1000),
+    );
+    await new RateLimitTracker(dir).record(
+      { status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.79, resetsAt: FIXED_NOW_SECONDS + 86_400 },
+      new Date(FIXED_NOW_MS),
+    );
+    const status = await build(dir, () => new Date(FIXED_NOW_MS)).status();
+    expect(status.rateLimitWindows.five_hour).toBeUndefined();
+    expect(status.rateLimitWindows.seven_day?.utilization).toBe(0.79);
+  });
+
+  // The opposite call to the gating path's, deliberately: for a display, the
+  // useful thing (how much of the week is gone) is exactly what discarding an
+  // hour-old reading would throw away, and this store gates nothing.
+  it("keeps an old window reading whose window has NOT reset yet, unlike the gating snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.79, resetsAt: FIXED_NOW_SECONDS + 86_400 },
+      new Date(FIXED_NOW_MS - 3 * 60 * 60 * 1000),
+    );
+    const status = await build(dir, () => new Date(FIXED_NOW_MS)).status();
+    expect(status.rateLimitWindows.seven_day?.utilization).toBe(0.79);
+    // ...while the same reading is too old to be reported as the gate's view.
+    expect(status.rateLimitUtilization).toBeNull();
+    expect(status.rateLimitStatus).toBeNull();
+  });
+
+  it("drops a window reading that is old and says nothing about when its window resets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.9 },
+      new Date(FIXED_NOW_MS - 3 * 60 * 60 * 1000),
+    );
+    expect((await build(dir, () => new Date(FIXED_NOW_MS)).status()).rateLimitWindows.five_hour).toBeUndefined();
+  });
+
+  // status() is documented as reporting the snapshot admit() would consult;
+  // it was reporting the raw file, so the display could contradict the gate.
+  it("reports no rate-limit reading at all once the gating snapshot is too old to describe the present", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "rejected", rateLimitType: "five_hour" },
+      new Date(FIXED_NOW_MS - 3 * 60 * 60 * 1000),
+    );
+    const status = await build(dir, () => new Date(FIXED_NOW_MS)).status();
+    expect(status.rateLimitStatus).toBeNull();
+    expect(status.rateLimitType).toBeNull();
+    expect(status.rateLimitResetsAt).toBeNull();
+    // ...and admit() agrees, which is the whole point of matching the filter.
+    expect(await build(dir, () => new Date(FIXED_NOW_MS)).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
   it("reports status/type/resetsAt from a snapshot that carries no numeric utilization, distinct from no snapshot at all", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     await new RateLimitTracker(dir).record({ status: "allowed", rateLimitType: "five_hour", resetsAt: FIXED_NOW_SECONDS + 600 }, new Date(FIXED_NOW_MS));

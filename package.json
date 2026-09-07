@@ -14,6 +14,7 @@
     "schema": "tsx scripts/emit-schema.ts",
     "probe": "tsx scripts/probe-sdk.ts",
     "probe:canusetool": "tsx scripts/probe-canusetool.ts",
+    "probe:usage": "tsx --env-file-if-exists=.env scripts/probe-usage.ts",
     "probe:e2e-approval": "tsx --env-file-if-exists=.env scripts/probe-e2e-approval.ts"
   },
   "dependencies": {
