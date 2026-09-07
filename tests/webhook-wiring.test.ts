@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WebhookEvent } from "../src/control/webhook-receiver.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { makeWebhookHandler } from "../src/control/webhook-wiring.js";
+import type { Grant } from "../src/grants.js";
 import type { Orchestrator } from "../src/orchestrator.js";
 import type { AgentDef } from "../src/registry.js";
 
@@ -10,6 +11,11 @@ function agent(overrides: Partial<AgentDef> = {}): AgentDef {
     name: "pr-reviewer",
     enabled: true,
     trigger: { type: "webhook", repo: "owner/repo", event: "pull_request" },
+    // Real AgentDef.grantRefs always defaults to [] via AgentSchema
+    // (src/agent-schema.ts) — never undefined — matching that here so the
+    // per-grant resolution added below (`agent.grantRefs.includes(...)`)
+    // exercises the same shape production code actually sees.
+    grantRefs: [],
     ...overrides,
   } as unknown as AgentDef;
 }
@@ -221,5 +227,67 @@ describe("makeWebhookHandler", () => {
     await handler(event({ repo: "owner/some-other-repo" }));
 
     expect(github.postedComments).toEqual([]);
+  });
+});
+
+// Regression coverage for the bug this resolution fixes: without it, every
+// webhook event routed through whichever single token `github` was bound to
+// at boot, so a product repo covered only by a different grant (e.g.
+// products-repo/GITHUB_PRODUCTS_TOKEN) 404'd here before pr-reviewer's run
+// ever started, no matter how correctly grants.yaml/agent.yaml were wired.
+describe("makeWebhookHandler transport resolution", () => {
+  it("uses deps.github unconditionally when grants/githubForToken are not wired at all", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves the transport bound to the matching grant's token, not deps.github, for a repo only a different grant covers", async () => {
+    const fallbackGithub = new FakeGithubTransport(); // deps.github — must never be touched below
+    const productsGithub = githubWithSeededPr({ repo: "owner/product-repo" });
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const grants: Grant[] = [{ id: "products-repo", kind: "github-pr", repos: "*", secret: "PRODUCTS_TOKEN_TEST" }];
+    vi.stubEnv("PRODUCTS_TOKEN_TEST", "the-products-token");
+    const githubForToken = vi.fn((token: string) => (token === "the-products-token" ? productsGithub : fallbackGithub));
+    const handler = makeWebhookHandler({
+      agents: [agent({ trigger: { type: "webhook", repo: "*", event: "pull_request" }, grantRefs: ["products-repo"] })],
+      github: fallbackGithub,
+      grants,
+      githubForToken,
+      orchestrator,
+    });
+
+    await handler(event({ repo: "owner/product-repo" }));
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect(githubForToken).toHaveBeenCalledWith("the-products-token");
+    expect(fallbackGithub.postedComments).toEqual([]);
+
+    vi.unstubAllEnvs();
+  });
+
+  it("falls back to deps.github when the agent holds no grant covering the event's repo", async () => {
+    const fallbackGithub = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const githubForToken = vi.fn();
+    const handler = makeWebhookHandler({
+      agents: [agent({ grantRefs: [] })],
+      github: fallbackGithub,
+      grants: [],
+      githubForToken,
+      orchestrator,
+    });
+
+    await handler(event());
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect(githubForToken).not.toHaveBeenCalled();
   });
 });

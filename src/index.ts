@@ -75,6 +75,12 @@ async function main(): Promise<void> {
   let config: Config;
   let agents: AgentDef[];
   let deployments: Deployment[];
+  // Hoisted out of the try block (its old scope) the same way `outbox`/
+  // `overrides`/`breaker` were: makeWebhookHandler's own per-grant token
+  // resolution, wired further down (well after the try/catch closes), needs
+  // this exact same list — not a second `loadGrants` call that could in
+  // principle read a file that changed between the two.
+  let grants: Grant[];
   let runner: Runner;
   let router: Router;
   let credentialMode: string | undefined;
@@ -82,6 +88,7 @@ async function main(): Promise<void> {
   let ownerId: string;
   let githubToken: string;
   let webhookSecret: string;
+  let webhookPublicUrl: string | undefined;
   let webhookPort: number;
   let dashboardUser: string | undefined;
   let dashboardPassword: string | undefined;
@@ -105,6 +112,14 @@ async function main(): Promise<void> {
   // (Task C3) needs them threaded through buildRunner below.
   const overrides = new ConfigOverridesStore(DATA_DIR);
   const breaker = new BreakerStore(DATA_DIR);
+  // Builds a GithubTransport bound to an arbitrary token — no I/O, so it
+  // belongs alongside the plain constructors just above rather than inside
+  // the try block. Shared by buildRunner below (so createRepo/openPR/mergePR/
+  // postReviewComment can resolve whichever grant's token actually covers the
+  // repo they're touching) and by makeWebhookHandler further down (the same
+  // per-grant resolution applied to the webhook's own pre-fetch) — one
+  // instance, not two independently reimplemented closures.
+  const githubForToken = (token: string) => new GithubApiTransport({ token });
 
   try {
     config = loadConfig(join(ROOT, "config.yaml"));
@@ -114,7 +129,7 @@ async function main(): Promise<void> {
     // cross-checked against every agent's grantRefs: a typo there is otherwise
     // indistinguishable at runtime from "this agent has no grants", and
     // silently denies every effect the agent was configured to be allowed.
-    const grants: Grant[] = loadGrants(join(ROOT, "grants.yaml"));
+    grants = loadGrants(join(ROOT, "grants.yaml"));
     validateGrantRefs(agents, grants);
     deployments = loadDeploys(join(ROOT, "deploys.yaml"), {
       maxLiveDeployments: config.deploy.maxLiveDeployments,
@@ -137,6 +152,11 @@ async function main(): Promise<void> {
     // loudly, not surface as a crash the first time a webhook fires.
     githubToken = mustEnv("GITHUB_PR_TOKEN");
     webhookSecret = mustEnv("GITHUB_WEBHOOK_SECRET");
+    // Optional, not mustEnv'd: without it createRepo simply skips registering
+    // a webhook on the repo it creates (and says so in its response) rather
+    // than failing boot — useful for a local run with no tunnel up yet. See
+    // .env.example's WEBHOOK_PUBLIC_URL and SdkRunner's matching doc comment.
+    webhookPublicUrl = process.env.WEBHOOK_PUBLIC_URL;
     webhookPort = parsePort("WEBHOOK_PORT", process.env.WEBHOOK_PORT, 8787);
     dashboardUser = process.env.DASHBOARD_USER;
     dashboardPassword = process.env.DASHBOARD_PASSWORD;
@@ -176,12 +196,15 @@ async function main(): Promise<void> {
     router = buildRouter();
     runner = buildRunner({
       grants, pending: new PendingStore(DATA_DIR), github,
-      // createRepo/openPR resolve their own per-grant token (e.g.
-      // GITHUB_PRODUCTS_TOKEN for builder's product-repo work) and need a
-      // transport bound to THAT token, not `github` above (permanently
-      // bound to GITHUB_PR_TOKEN for the infra-repo review pipeline). See
-      // SdkRunner's githubForToken doc comment.
-      githubForToken: (token) => new GithubApiTransport({ token }),
+      // createRepo/openPR/mergePR/postReviewComment resolve their own
+      // per-grant token (e.g. GITHUB_PRODUCTS_TOKEN for builder's/
+      // pr-reviewer's product-repo work) and need a transport bound to THAT
+      // token, not `github` above (permanently bound to GITHUB_PR_TOKEN for
+      // the infra-repo review pipeline). See SdkRunner's githubForToken doc
+      // comment. Shared, not redefined, with makeWebhookHandler below.
+      githubForToken,
+      webhookPublicUrl,
+      webhookSecret,
       gitPusher: new RealGitPusher(),
       gitCloner: new RealGitCloner(),
       tasks,
@@ -369,7 +392,7 @@ async function main(): Promise<void> {
   });
 
   const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
-  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, orchestrator }));
+  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator }));
   void webhookReceiver.listen(webhookPort).then(
     () => {
       console.log(`[boot] webhook receiver listening on :${webhookPort}`);

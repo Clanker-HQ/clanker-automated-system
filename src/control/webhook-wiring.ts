@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
 import type { GithubTransport, PullRequestInfo } from "./github-transport.js";
@@ -28,7 +29,27 @@ function scrubFenceLookalikes(text: string): string {
  */
 export function makeWebhookHandler(deps: {
   agents: AgentDef[];
+  /** Fallback transport, and the only one used when `grants`/`githubForToken` aren't wired — see the resolution below. */
   github: GithubTransport;
+  /**
+   * The matching agent's own `grantRefs`, filtered against this list, decide
+   * which token actually covers `event.repo` — same idiom as SdkRunner's
+   * mergePR/postReviewComment/openPR. Optional and defaulting to `[]` (no
+   * match, so `github` above is used unconditionally) purely so existing
+   * single-token callers/tests don't have to change.
+   */
+  grants?: Grant[];
+  /**
+   * Builds a GithubTransport bound to an arbitrary token, resolved fresh per
+   * event from whichever grant actually covers `event.repo` — mirrors
+   * SdkRunner's own `githubForToken` dep (see its doc comment there). `github`
+   * above is permanently bound to whichever token src/index.ts booted it
+   * with (GITHUB_PR_TOKEN, for the infra-repo review pipeline); a product
+   * repo under a different grant (e.g. products-repo/GITHUB_PRODUCTS_TOKEN)
+   * needs THIS to resolve the matching token, or every call below 404s
+   * before the run even starts, using an account that repo isn't on.
+   */
+  githubForToken?: (token: string) => GithubTransport;
   orchestrator: Orchestrator;
 }): (event: WebhookEvent) => Promise<void> {
   return async (event) => {
@@ -53,6 +74,19 @@ export function makeWebhookHandler(deps: {
     );
     if (!agent) return;
 
+    // Resolve which grant — and therefore which GitHub account's token —
+    // actually covers this repo, before making any GitHub call at all. See
+    // `githubForToken`'s doc comment above: without this, every event routes
+    // through whichever single token `github` was bound to at boot, and a
+    // repo under a different grant (e.g. an AAS-Labs product repo, covered
+    // by products-repo/GITHUB_PRODUCTS_TOKEN rather than infra-repo's
+    // GITHUB_PR_TOKEN) 404s here before pr-reviewer's run ever starts.
+    const relevantGrants = (deps.grants ?? []).filter((g) => agent.grantRefs.includes(g.id));
+    const effect = detectOutwardEffect("mergePR", { repo: event.repo })!;
+    const grant = matchGrant(relevantGrants, effect);
+    const token = grant ? process.env[grant.secret] : undefined;
+    const github = token && deps.githubForToken ? deps.githubForToken(token) : deps.github;
+
     // Pre-fetch the PR's actual content here, once, before the run starts —
     // the alternative (giving the agent its own "getPullRequest" tool and
     // trusting it to call it first) risks it reviewing the wrong PR or
@@ -71,11 +105,11 @@ export function makeWebhookHandler(deps: {
     // then re-throw so that existing log still happens.
     let pr: PullRequestInfo;
     try {
-      pr = await deps.github.getPullRequest(event.repo, event.pullRequestNumber);
+      pr = await github.getPullRequest(event.repo, event.pullRequestNumber);
     } catch (err: unknown) {
       const reason = err instanceof Error ? err.message : String(err);
       try {
-        await deps.github.postReviewComment(
+        await github.postReviewComment(
           event.repo,
           event.pullRequestNumber,
           `Automated review could not start for this pull request, so it has **not** been reviewed or merged.\n\n` +

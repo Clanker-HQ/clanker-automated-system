@@ -497,6 +497,45 @@ describe("validateGrantRefs", () => {
       expect((e as Error).message).toContain("(none)");
     }
   });
+
+  // The mirror-image bug of the unknown-ref case above: a grant exists,
+  // parses cleanly, and nothing in it is misspelled, but no agent's
+  // grantRefs names it — decide() therefore never consults it, so it can
+  // never authorise anything. This is exactly what products-repo looked
+  // like before pr-reviewer's own grantRefs named it.
+  it("rejects a grant nobody's grantRefs references, naming the grant", () => {
+    try {
+      validateGrantRefs([{ name: "smoke", grantRefs: ["test-echo"] }], [TEST_ECHO, { ...TEST_ECHO, id: "orphaned" }]);
+      throw new Error("expected a ValidationError");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ValidationError);
+      expect((e as Error).message).toContain("orphaned");
+      expect((e as Error).message).toContain("not referenced by any agent");
+    }
+  });
+
+  it("accepts a grant as long as at least one agent (of several) references it", () => {
+    expect(() =>
+      validateGrantRefs(
+        [
+          { name: "a", grantRefs: [] },
+          { name: "b", grantRefs: ["test-echo"] },
+        ],
+        [TEST_ECHO],
+      ),
+    ).not.toThrow();
+  });
+
+  it("reports an unknown ref and an orphaned grant together, as two separate lines", () => {
+    try {
+      validateGrantRefs([{ name: "smoke", grantRefs: ["test-eco"] }], [TEST_ECHO]);
+      throw new Error("expected a ValidationError");
+    } catch (e) {
+      expect((e as ValidationError).lines).toHaveLength(2);
+      expect((e as Error).message).toContain("test-eco"); // the unknown ref
+      expect((e as Error).message).toContain("not referenced by any agent"); // the orphaned grant
+    }
+  });
 });
 
 function agent(tier: string, grantRefs: string[] = [], approval = "notify") {

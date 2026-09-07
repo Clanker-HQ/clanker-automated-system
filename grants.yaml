@@ -72,7 +72,10 @@ grants:
   # ruleset protecting it, are simply not addressable by this credential.
   # ---------------------------------------------------------------------
 
-  # Must come AFTER infra-repo: this is the catch-all "*" for github-pr, and
+  # Backs agents/pr-reviewer's grantRefs, alongside infra-repo — without this,
+  # pr-reviewer holds no grant able to reach a product repo, so a PR opened
+  # there is never reviewed or merged regardless of any webhook. Must come
+  # AFTER infra-repo: this is the catch-all "*" for github-pr, and
   # matchGrant takes the first match. Its "*" is bounded the way infra-repo's
   # used to be — by what the token behind it can actually reach, which is
   # AAS-Labs and nothing else. AAS-Labs repos are created by the system at

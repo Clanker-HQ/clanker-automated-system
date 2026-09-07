@@ -20,6 +20,14 @@ export interface GithubTransport {
   createPullRequest(repo: string, opts: { head: string; base: string; title: string; body: string }): Promise<{ number: number; url: string }>;
   /** Creates a new repo under `org`. */
   createRepo(org: string, name: string, opts: { private: boolean; description?: string }): Promise<{ fullName: string; url: string }>;
+  /**
+   * Registers a webhook on `repo` for pull_request events, pointed at this
+   * system's own receiver — so a repo createRepo just made starts emitting
+   * the events pr-reviewer needs, with no manual per-repo GitHub Settings
+   * step. `opts.secret` is the same GITHUB_WEBHOOK_SECRET the receiver
+   * itself verifies incoming deliveries against.
+   */
+  createHook(repo: string, opts: { url: string; secret: string }): Promise<void>;
   /** Content of `path` at `ref` (a branch name or commit SHA), or null if it doesn't exist there. */
   getFileContent(repo: string, ref: string, path: string): Promise<string | null>;
   /** Every blob path under `pathPrefix` at `ref`, recursively. */
@@ -32,6 +40,7 @@ export class FakeGithubTransport implements GithubTransport {
   merged: { repo: string; number: number }[] = [];
   createdPullRequests: { repo: string; head: string; base: string; title: string; body: string }[] = [];
   createdRepos: { org: string; name: string; private: boolean; description?: string }[] = [];
+  createdHooks: { repo: string; url: string; secret: string }[] = [];
   private pulls = new Map<string, PullRequestInfo>();
   private files = new Map<string, string>();
   private nextPrNumber = 1;
@@ -93,5 +102,9 @@ export class FakeGithubTransport implements GithubTransport {
   async createRepo(org: string, name: string, opts: { private: boolean; description?: string }): Promise<{ fullName: string; url: string }> {
     this.createdRepos.push({ org, name, ...opts });
     return { fullName: `${org}/${name}`, url: `https://github.com/${org}/${name}` };
+  }
+
+  async createHook(repo: string, opts: { url: string; secret: string }): Promise<void> {
+    this.createdHooks.push({ repo, ...opts });
   }
 }
