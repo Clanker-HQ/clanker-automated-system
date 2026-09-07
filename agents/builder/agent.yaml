@@ -2,9 +2,11 @@ name: builder
 enabled: true
 authoredBy: claude-local
 description: >-
-  Implements a small, well-described code change, commits it, pushes it
-  to a dedicated namespace, and opens a PR. Never merges — pr-reviewer
-  and mergePR own that decision, unchanged.
+  Implements a small, well-described code change — including building a
+  product, wiring up a deploy (e.g. adding a deploys.yaml entry to put a
+  service live), or any other build/deploy-shaped work — commits it,
+  pushes it to a dedicated namespace, and opens a PR. Never merges —
+  pr-reviewer and mergePR own that decision, unchanged.
 
 trigger:
   type: dispatched
