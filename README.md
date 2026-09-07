@@ -275,7 +275,7 @@ than asked for — anywhere in 0-49, always below the human `!task` default of
 queues research questions for `research` to investigate; `improvement-scout`
 reads this project's own source and docs and queues concrete gaps or
 capability ideas — both run daily. `cleanup-scout` and `dependency-scout` run
-weekly and hand their findings to `builder` instead of `research` — stale
+daily and hand their findings to `builder` instead of `research` — stale
 docs/dead references, and npm vulnerabilities/outdated packages
 respectively — since fixing either means actually editing files, not
 investigating further. None of the four can push, fetch, or spend beyond
