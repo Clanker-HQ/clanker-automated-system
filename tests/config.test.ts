@@ -28,6 +28,10 @@ describe("parseConfig", () => {
     const config = parseConfig("config.yaml", "discord:\n  channels: {}\n");
     expect(config.governor.maxConcurrent).toBe(2);
     expect(config.governor.quietHours).toBeNull();
+    // The weekly window is exempt from the pause threshold by default, not
+    // only in this repo's own config.yaml — a fresh deployment that never
+    // sets the key must not idle for days on unspent weekly allowance.
+    expect(config.governor.rateLimitPauseExemptWindows).toEqual(["seven_day"]);
   });
 
   it("defaults discord.botChannels to {} when absent", () => {

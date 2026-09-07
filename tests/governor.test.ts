@@ -219,14 +219,14 @@ describe("Governor.admit", () => {
 
   it("refuses once utilization crosses the pause threshold, even when status is only a warning", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
-    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.97 });
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.97 });
     const result = await build(dir).admit(agent(), "trigger");
     expect(result).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
   });
 
   it("alerts only once for an unchanged over-threshold utilization reading, across repeated admits", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
-    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.97 });
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.97 });
     const governor = build(dir);
     expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: true });
     expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "refuse", reason: expect.stringContaining("utilization"), alert: false });
@@ -249,8 +249,59 @@ describe("Governor.admit", () => {
 
   it("admits below the pause threshold, warning status and all", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
-    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.84 });
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.84 });
     expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  // The seven-day allowance is use-it-or-lose-it: whatever is unspent when
+  // the window rolls is forfeited, not banked, so pausing at 80% of it does
+  // not protect that last 20% — it throws it away, for however many days are
+  // left in the week. And nothing but a run records a fresher reading, so the
+  // pause sustains itself until the snapshot ages out an hour later, dropping
+  // the whole system to roughly one run per hour for the rest of the week. A
+  // weekly limit that stops the work before the limit is reached is a weekly
+  // limit that is never used.
+  it("admits at any utilization on a pause-exempt window, however close to exhaustion it reads", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.99 });
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  // The exemption is about not holding capacity back. A "rejected" reading
+  // isn't held-back capacity, it's capacity that is gone — and admitting into
+  // it would only feed the per-agent breaker three immediate failures.
+  it("still refuses a pause-exempt window that reports rejected, not merely over-threshold", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "rejected", rateLimitType: "seven_day", utilization: 1 });
+    expect(await build(dir).admit(agent(), "trigger")).toMatchObject({ kind: "refuse" });
+  });
+
+  // A type-less snapshot (recordRateLimitError's backoff, or a rate_limit_event
+  // that carried no type) doesn't say which window it describes. Reading that
+  // as exempt would silently disable the five-hour brake, so the unknown case
+  // keeps pausing.
+  it("does not treat an untyped over-threshold snapshot as pause-exempt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", utilization: 0.97 });
+    expect(await build(dir).admit(agent(), "trigger")).toMatchObject({ kind: "refuse" });
+  });
+
+  it("takes the exempt window list from config, so the seven-day default is policy and not a hardcode", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 2\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\n  rateLimitPauseExemptWindows: [five_hour]\n  quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+    });
+    // Over the default 0.95 threshold, but on the window this config exempts.
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.99 });
+    expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "admit" });
+    // ...while the window it does NOT exempt still brakes.
+    await new RateLimitTracker(dir).record({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.99 });
+    expect(await governor.admit(agent(), "trigger")).toMatchObject({ kind: "refuse" });
   });
 
   // A "rejected" snapshot refuses every run, and the only thing that writes a
@@ -458,6 +509,7 @@ describe("Governor.status", () => {
       disabledAgents: [],
       rateLimitUtilization: null,
       rateLimitPauseThreshold: 0.95,
+      rateLimitPauseExemptWindows: ["seven_day"],
       rateLimitStatus: null,
       rateLimitType: null,
       rateLimitResetsAt: null,
@@ -570,6 +622,30 @@ describe("Governor rate-limit recording", () => {
     expect(await governor.admit(agent(), "trigger")).toEqual({
       kind: "refuse", reason: expect.stringContaining("rate limit"), alert: true,
     });
+  });
+
+  // Both windows report on the same stream into a single gating snapshot, so
+  // without this a seven-day reading landing after a five-hour one would
+  // clear the five-hour brake — the weekly exemption buying its own freedom
+  // with the short window's.
+  it("recordRateLimit keeps a non-rejected exempt-window reading off the gate, so it cannot clear a five-hour pause", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir);
+    await governor.recordRateLimit({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.97 });
+    await governor.recordRateLimit({ status: "allowed", rateLimitType: "seven_day", utilization: 0.3 });
+    expect(await governor.admit(agent(), "trigger")).toMatchObject({ kind: "refuse" });
+    // The gating snapshot is still the five-hour one; the seven-day reading
+    // went to the per-window store, where the dashboard can still show it.
+    const tracker = new RateLimitTracker(dir);
+    expect((await tracker.read())?.rateLimitType).toBe("five_hour");
+    expect((await tracker.readWindows()).seven_day).toMatchObject({ status: "allowed", utilization: 0.3 });
+  });
+
+  it("recordRateLimit puts a REJECTED exempt-window reading on the gate, exemption or not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir);
+    await governor.recordRateLimit({ status: "rejected", rateLimitType: "seven_day", utilization: 1 });
+    expect(await governor.admit(agent(), "trigger")).toMatchObject({ kind: "refuse" });
   });
 
   it("recordRateLimitError marks the snapshot rejected even with no rate_limit_event to hand", async () => {

@@ -480,12 +480,13 @@
   }
 
   /** One rate-limit window's own reading (utilization if the SDK reported one, else its status), for the dashboard tile. */
-  function formatWindow(type, w) {
+  function formatWindow(type, w, exemptWindows) {
     const label = WINDOW_LABELS[type] ?? type.replace(/_/g, " ");
+    const exempt = (exemptWindows ?? []).includes(type);
     const text = w.utilization !== undefined && w.utilization !== null
       ? `${label} ${Math.round(w.utilization * 100)}%`
       : `${label} ${RATE_LIMIT_LABELS[w.status] ?? w.status}`;
-    return { label, text, status: w.status, resetsAt: w.resetsAt };
+    return { label, text, status: w.status, resetsAt: w.resetsAt, exempt };
   }
 
   /**
@@ -497,7 +498,7 @@
    * (e.g. only the type-less "rejected" backoff snapshot has landed).
    */
   function renderRateLimit(s) {
-    const entries = Object.entries(s.rateLimitWindows ?? {}).map(([type, w]) => formatWindow(type, w));
+    const entries = Object.entries(s.rateLimitWindows ?? {}).map(([type, w]) => formatWindow(type, w, s.rateLimitPauseExemptWindows));
     if (entries.length === 0) {
       if (s.rateLimitStatus === null) return { dot: "dot-neutral", value: "No reading yet", caption: "" };
       const dot = RATE_LIMIT_DOTS[s.rateLimitStatus] ?? "dot-neutral";
@@ -509,7 +510,14 @@
     const dot = RATE_LIMIT_DOTS[worst.status] ?? "dot-neutral";
     const value = entries.map((e) => e.text).join(" · ");
     const resetParts = entries.filter((e) => e.resetsAt).map((e) => `${e.label} resets ${formatResetTime(e.resetsAt)}`);
-    const caption = resetParts.length ? resetParts.join(" · ") : `pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%`;
+    // Which windows the pause threshold actually applies to: an exempt one
+    // (the 7d window by default) runs to exhaustion by design, so naming the
+    // threshold beside it would promise a pause that never comes.
+    const braking = entries.filter((e) => !e.exempt).map((e) => e.label);
+    const pausePart = braking.length
+      ? `${braking.join("/")} pauses at ${Math.round(s.rateLimitPauseThreshold * 100)}%`
+      : "no window pauses dispatch";
+    const caption = resetParts.length ? `${resetParts.join(" · ")} · ${pausePart}` : pausePart;
     return { dot, value, caption };
   }
 
