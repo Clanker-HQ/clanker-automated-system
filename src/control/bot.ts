@@ -35,19 +35,7 @@ function timeAgo(at: Date, now: Date): string {
 function formatRateLimit(status: GovernorStatus): string {
   if (status.rateLimitStatus === null) return "no reading yet";
   if (status.rateLimitUtilization !== null) {
-    // A pause-exempt window (the seven-day one, by default) is never held
-    // back by the threshold, so quoting one here would describe a pause that
-    // will not happen.
-    // Not for a "rejected" reading: that one refuses admission whatever the
-    // exemption says, so "never pauses" would be a plain lie there.
-    const exempt =
-      status.rateLimitStatus !== "rejected" &&
-      status.rateLimitType !== null &&
-      status.rateLimitPauseExemptWindows.includes(status.rateLimitType);
-    const brake = exempt
-      ? `${status.rateLimitType} never pauses`
-      : `pauses at ${(status.rateLimitPauseThreshold * 100).toFixed(0)}%`;
-    return `${(status.rateLimitUtilization * 100).toFixed(0)}% of window (${brake})`;
+    return `${(status.rateLimitUtilization * 100).toFixed(0)}% of window (pauses at ${(status.rateLimitPauseThreshold * 100).toFixed(0)}%)`;
   }
   const window = status.rateLimitType ? ` (${status.rateLimitType})` : "";
   const resets = status.rateLimitResetsAt ? `, resets ${new Date(status.rateLimitResetsAt * 1000).toISOString()}` : "";
