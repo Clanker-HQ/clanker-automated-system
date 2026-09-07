@@ -77,6 +77,36 @@ function currentRateLimit(snapshot: RateLimitSnapshot | null, now: Date): RateLi
 }
 
 /**
+ * One window's reading, but only if it still describes the window it was
+ * taken in — else null.
+ *
+ * A reading is a statement about a specific window, so once that window's
+ * `resetsAt` passes, everything the reading said about it is void: the window
+ * it described no longer exists. Nothing was enforcing that, and on
+ * 2026-09-07 the dashboard spent the evening reporting "5h Rejected" from a
+ * five-hour window that had reset 46 minutes earlier — the last reading of it
+ * ever recorded (16:46, `rejected`, and with no utilization figure at all,
+ * since the API drops the number when it rejects) simply sat in the store
+ * forever, because the only thing that overwrites a window's entry is a fresh
+ * reading of that same window, and the API streams events only for whichever
+ * window is currently binding.
+ *
+ * Deliberately more lenient than currentRateLimit for a reading that has NOT
+ * reset yet: an old-but-unreset one is kept, where the gating path would
+ * discard it at an hour. Opposite failure modes. Discarding is the safe
+ * direction for a gate (a stale one refuses everything, forever), while for a
+ * display the useful thing — how much of the week is left — is precisely what
+ * discarding throws away. So this keeps it, and the caller shows its age.
+ */
+function currentWindowReading(snapshot: RateLimitSnapshot, now: Date): RateLimitSnapshot | null {
+  if (snapshot.resetsAt !== undefined) return now.getTime() >= snapshot.resetsAt * 1000 ? null : snapshot;
+  // No resetsAt to reason about: fall back to the gating path's age bound,
+  // since a reading that says nothing about when its window rolls is worth
+  // nothing once it is no longer roughly current.
+  return now.getTime() - new Date(snapshot.recordedAt).getTime() >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS ? null : snapshot;
+}
+
+/**
  * Whether this snapshot's window is one whose utilization may never pause
  * dispatch — see config.governor.rateLimitPauseExemptWindows for why the
  * seven-day window is the default member.
@@ -90,6 +120,15 @@ function currentRateLimit(snapshot: RateLimitSnapshot | null, now: Date): RateLi
  */
 function pauseExempt(snapshot: RateLimitSnapshot, exemptWindows: string[]): boolean {
   return snapshot.rateLimitType !== undefined && exemptWindows.includes(snapshot.rateLimitType);
+}
+
+/** Only the window readings that still describe their own window — see currentWindowReading. */
+function currentWindows(windows: Record<string, RateLimitSnapshot>, now: Date): Record<string, RateLimitSnapshot> {
+  const current: Record<string, RateLimitSnapshot> = {};
+  for (const [type, reading] of Object.entries(windows)) {
+    if (currentWindowReading(reading, now) !== null) current[type] = reading;
+  }
+  return current;
 }
 
 function startOfDay(now: Date, timezone: string): string {
@@ -262,7 +301,12 @@ export class Governor {
     const overrides = await this.overrides.read();
     const settings = resolveGovernorSettings(this.config, overrides);
     const now = this.now();
-    const snapshot = await this.rateLimits.read();
+    // Filtered exactly as admit() filters it. Without this, `!status` and the
+    // dashboard could report a snapshot that admit() has already discarded as
+    // too old to describe the present — the display contradicting the gate it
+    // exists to explain (and this field's own doc comment, which has always
+    // said "unexpired").
+    const snapshot = currentRateLimit(await this.rateLimits.read(), now);
     return {
       stopped: existsSync(join(this.dataDir, "STOP")),
       quietHours: settings.quietHours,
@@ -278,7 +322,7 @@ export class Governor {
       rateLimitStatus: snapshot?.status ?? null,
       rateLimitType: snapshot?.rateLimitType ?? null,
       rateLimitResetsAt: snapshot?.resetsAt ?? null,
-      rateLimitWindows: await this.rateLimits.readWindows(),
+      rateLimitWindows: currentWindows(await this.rateLimits.readWindows(), now),
     };
   }
 
