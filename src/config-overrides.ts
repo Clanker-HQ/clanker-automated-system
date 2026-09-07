@@ -67,5 +67,9 @@ export function resolveGovernorSettings(config: Config, overrides: ConfigOverrid
     // threshold from Discord without a corresponding review step is exactly
     // the kind of change this project reserves for a config.yaml edit.
     rateLimitPauseThreshold: config.governor.rateLimitPauseThreshold,
+    // Same reasoning as the threshold above, in the other direction: adding a
+    // window here REMOVES a brake, which is no more a thing to do from a
+    // Discord message than widening one is.
+    rateLimitPauseExemptWindows: config.governor.rateLimitPauseExemptWindows,
   };
 }

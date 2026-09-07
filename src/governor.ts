@@ -21,6 +21,8 @@ export interface GovernorStatus {
   /** null when there's no numeric utilization to report — either no rate_limit_event has ever been recorded, or the latest one didn't carry a percentage (see rateLimitStatus/rateLimitType/rateLimitResetsAt for that case). Distinct from 0, which is a real reading. */
   rateLimitUtilization: number | null;
   rateLimitPauseThreshold: number;
+  /** Windows whose utilization never pauses dispatch (config.governor.rateLimitPauseExemptWindows) — exposed so `!status` and the dashboard can say "this one never pauses" instead of re-stating the policy themselves. */
+  rateLimitPauseExemptWindows: string[];
   /** null only when no (unexpired) rate-limit snapshot exists at all — set together with rateLimitUtilization from the same snapshot, so callers can tell "no reading yet" apart from "a reading exists but carries no percentage". */
   rateLimitStatus: RateLimitSnapshot["status"] | null;
   rateLimitType: string | null;
@@ -72,6 +74,22 @@ function currentRateLimit(snapshot: RateLimitSnapshot | null, now: Date): RateLi
   if (now.getTime() - new Date(snapshot.recordedAt).getTime() >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS) return null;
   if (snapshot.resetsAt !== undefined && now.getTime() >= snapshot.resetsAt * 1000) return null;
   return snapshot;
+}
+
+/**
+ * Whether this snapshot's window is one whose utilization may never pause
+ * dispatch — see config.governor.rateLimitPauseExemptWindows for why the
+ * seven-day window is the default member.
+ *
+ * A snapshot with NO `rateLimitType` is never exempt: the type-less records
+ * are recordRateLimitError's own backoff and any rate_limit_event that
+ * arrives without one, and neither says which window it describes. Treating
+ * an unidentified window as exempt would silently disable the five-hour
+ * brake, so the unknown case keeps pausing — bounded, as ever, by
+ * RATE_LIMIT_SNAPSHOT_MAX_AGE_MS.
+ */
+function pauseExempt(snapshot: RateLimitSnapshot, exemptWindows: string[]): boolean {
+  return snapshot.rateLimitType !== undefined && exemptWindows.includes(snapshot.rateLimitType);
 }
 
 function startOfDay(now: Date, timezone: string): string {
@@ -188,7 +206,17 @@ export class Governor {
     // above it: a resume is exactly as costly against the real window as a
     // fresh trigger, unlike the breaker/disabled-agent checks earlier in
     // this function, which a resume deliberately bypasses.
-    if (snapshot?.utilization !== undefined && snapshot.utilization >= settings.rateLimitPauseThreshold) {
+    //
+    // Exempt windows (the seven-day one, by default) are skipped entirely:
+    // their allowance expires with the window rather than carrying over, so
+    // a pause there spends nothing it saves and idles the system for days.
+    // pauseExempt has the full reasoning; a genuine "rejected" from the same
+    // window still refuses, one branch up.
+    if (
+      snapshot?.utilization !== undefined &&
+      snapshot.utilization >= settings.rateLimitPauseThreshold &&
+      !pauseExempt(snapshot, settings.rateLimitPauseExemptWindows)
+    ) {
       // Same STATE-vs-EVENT reasoning as the "rejected" branch above, and the
       // same marker: this is re-checked on every dispatch, and utilization
       // can sit above threshold for hours — a dispatcher tick (or a queued
@@ -246,6 +274,7 @@ export class Governor {
       disabledAgents: overrides.disabledAgents ?? [],
       rateLimitUtilization: snapshot?.utilization ?? null,
       rateLimitPauseThreshold: settings.rateLimitPauseThreshold,
+      rateLimitPauseExemptWindows: settings.rateLimitPauseExemptWindows,
       rateLimitStatus: snapshot?.status ?? null,
       rateLimitType: snapshot?.rateLimitType ?? null,
       rateLimitResetsAt: snapshot?.resetsAt ?? null,
@@ -289,9 +318,36 @@ export class Governor {
     }
   }
 
-  /** Called live as a run streams a rate_limit_event — updates the snapshot admit() consults, without waiting for the run to finish. */
+  /**
+   * Called live as a run streams a rate_limit_event — updates the snapshot
+   * admit() consults, without waiting for the run to finish.
+   *
+   * With one exception. Both windows report on the same stream, and there is
+   * only ONE gating snapshot: whichever event arrived last. So a seven-day
+   * reading of 30% landing right after a five-hour reading of 90% would clear
+   * the five-hour brake outright — the exemption below would have bought the
+   * weekly window its freedom by quietly handing over the five-hour one's.
+   * A non-rejected reading from a pause-exempt window therefore goes to the
+   * per-window store only, where it can be displayed but can neither set the
+   * gate nor clear it.
+   *
+   * "rejected" is not exempted: that window really is out of capacity, so it
+   * belongs on the gate like any other (bounded, as ever, by
+   * RATE_LIMIT_SNAPSHOT_MAX_AGE_MS and the snapshot's own resetsAt).
+   */
   async recordRateLimit(info: { status: "allowed" | "allowed_warning" | "rejected"; rateLimitType?: string; utilization?: number; resetsAt?: number }): Promise<void> {
-    await this.rateLimits.record(info, this.now());
+    const settings = resolveGovernorSettings(this.config, await this.overrides.read());
+    const exempt =
+      info.status !== "rejected" &&
+      info.rateLimitType !== undefined &&
+      settings.rateLimitPauseExemptWindows.includes(info.rateLimitType);
+    if (exempt) {
+      // Written verbatim rather than through recordRateLimitWindows, which
+      // derives a status from utilization — this event carries the API's own.
+      await this.rateLimits.recordWindows({ [info.rateLimitType!]: info }, this.now());
+    } else {
+      await this.rateLimits.record(info, this.now());
+    }
     if (info.status !== "rejected") this.consecutiveRateLimitErrors = 0;
   }
 
@@ -312,6 +368,9 @@ export class Governor {
     const toRecord: Record<string, Omit<RateLimitSnapshot, "recordedAt">> = {};
     for (const [type, w] of Object.entries(windows)) {
       if (w.utilization === null || w.utilization === undefined) continue;
+      // Display severity only — this store never reaches admit(), so for a
+      // pause-exempt window "allowed_warning" means "worth knowing you are
+      // this far into your week", not "dispatch is about to stop".
       const status: RateLimitSnapshot["status"] =
         w.utilization >= 1 ? "rejected" : w.utilization >= settings.rateLimitPauseThreshold ? "allowed_warning" : "allowed";
       toRecord[type] = {
