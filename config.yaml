@@ -23,19 +23,6 @@ governor:
   # run's worth of headroom, which is what makes this a brake rather than a
   # record of having already hit the wall.
   rateLimitPauseThreshold: 0.80
-  # ...but the threshold above deliberately does NOT apply to these windows.
-  # The seven-day allowance is use-it-or-lose-it: what is unspent when the
-  # window rolls is gone, so stopping at 80% of it does not bank the last 20%,
-  # it throws it away — for however many days are left in the week. And since
-  # only a run can record a fresher reading, that pause sustains itself: the
-  # sole way out is the snapshot ageing out an hour later, which drags the
-  # whole system down to about one run per hour until the week turns over. A
-  # weekly limit that halts the work before the limit is reached is a weekly
-  # limit that never actually gets used. The five-hour window keeps its brake,
-  # because there the headroom is real: it comes back in hours.
-  # A window reporting "rejected" still stops admission whatever is listed
-  # here — that is the API having nothing left, not us holding back.
-  rateLimitPauseExemptWindows: [seven_day]
   # Local development: agents run at almost any hour; the window is nominal.
   quietHours: { from: "02:00", to: "03:00", timezone: Europe/Berlin }
   # Production (VPS): agents work overnight, standing down while the owner
