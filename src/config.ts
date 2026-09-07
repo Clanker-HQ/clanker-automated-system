@@ -212,6 +212,32 @@ export const GovernorSchema = z
      * quantity from the account's real rolling-window capacity.
      */
     rateLimitPauseThreshold: z.number().min(0).max(1).default(0.95),
+    /**
+     * Rate-limit windows (by the SDK's own `rateLimitType`) whose utilization
+     * may never pause dispatch, however close to 1.0 it climbs —
+     * `rateLimitPauseThreshold` above simply does not apply to them.
+     *
+     * The threshold is a brake worth having on a SHORT window: burn the
+     * five-hour window flat and the next few hours are lost, so leaving a
+     * run's worth of headroom buys back responsiveness within the same day.
+     * On the seven-day window the same arithmetic inverts. A weekly
+     * allowance is use-it-or-lose-it — whatever is unspent when the window
+     * rolls is gone, not banked — so pausing at 80% does not preserve that
+     * last 20%, it forfeits it, and it forfeits it for however many days
+     * remain in the window. Worse, the pause is self-sustaining: the only
+     * thing that records a fresher reading is a run, so the sole way out is
+     * RATE_LIMIT_SNAPSHOT_MAX_AGE_MS expiring, which leaves the whole system
+     * running at roughly one run per hour until the week turns over. A limit
+     * that stops the work before the limit is reached is a limit that never
+     * gets used.
+     *
+     * This is emphatically NOT a carve-out for real rejections: a window
+     * reporting `status: "rejected"` still refuses admission whatever is
+     * listed here (see Governor.admit) — that isn't holding capacity back,
+     * it's the API having none left to give, and admitting runs into it just
+     * feeds the per-agent circuit breaker with failures.
+     */
+    rateLimitPauseExemptWindows: z.array(z.string()).default(["seven_day"]),
   })
   .strict();
 
