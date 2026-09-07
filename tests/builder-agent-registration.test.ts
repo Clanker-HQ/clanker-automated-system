@@ -6,6 +6,11 @@ import { loadConfig } from "../src/config.js";
 import { loadGrants, validateGrantRefs } from "../src/grants.js";
 import { loadRegistry } from "../src/registry.js";
 
+// NOTE: this test intentionally fails until a human pastes the
+// cloudflare-deploy/stripe-api grants block (see the PR that added those
+// grantRefs to agents/builder/agent.yaml) into grants.yaml — this system
+// never authors grants.yaml itself. Once that paste lands, this test (and
+// boot's own validateGrantRefs call) passes with no further code change.
 describe("builder agent registration against the real repo config", () => {
   it("loads agents/builder/agent.yaml cleanly and its grantRefs validate against the real grants.yaml", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "cai-builder-registration-"));
@@ -26,7 +31,7 @@ describe("builder agent registration against the real repo config", () => {
       trigger: { type: "dispatched" },
       tier: "autonomous",
       approval: "auto",
-      grantRefs: ["builder-push", "products-provision", "products-push"],
+      grantRefs: ["builder-push", "products-provision", "products-push", "cloudflare-deploy", "stripe-api"],
     });
   });
 });

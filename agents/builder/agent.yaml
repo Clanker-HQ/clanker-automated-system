@@ -2,9 +2,11 @@ name: builder
 enabled: true
 authoredBy: claude-local
 description: >-
-  Implements a small, well-described code change, commits it, pushes it
-  to a dedicated namespace, and opens a PR. Never merges — pr-reviewer
-  and mergePR own that decision, unchanged.
+  Implements a small, well-described code change — including build and
+  deploy work such as shipping a Cloudflare Workers service (wrangler
+  publish, D1 migrations) or wiring a Stripe API integration — commits
+  it, pushes it to a dedicated namespace, and opens a PR. Never merges —
+  pr-reviewer and mergePR own that decision, unchanged.
 
 trigger:
   type: dispatched
@@ -22,7 +24,14 @@ permissions:
 
 tier: autonomous
 approval: auto
-grantRefs: [builder-push, products-provision, products-push]
+grantRefs: [builder-push, products-provision, products-push, cloudflare-deploy, stripe-api]
+# NOTE: cloudflare-deploy and stripe-api are NOT yet defined in grants.yaml.
+# This system never authors grants.yaml itself (see the PR that introduced
+# this line), so those two grant ids must be pasted into grants.yaml by a
+# human BEFORE this file is merged — see the PR body for the exact block.
+# Until that paste lands, validateGrantRefs (src/grants.ts, called at boot
+# from src/index.ts) will fail for every agent, not just builder, so do NOT
+# merge this agent.yaml change ahead of the grants.yaml paste.
 
 outbox:
   discord: ops
