@@ -46,6 +46,7 @@ function setup(opts: { router?: Router; agents?: AgentDef[] } = {}) {
     dailyBudgetUsd: 10, spentTodayUsd: 0, maxConcurrent: 2,
     breakerEnabled: true, disabledAgents: [],
     rateLimitUtilization: null, rateLimitPauseThreshold: 0.95,
+    rateLimitPauseExemptWindows: ["seven_day"],
     rateLimitStatus: null, rateLimitType: null, rateLimitResetsAt: null,
     rateLimitWindows: {},
   };
@@ -843,6 +844,20 @@ describe("DiscordBot task commands", () => {
     await bot.start();
     await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
     expect(transport.sent[0]!.text).toContain("Rate limit: 84% of window (pauses at 95%)");
+  });
+
+  // Quoting the pause threshold beside a pause-exempt window's reading would
+  // describe a brake that will never engage — the seven-day window is meant
+  // to run to exhaustion (see config.governor.rateLimitPauseExemptWindows).
+  it("!status does not claim a pause threshold for a window exempt from it", async () => {
+    const { transport, bot, governorStatus } = setup();
+    governorStatus.rateLimitStatus = "allowed_warning";
+    governorStatus.rateLimitType = "seven_day";
+    governorStatus.rateLimitUtilization = 0.92;
+    await bot.start();
+    await transport.simulateMessage({ channelId: "smoke-channel", authorId: OWNER, content: "!status" });
+    expect(transport.sent[0]!.text).toContain("Rate limit: 92% of window (seven_day never pauses)");
+    expect(transport.sent[0]!.text).not.toContain("pauses at");
   });
 
   it("!status reports a snapshot's status/type/reset time when it carries no numeric utilization, distinct from no reading at all", async () => {
