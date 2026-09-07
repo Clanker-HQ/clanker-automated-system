@@ -751,6 +751,23 @@ describe("SdkRunner GitHub PR tools", () => {
   }
   const GITHUB_PR_GRANT: Grant = { id: "infra-repo", kind: "github-pr", repos: ["owner/repo"], secret: "X" };
 
+  /**
+   * validateGrantRefs (rule 1c, inside the self-build gate mergePR calls
+   * before it merges) now also refuses an orphaned grant — one no agent's
+   * grantRefs names — so a self-build PR fixture below that puts a grant in
+   * the resulting grants.yaml needs an agent at the base ref referencing it,
+   * fetched the same way evaluateSelfBuildPr fetches the real registry
+   * (github.listRepoFiles("agents/")).
+   */
+  function selfBuildAgentYaml(grantRefs: string[]): string {
+    return (
+      "name: foo\ntrigger:\n  type: cron\n  schedule: \"0 7 * * *\"\n  timezone: UTC\n" +
+      "run:\n  model: claude-haiku-4-5\n  effort: low\n  maxTurns: 10\n  timeoutMinutes: 10\n  maxBudgetUsd: 1\n" +
+      `tier: granted\napproval: notify\ngrantRefs: [${grantRefs.join(", ")}]\n` +
+      "outbox:\n  discord: ops\n  notifyOn: [success, failure]\n"
+    );
+  }
+
   // createSdkMcpServer (the real, un-mocked implementation — see the module
   // mock comment at the top of this file) returns { type, name, instance },
   // not a plain `.tools` array: `instance` is a live McpServer that files
@@ -840,6 +857,59 @@ describe("SdkRunner GitHub PR tools", () => {
 
     expect(github.merged).toEqual([{ repo: "owner/repo", number: 1 }]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("merged") }] });
+  });
+
+  // Regression coverage for the mirror-image of createRepo/openPR's own bug
+  // (see "routes through githubForToken's transport" in the createRepo
+  // describe block below): mergePR/postReviewComment used to call the single
+  // fixed `github` transport unconditionally — permanently bound to
+  // GITHUB_PR_TOKEN at boot for the infra-repo pipeline — no matter which
+  // grant/token actually covered the repo. A product repo covered only by a
+  // different grant (e.g. products-repo/GITHUB_PRODUCTS_TOKEN) would 404
+  // rather than merge, even though pr-reviewer genuinely held the grant.
+  it("routes mergePR through githubForToken's transport, bound to the matched grant's own secret, not the fixed github", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    vi.stubEnv("PRODUCTS_TOKEN_TEST", "the-real-products-token");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const wrongTransport = new FakeGithubTransport(); // stands in for the GITHUB_PR_TOKEN-bound `github`
+    const rightTransport = new FakeGithubTransport(); // what githubForToken should hand back for the matched grant
+    rightTransport.seedPullRequest({ number: 1, repo: "AAS-Labs/pilot-01", headSha: "sha-1", changedFiles: ["src/orchestrator.ts"], diff: "", title: "t", body: "b" });
+    const productsGrant: Grant = { id: "products-repo", kind: "github-pr", repos: "*", secret: "PRODUCTS_TOKEN_TEST" };
+    const githubForToken = vi.fn((token: string) => (token === "the-real-products-token" ? rightTransport : wrongTransport));
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const agent = { ...AGENT, name: "pr-reviewer", tier: "autonomous", approval: "auto", grantRefs: ["products-repo"] } as unknown as AgentDef;
+    const runner = new SdkRunner({ grants: [productsGrant], pending: new PendingStore(dir), github: wrongTransport, githubForToken });
+    await collect(runner.execute(agent, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await mergeToolHandler(params)({ repo: "AAS-Labs/pilot-01", number: 1, expectedHeadSha: "sha-1" });
+
+    expect(githubForToken).toHaveBeenCalledWith("the-real-products-token");
+    expect(rightTransport.merged).toEqual([{ repo: "AAS-Labs/pilot-01", number: 1 }]);
+    expect(wrongTransport.merged).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("merged") }] });
+  });
+
+  it("routes postReviewComment through githubForToken's transport, bound to the matched grant's own secret, not the fixed github", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    vi.stubEnv("PRODUCTS_TOKEN_TEST", "the-real-products-token");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const wrongTransport = new FakeGithubTransport();
+    const rightTransport = new FakeGithubTransport();
+    const productsGrant: Grant = { id: "products-repo", kind: "github-pr", repos: "*", secret: "PRODUCTS_TOKEN_TEST" };
+    const githubForToken = vi.fn((token: string) => (token === "the-real-products-token" ? rightTransport : wrongTransport));
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    const agent = { ...AGENT, name: "pr-reviewer", tier: "autonomous", approval: "auto", grantRefs: ["products-repo"] } as unknown as AgentDef;
+    const runner = new SdkRunner({ grants: [productsGrant], pending: new PendingStore(dir), github: wrongTransport, githubForToken });
+    await collect(runner.execute(agent, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
+
+    const result = await commentToolHandler(params)({ repo: "AAS-Labs/pilot-01", number: 1, body: "Looks clean." });
+
+    expect(githubForToken).toHaveBeenCalledWith("the-real-products-token");
+    expect(rightTransport.postedComments).toEqual([{ repo: "AAS-Labs/pilot-01", number: 1, body: "Looks clean." }]);
+    expect(wrongTransport.postedComments).toEqual([]);
+    expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("posted") }] });
   });
 
   it("a wildcard (\"*\") github-pr grant authorises a merge in a repo not explicitly listed anywhere", async () => {
@@ -1076,6 +1146,8 @@ describe("SdkRunner GitHub PR tools", () => {
       '  - id: new-thing\n    kind: github-pr\n    repos: ["owner/other-repo"]\n    secret: GITHUB_PR_TOKEN\n';
     github.seedFile("owner/repo", "main", "grants.yaml", baseGrants);
     github.seedFile("owner/repo", "sha-1", "grants.yaml", headGrants);
+    github.seedFile("owner/repo", "main", "agents/foo/agent.yaml", selfBuildAgentYaml(["infra-repo", "new-thing"]));
+    github.seedFile("owner/repo", "main", "agents/foo/prompt.md", "Do foo things.");
     github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", base: "main", changedFiles: ["grants.yaml"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
@@ -1096,6 +1168,8 @@ describe("SdkRunner GitHub PR tools", () => {
     const headGrants = 'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo", "owner/other-repo"]\n    secret: GITHUB_PR_TOKEN\n';
     github.seedFile("owner/repo", "main", "grants.yaml", baseGrants);
     github.seedFile("owner/repo", "sha-1", "grants.yaml", headGrants);
+    github.seedFile("owner/repo", "main", "agents/foo/agent.yaml", selfBuildAgentYaml(["infra-repo"]));
+    github.seedFile("owner/repo", "main", "agents/foo/prompt.md", "Do foo things.");
     github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", base: "main", changedFiles: ["grants.yaml"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
     const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
@@ -1529,6 +1603,77 @@ describe("SdkRunner GitHub PR tools", () => {
 
       expect(github.createdRepos).toEqual([{ org: "AAS-Labs", name: "pilot-01", private: true, description: "First product." }]);
       expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Created AAS-Labs/pilot-01") }] });
+    });
+
+    // Regression coverage for the bug this closes: createRepo never
+    // registered a webhook, so every repo the system created was born with
+    // zero webhooks and pr-reviewer never saw a single PR opened against it,
+    // no matter which grants it held.
+    it("registers a webhook on the newly created repo when webhookPublicUrl and webhookSecret are both configured", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("GITHUB_PRODUCTS_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({
+        grants: [PROVISION_GRANT], pending: new PendingStore(dir), github,
+        webhookPublicUrl: "https://example.ngrok-free.app",
+        webhookSecret: "shared-secret",
+      });
+      await collect(runner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+
+      const result = await createRepoHandler(params)({ org: "AAS-Labs", name: "pilot-01", private: true });
+
+      expect(github.createdHooks).toEqual([
+        { repo: "AAS-Labs/pilot-01", url: "https://example.ngrok-free.app", secret: "shared-secret" },
+      ]);
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Webhook registered") }] });
+    });
+
+    it("still reports the repo as created, with a warning, when webhook registration itself fails", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("GITHUB_PRODUCTS_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      vi.spyOn(github, "createHook").mockRejectedValue(new Error("hooks quota exceeded"));
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      const runner = new SdkRunner({
+        grants: [PROVISION_GRANT], pending: new PendingStore(dir), github,
+        webhookPublicUrl: "https://example.ngrok-free.app",
+        webhookSecret: "shared-secret",
+      });
+      await collect(runner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+
+      const result = await createRepoHandler(params)({ org: "AAS-Labs", name: "pilot-01", private: true });
+
+      // The repo itself was genuinely created — a hook failure at this point
+      // is a partial success, not a reason to claim createRepo failed.
+      expect(github.createdRepos).toEqual([{ org: "AAS-Labs", name: "pilot-01", private: true }]);
+      const text = (result as { content: { text: string }[] }).content[0]!.text;
+      expect(text).toContain("Created AAS-Labs/pilot-01");
+      expect(text).toContain("Warning");
+      expect(text).toContain("hooks quota exceeded");
+    });
+
+    it("creates the repo without attempting a webhook when webhookPublicUrl is not configured", async () => {
+      vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+      vi.stubEnv("GITHUB_PRODUCTS_TOKEN", "tok");
+      const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+      const github = new FakeGithubTransport();
+      queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+      // webhookPublicUrl/webhookSecret deliberately left unset.
+      const runner = new SdkRunner({ grants: [PROVISION_GRANT], pending: new PendingStore(dir), github });
+      await collect(runner.execute(provisionedBuilder(), CTX, new AbortController().signal));
+      const params = queryMock.mock.calls[0]![0] as unknown as CreateRepoParams;
+
+      const result = await createRepoHandler(params)({ org: "AAS-Labs", name: "pilot-01", private: true });
+
+      expect(github.createdHooks).toEqual([]);
+      expect(result).toMatchObject({
+        content: [{ type: "text", text: expect.stringContaining("WEBHOOK_PUBLIC_URL is not configured") }],
+      });
     });
 
     it("routes through githubForToken's transport, bound to the matched grant's own secret, not the fixed github", async () => {

@@ -52,6 +52,10 @@ export function buildRunner(
     breaker?: BreakerStore;
     agents?: AgentDef[];
     outbox?: DiscordOutbox;
+    /** See SdkRunner's own doc comment on this field — threaded straight through to it. */
+    webhookPublicUrl?: string;
+    /** See SdkRunner's own doc comment on this field — threaded straight through to it. */
+    webhookSecret?: string;
   },
   env: NodeJS.ProcessEnv = process.env,
 ): Runner {

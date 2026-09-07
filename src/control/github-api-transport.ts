@@ -150,6 +150,28 @@ export class GithubApiTransport implements GithubTransport {
     return { fullName: created.full_name, url: created.html_url };
   }
 
+  async createHook(repo: string, opts: { url: string; secret: string }): Promise<void> {
+    const res = await this.fetchImpl(`https://api.github.com/repos/${repo}/hooks`, {
+      method: "POST",
+      headers: { ...this.headers(), "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "web",
+        active: true,
+        events: ["pull_request"],
+        config: { url: opts.url, content_type: "json", secret: opts.secret, insecure_ssl: "0" },
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    // Same posture as createRepo just above: checked against 201 specifically
+    // and the response body surfaced verbatim, since this is also a new
+    // resource whose failure the caller (createRepo's tool handler) reports
+    // back to the operator rather than swallows.
+    if (res.status !== 201) {
+      const body = await res.text();
+      throw new Error(`GitHub API: failed to create webhook for ${repo} (${res.status}): ${body}`);
+    }
+  }
+
   async getFileContent(repo: string, ref: string, path: string): Promise<string | null> {
     // Each segment is encoded individually rather than the whole path at once:
     // the "/" separators must stay literal for the Contents API, but anything

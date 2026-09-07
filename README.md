@@ -527,3 +527,13 @@ Still genuinely deferred:
   authenticate with yet — generate that PAT on the bot account
   (Contents:Write + Pull requests:Write, this repo only) before relying on
   `builder`.
+  <br><br>
+  AAS-Labs product repos no longer share this gap: `pr-reviewer` now also
+  holds `products-repo` (GITHUB_PRODUCTS_TOKEN), `createRepo` registers a
+  webhook automatically on every repo it creates whenever `WEBHOOK_PUBLIC_URL`
+  is set, and `mergePR`/`postReviewComment`/`getPullRequest` all resolve the
+  token bound to whichever grant actually covers the repo in question, the
+  same way `createRepo`/`openPR` already did — rather than always using the
+  infra-repo pipeline's fixed `GITHUB_PR_TOKEN`. `WEBHOOK_PUBLIC_URL` still
+  needs a real tunnel/reverse-proxy URL configured to actually receive
+  anything (see `.env.example`).

@@ -576,6 +576,18 @@ export class SdkRunner implements Runner {
       breaker?: BreakerStore;
       agents?: AgentDef[];
       outbox?: DiscordOutbox;
+      /**
+       * The externally-reachable URL GitHub should deliver webhook events to
+       * (an ngrok tunnel locally, the real Caddy-fronted URL in production) —
+       * see .env.example's WEBHOOK_PUBLIC_URL. Consulted by createRepo below:
+       * when this and `webhookSecret` are both set, a newly created repo gets
+       * a webhook registered on it automatically. Optional and left unset by
+       * default the same way `outbox`/`strategyStore` are — createRepo simply
+       * skips registration and says so in its response.
+       */
+      webhookPublicUrl?: string;
+      /** GITHUB_WEBHOOK_SECRET — the same secret WebhookReceiver verifies incoming deliveries against, handed to createHook so a repo createRepo just made can be verified the same way. */
+      webhookSecret?: string;
     } = {
       grants: [],
       pending: new PendingStore(process.cwd()),
@@ -870,7 +882,20 @@ export class SdkRunner implements Runner {
                 expectedHeadSha: z.string().min(1),
               },
               async ({ repo, number, expectedHeadSha }) => {
-                const info = await github.getPullRequest(repo, number);
+                // The API call needs the RIGHT credential, not necessarily the
+                // fixed `github` above (GITHUB_PR_TOKEN, bound at boot for the
+                // infra-repo pipeline) — pr-reviewer can also hold products-repo
+                // (GITHUB_PRODUCTS_TOKEN), and reading/merging a product repo
+                // through GITHUB_PR_TOKEN's account would 404. Resolved the
+                // same way openPR resolves pushBranch's grant, just below in
+                // this file.
+                const mergeEffect = detectOutwardEffect("mergePR", { repo })!;
+                const mergeRelevantGrants = this.deps.grants.filter((g) => agent.grantRefs.includes(g.id));
+                const mergeGrant = matchGrant(mergeRelevantGrants, mergeEffect);
+                const mergeToken = mergeGrant ? process.env[mergeGrant.secret] : undefined;
+                const transport = mergeToken && this.deps.githubForToken ? this.deps.githubForToken(mergeToken) : github;
+
+                const info = await transport.getPullRequest(repo, number);
 
                 // Gate 1 — self-build changes (grants.yaml, or agents/*/{agent.yaml,
                 // prompt.md} in isolation — see isSelfBuildChange) get the mechanical
@@ -879,7 +904,7 @@ export class SdkRunner implements Runner {
                 // exactly as before this gate existed. This runs first: no grant, no
                 // review verdict, nothing later in this handler can override either branch.
                 if (isSelfBuildChange(info.changedFiles)) {
-                  const verdict = await evaluateSelfBuildPr(github, repo, info, process.env);
+                  const verdict = await evaluateSelfBuildPr(transport, repo, info, process.env);
                   if (!verdict.allowed) {
                     return {
                       content: [
@@ -926,7 +951,7 @@ export class SdkRunner implements Runner {
                     ],
                   };
                 }
-                const result = await github.mergePullRequest(repo, number, expectedHeadSha);
+                const result = await transport.mergePullRequest(repo, number, expectedHeadSha);
                 if (!result.merged) {
                   return { content: [{ type: "text" as const, text: `Refused: ${result.reason}` }] };
                 }
@@ -938,7 +963,16 @@ export class SdkRunner implements Runner {
               "Post a comment on a pull request — findings, an explanation of why a merge was refused, or general review feedback. Never gated: commenting has no outward consequence beyond ordinary communication.",
               { repo: z.string(), number: z.number().int().positive(), body: z.string().min(1) },
               async ({ repo, number, body }) => {
-                await github.postReviewComment(repo, number, body);
+                // No decide() gate here (see this tool's own doc comment
+                // above) — but it still needs the right credential, resolved
+                // the same way mergePR resolves its own transport, just above.
+                const commentGrant = matchGrant(
+                  this.deps.grants.filter((g) => agent.grantRefs.includes(g.id)),
+                  { kind: "github-pr", description: `post review comment on ${repo}`, target: repo },
+                );
+                const commentToken = commentGrant ? process.env[commentGrant.secret] : undefined;
+                const transport = commentToken && this.deps.githubForToken ? this.deps.githubForToken(commentToken) : github;
+                await transport.postReviewComment(repo, number, body);
                 return { content: [{ type: "text" as const, text: `Comment posted on ${repo}#${number}.` }] };
               },
             ),
@@ -984,7 +1018,31 @@ export class SdkRunner implements Runner {
                   // different credential entirely. See githubForToken's doc comment.
                   const transport = this.deps.githubForToken?.(token) ?? github;
                   const created = await transport.createRepo(org, name, { private: isPrivate, description });
-                  return { content: [{ type: "text" as const, text: `Created ${created.fullName} at ${created.url}.` }] };
+
+                  // Registers this system's own webhook on the repo it just
+                  // created, using that same transport/token — without this a
+                  // product repo is born with zero webhooks and pr-reviewer
+                  // never sees a single PR opened against it, no matter which
+                  // grants it holds. Best-effort and reported in the response
+                  // rather than thrown: the repo already exists by this point,
+                  // so a hook failure is a partial success, not a reason to
+                  // claim createRepo itself failed.
+                  let hookNote: string;
+                  if (this.deps.webhookPublicUrl && this.deps.webhookSecret) {
+                    try {
+                      await transport.createHook(created.fullName, {
+                        url: this.deps.webhookPublicUrl,
+                        secret: this.deps.webhookSecret,
+                      });
+                      hookNote = " Webhook registered for pull_request events.";
+                    } catch (hookError) {
+                      hookNote = ` Warning: webhook registration failed (${hookError instanceof Error ? hookError.message : String(hookError)}) — add one manually (Settings → Webhooks) or this repo will never be reviewed.`;
+                    }
+                  } else {
+                    hookNote =
+                      " Warning: WEBHOOK_PUBLIC_URL is not configured, so no webhook was registered — add one manually (Settings → Webhooks) or this repo will never be reviewed.";
+                  }
+                  return { content: [{ type: "text" as const, text: `Created ${created.fullName} at ${created.url}.${hookNote}` }] };
                 } catch (error) {
                   // Unlike pushBranch's GitPusher error, GithubApiTransport's
                   // thrown Error never embeds the token (it goes in a header,

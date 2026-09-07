@@ -27,6 +27,17 @@ const FOO_AGENT_V2 = FOO_AGENT_V1.replace("Does foo things.", "Does foo things, 
 
 const FOO_AGENT_GRANTED = FOO_AGENT_V1.replace("tier: readonly", "tier: granted").replace("grantRefs: []", "grantRefs: [infra-repo]");
 
+/**
+ * validateGrantRefs (rule 1c) now also refuses an orphaned grant — one no
+ * agent's grantRefs names — so any fixture below that puts a grant in the
+ * resulting grants.yaml needs a matching agent referencing it, or rule 1c
+ * fires before the rule 2/3 logic under test ever runs. This builds that
+ * agent, parametrized by which grant ids it should hold.
+ */
+function agentYamlWithGrants(name: string, grantRefs: string[]): string {
+  return FOO_AGENT_GRANTED.replace("name: foo", `name: ${name}`).replace("grantRefs: [infra-repo]", `grantRefs: [${grantRefs.join(", ")}]`);
+}
+
 const INVALID_AGENT = `
 name: bad
 trigger:
@@ -117,8 +128,9 @@ describe("evaluateSelfBuildChange", () => {
     const base = grantsYaml('  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n');
     const head = grantsYaml('  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo", "owner/other"]\n    secret: GITHUB_PR_TOKEN\n');
     const verdict = evaluateSelfBuildChange({
-      baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
+      baseAgentFiles: [{ path: "agents/foo/agent.yaml", content: FOO_AGENT_GRANTED }],
+      baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
+      agentNamesWithPromptMd: new Set(["foo"]), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 2 });
   });
@@ -130,8 +142,9 @@ describe("evaluateSelfBuildChange", () => {
         '  - id: new-thing\n    kind: github-pr\n    repos: ["owner/other"]\n    secret: GITHUB_PR_TOKEN\n',
     );
     const verdict = evaluateSelfBuildChange({
-      baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(),
+      baseAgentFiles: [{ path: "agents/foo/agent.yaml", content: agentYamlWithGrants("foo", ["infra-repo", "new-thing"]) }],
+      baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
+      agentNamesWithPromptMd: new Set(["foo"]),
       env: { GITHUB_PR_TOKEN: "provisioned" },
       baseDeploysYaml: EMPTY_DEPLOYS,
     });
@@ -145,8 +158,9 @@ describe("evaluateSelfBuildChange", () => {
         '  - id: new-thing\n    kind: http\n    method: GET\n    urlPattern: "https://api.example.com/*"\n    secret: BRAND_NEW_TOKEN\n',
     );
     const verdict = evaluateSelfBuildChange({
-      baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
+      baseAgentFiles: [{ path: "agents/foo/agent.yaml", content: agentYamlWithGrants("foo", ["infra-repo", "new-thing"]) }],
+      baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
+      agentNamesWithPromptMd: new Set(["foo"]), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 3 });
   });
@@ -158,8 +172,9 @@ describe("evaluateSelfBuildChange", () => {
         '  - id: scoped-read\n    kind: http\n    method: GET\n    urlPattern: "https://api.example.com/*"\n    secret: SCOPED_READ_TOKEN\n',
     );
     const verdict = evaluateSelfBuildChange({
-      baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
+      baseAgentFiles: [{ path: "agents/foo/agent.yaml", content: agentYamlWithGrants("foo", ["web-read", "scoped-read"]) }],
+      baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
+      agentNamesWithPromptMd: new Set(["foo"]), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toEqual({ allowed: true });
   });
@@ -171,8 +186,9 @@ describe("evaluateSelfBuildChange", () => {
         '  - id: broad-new\n    kind: http\n    method: GET\n    urlPattern: "*"\n    secret: BROAD_NEW_TOKEN\n',
     );
     const verdict = evaluateSelfBuildChange({
-      baseAgentFiles: [], baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
-      agentNamesWithPromptMd: new Set<string>(), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
+      baseAgentFiles: [{ path: "agents/foo/agent.yaml", content: agentYamlWithGrants("foo", ["scoped-existing", "broad-new"]) }],
+      baseGrantsYaml: base, changedAgentFiles: [], headGrantsYaml: head,
+      agentNamesWithPromptMd: new Set(["foo"]), env: {}, baseDeploysYaml: EMPTY_DEPLOYS,
     });
     expect(verdict).toMatchObject({ allowed: false, rule: 3 });
   });
@@ -303,6 +319,11 @@ describe("evaluateSelfBuildPr", () => {
       'grants:\n  - id: infra-repo\n    kind: github-pr\n    repos: ["owner/repo"]\n    secret: GITHUB_PR_TOKEN\n' +
         '  - id: new-thing\n    kind: github-pr\n    repos: ["owner/other"]\n    secret: GITHUB_PR_TOKEN\n',
     );
+    // validateGrantRefs (rule 1c) now also refuses an orphaned grant, so
+    // "new-thing" needs an agent referencing it at the base ref — the real
+    // registry evaluateSelfBuildPr fetches via listRepoFiles("agents/").
+    github.seedFile("owner/repo", "main", "agents/foo/agent.yaml", agentYamlWithGrants("foo", ["infra-repo", "new-thing"]));
+    github.seedFile("owner/repo", "main", "agents/foo/prompt.md", "Do foo things.");
 
     const verdict = await evaluateSelfBuildPr(
       github, "owner/repo",

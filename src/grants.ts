@@ -301,13 +301,23 @@ export function matchGrant(grants: Grant[], effect: OutwardEffect): Grant | null
 
 /**
  * Cross-checks every agent's `grantRefs` against the ids actually present in
- * grants.yaml.
+ * grants.yaml, in both directions.
  *
- * Nothing else does: `decide()` filters the grant list by `grantRefs` and a
- * typo simply produces an empty list, so a misspelled ref boots cleanly and
- * then silently denies every effect the agent was meant to be allowed. Boot is
- * the only place that can tell the difference between "no grant" and "a grant
- * whose name was mistyped".
+ * Direction 1 (agent -> grant): `decide()` filters the grant list by
+ * `grantRefs` and a typo simply produces an empty list, so a misspelled ref
+ * boots cleanly and then silently denies every effect the agent was meant to
+ * be allowed. Boot is the only place that can tell the difference between "no
+ * grant" and "a grant whose name was mistyped".
+ *
+ * Direction 2 (grant -> agent): the mirror-image bug. `decide()` only ever
+ * consults grants an agent's own `grantRefs` names, so a grant nobody
+ * references can never authorise anything — it is not merely unused
+ * configuration, it is silently dead. This looks identical to a correctly
+ * wired grant at a glance (grants.yaml parses, the id is spelled right,
+ * everything else about it is well-formed), and identical to direction 1's
+ * failure in effect: an operator believes some agent holds a capability that,
+ * in fact, nothing grants it — exactly what happened to products-repo before
+ * pr-reviewer's grantRefs named it: real, well-formed, and silently unused.
  */
 export function validateGrantRefs(
   agents: readonly { name: string; grantRefs: readonly string[] }[],
@@ -315,15 +325,25 @@ export function validateGrantRefs(
   source = "agent definitions",
 ): void {
   const known = grants.map((g) => g.id);
+  const referenced = new Set<string>();
   const lines: string[] = [];
   for (const agent of agents) {
     for (const ref of agent.grantRefs) {
+      referenced.add(ref);
       if (!known.includes(ref)) {
         lines.push(
           `${agent.name}: grantRefs contains "${ref}", which is not the id of any grant in grants.yaml. ` +
             `Known grant ids: ${known.join(", ") || "(none)"}`,
         );
       }
+    }
+  }
+  for (const grant of grants) {
+    if (!referenced.has(grant.id)) {
+      lines.push(
+        `grant "${grant.id}" in grants.yaml is not referenced by any agent's grantRefs, so it can never authorise anything. ` +
+          `Either add it to the agent that should hold it, or remove it.`,
+      );
     }
   }
   if (lines.length > 0) throw new ValidationError(source, lines);

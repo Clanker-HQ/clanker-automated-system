@@ -240,6 +240,44 @@ describe("GithubApiTransport.createRepo", () => {
   });
 });
 
+describe("GithubApiTransport.createHook", () => {
+  it("posts to the repo hooks endpoint with pull_request events and the given url/secret", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ status: 201, json: { id: 1 } })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    await t.createHook("AAS-Labs/pilot-01", { url: "https://example.ngrok-free.app", secret: "shh" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.github.com/repos/AAS-Labs/pilot-01/hooks",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "web",
+          active: true,
+          events: ["pull_request"],
+          config: { url: "https://example.ngrok-free.app", content_type: "json", secret: "shh", insecure_ssl: "0" },
+        }),
+      }),
+    );
+  });
+
+  it("throws with the response status and body when GitHub rejects the hook creation", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeResponse({ ok: false, status: 422, text: '{"message":"Hook already exists on this repository"}' }),
+    ) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+
+    await expect(t.createHook("AAS-Labs/pilot-01", { url: "https://example.ngrok-free.app", secret: "shh" })).rejects.toThrow(/422/);
+    await expect(t.createHook("AAS-Labs/pilot-01", { url: "https://example.ngrok-free.app", secret: "shh" })).rejects.toThrow(/already exists/);
+  });
+
+  it("treats any status other than 201 as failure, even a 200", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: true, status: 200, text: "unexpected" })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.createHook("AAS-Labs/pilot-01", { url: "https://example.ngrok-free.app", secret: "shh" })).rejects.toThrow(/200/);
+  });
+});
+
 describe("GithubApiTransport.getFileContent", () => {
   it("decodes base64 content from the Contents API", async () => {
     const fetchImpl = vi.fn(async () =>

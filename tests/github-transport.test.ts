@@ -59,6 +59,14 @@ describe("FakeGithubTransport", () => {
     expect(result).toEqual({ fullName: "AAS-Labs/pilot-01", url: "https://github.com/AAS-Labs/pilot-01" });
   });
 
+  it("records a created webhook", async () => {
+    const t = new FakeGithubTransport();
+
+    await t.createHook("AAS-Labs/pilot-01", { url: "https://example.ngrok-free.app", secret: "shh" });
+
+    expect(t.createdHooks).toEqual([{ repo: "AAS-Labs/pilot-01", url: "https://example.ngrok-free.app", secret: "shh" }]);
+  });
+
   it("records a created pull request and returns an incrementing fake number/url", async () => {
     const t = new FakeGithubTransport();
 

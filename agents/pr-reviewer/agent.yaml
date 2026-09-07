@@ -4,10 +4,13 @@ authoredBy: claude-local
 
 trigger:
   type: webhook
-  repo: "*"   # any repo the GITHUB_PR_TOKEN can reach (a dedicated, single-purpose
-              # bot account) — a webhook still has to be added on each repo in
-              # GitHub's own settings; this just removes the need to edit this
-              # file every time a new repo comes under management
+  repo: "*"   # any repo either GITHUB_PR_TOKEN (infra-repo grant) or
+              # GITHUB_PRODUCTS_TOKEN (products-repo grant) can reach — a
+              # webhook still has to exist on each repo (createRepo now
+              # registers one automatically for AAS-Labs product repos it
+              # creates; clanker-automated-system's was added by hand); this
+              # just removes the need to edit this file every time a new
+              # repo comes under management
   event: pull_request
 
 run:
@@ -23,7 +26,7 @@ permissions:
 
 tier: autonomous
 approval: auto
-grantRefs: [infra-repo]
+grantRefs: [infra-repo, products-repo]
 
 outbox:
   discord: ops
