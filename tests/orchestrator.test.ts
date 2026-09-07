@@ -944,6 +944,32 @@ describe("Orchestrator rate-limit classification", () => {
     expect(await new BreakerStore(dataDir).isTripped(agent.name)).toBe(false);
   });
 
+  it("records Claude Code's own session-limit message as interrupted, not failed", async () => {
+    // The literal error the SDK returns for this condition — never contains
+    // "rate_limit", so it slipped past the check above and disabled research
+    // after three real-world hits (data/runs/research-2026-09-07T10-49-28-*).
+    const { agent, orchestrator, store } = harness({
+      events: [{ type: "error", message: "Claude Code returned an error result: You've hit your session limit · resets 1pm (Europe/Bratislava)" }],
+    });
+
+    const result = await orchestrator.executeRun(agent);
+
+    expect(result?.status).toBe("interrupted");
+    expect((await store.listRecent(5))[0]?.status).toBe("interrupted");
+  });
+
+  it("does not let repeated session-limit hits trip the agent's breaker", async () => {
+    const { agent, orchestrator, dataDir } = harness({
+      events: [{ type: "error", message: "You've hit your session limit · resets 1pm (Europe/Bratislava)" }],
+    });
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+
+    expect(await new BreakerStore(dataDir).isTripped(agent.name)).toBe(false);
+  });
+
   it("still records a genuine failure as failed", async () => {
     const { agent, orchestrator } = harness({
       events: [{ type: "error", message: "TypeError: cannot read property of undefined" }],

@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import type { OutcomeVerifier } from "./control/outcome-verifier.js";
 import type { PendingEntry } from "./control/pending.js";
+import { parseRateLimitReset } from "./control/rate-limit-reset.js";
 import type { Governor } from "./governor.js";
 import type { DiscordOutbox } from "./outbox/discord.js";
 import type { AgentDef } from "./registry.js";
@@ -40,9 +41,18 @@ export function workspaceNote(workspace: string): string {
  * Whether a run's error came from the subscription's rate limit rather than
  * from anything the agent did. Shared by the status classification and the
  * governor's backoff so the two can never disagree about what counts.
+ *
+ * Also matches Claude Code's own session-limit message ("You've hit your
+ * session limit · resets 1pm (Europe/Bratislava)"), which never contains the
+ * literal substring "rate_limit" but is exactly the same "environment says
+ * not now" condition dispatcher.ts already recognizes via
+ * parseRateLimitReset (it defers the task instead of retrying/failing it).
+ * Before this, three research runs that each failed instantly on a session
+ * limit hit were recorded as "failed" here, fed the circuit breaker three
+ * times, and disabled an agent that had done nothing wrong.
  */
 function isRateLimitError(message: string): boolean {
-  return message.includes("rate_limit");
+  return message.includes("rate_limit") || parseRateLimitReset(message, new Date()) !== undefined;
 }
 
 export class Orchestrator {
