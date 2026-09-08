@@ -347,16 +347,45 @@ export class Orchestrator {
         }
       }
     } catch (thrown) {
+      // Set only when this catch itself classified a limit hit, so the
+      // governor hand-off below can't fire on a stale `error` left by an
+      // event the loop already reported, nor on a timeout.
+      let limitMessage: string | undefined;
       // `status` may already have been set to "timeout" by the setTimeout
       // callback above, racing this catch block. TypeScript's control-flow
       // narrowing cannot see across that closure boundary, so the comparison
       // is cast back to the full RunStatus union rather than left to be
       // (incorrectly) flagged as always-false.
       if ((status as RunStatus) !== "timeout") {
-        status = "failed";
         error = thrown instanceof Error ? thrown.message : String(thrown);
+        // The same classification as the emitted-error branch above, because
+        // a limit hit mostly does NOT arrive as an emitted event: the SDK
+        // *throws* it, as "Claude Code returned an error result: You've hit
+        // your session limit · resets 11:50pm (Europe/Bratislava)". That
+        // throw skips the event loop entirely and lands here, where every
+        // thrown error was labelled "failed" unconditionally — so the
+        // protection added for improvement-scout on 2026-09-08 was
+        // unreachable by the delivery mechanism the limit actually uses, and
+        // pr-reviewer was disabled the same day after four such runs. Both
+        // paths must agree; neither is the special case.
+        const isLimit = isLimitError(error);
+        status = isLimit ? "interrupted" : "failed";
+        if (isLimit) limitMessage = error;
       }
       await writer.append({ type: "error", message: error ?? "aborted" });
+      // And the same reset-instant hand-off, for the same reason it exists in
+      // the loop: without it the governor falls back to guessing with a
+      // backoff that caps at 30 minutes, which cannot bridge a window that
+      // resets hours out, so the next dispatch re-enters a live limit at
+      // once. That is why three of pr-reviewer's four hits landed 2.5
+      // seconds apart having spent 0 tokens — not being disabled is only
+      // half the fix. Fire-and-report like every other governor call here: a
+      // bookkeeping failure must never be what decides this run's outcome.
+      if (limitMessage) {
+        await this.governor
+          .recordRateLimitError(parseRateLimitReset(limitMessage, new Date()))
+          .catch((err: unknown) => console.error("[orchestrator] failed to record rate-limit backoff", err));
+      }
     } finally {
       clearTimeout(timer);
     }

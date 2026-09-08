@@ -87,6 +87,12 @@ function harness(
   );
   const approvedGrants = new ApprovedGrantsStore(dataDir);
   const store = new RunStore(dataDir);
+  const governor = {
+    admit: vi.fn().mockResolvedValue({ kind: "admit" }),
+    releaseSlot: vi.fn(),
+    recordRateLimit: vi.fn().mockResolvedValue(undefined),
+    recordRateLimitError: vi.fn().mockResolvedValue(undefined),
+  };
   const orchestrator = new Orchestrator({
     runner,
     store,
@@ -98,18 +104,13 @@ function harness(
       sleep: async () => {},
     }),
     dataDir,
-    governor: {
-      admit: vi.fn().mockResolvedValue({ kind: "admit" }),
-      releaseSlot: vi.fn(),
-      recordRateLimit: vi.fn().mockResolvedValue(undefined),
-      recordRateLimitError: vi.fn().mockResolvedValue(undefined),
-    } as never,
+    governor: governor as never,
     breaker: new BreakerStore(dataDir),
     approvedGrants,
     ...(verifier ? { verifier } : {}),
     ...(onBreakerTripped ? { onBreakerTripped } : {}),
   });
-  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants, runner, store };
+  return { agent, orchestrator, dataDir, fetchImpl, approvedGrants, runner, store, governor };
 }
 
 /** The URL and parsed JSON body of one recorded webhook POST. */
@@ -990,6 +991,75 @@ describe("Orchestrator rate-limit classification", () => {
     });
 
     expect((await orchestrator.executeRun(agent))?.status).toBe("failed");
+  });
+
+  // The 2026-09-08 pr-reviewer incident. Every test above feeds the limit in
+  // as an *emitted* error event — but the SDK does not emit this one, it
+  // THROWS it ("Claude Code returned an error result: ${lastErrorResultText}"
+  // is raised from the SDK's own query loop). A throw skips the event loop's
+  // classification entirely and lands in runAndRecord's catch, which labelled
+  // every thrown error "failed" unconditionally. So the protection added for
+  // improvement-scout was real but unreachable for the delivery mechanism the
+  // limit actually uses: pr-reviewer recorded four `status: "failed"` runs
+  // carrying this exact message and was disabled at 17:22:57Z.
+  /** Builds a runner that throws, rather than emits, on each call. */
+  function throwingRunner(...messages: string[]): Runner {
+    let call = 0;
+    return {
+      // eslint-disable-next-line require-yield
+      async *execute() {
+        throw new Error(messages[Math.min(call++, messages.length - 1)]!);
+      },
+    };
+  }
+
+  it("records a THROWN session-limit error as interrupted, not failed", async () => {
+    const { agent, orchestrator, store } = harness({ events: [] }, {}, throwingRunner(SESSION_LIMIT));
+
+    const result = await orchestrator.executeRun(agent);
+
+    expect(result?.status).toBe("interrupted");
+    expect((await store.listRecent(5))[0]?.status).toBe("interrupted");
+  });
+
+  it("does not let thrown session limits trip the agent's breaker", async () => {
+    // pr-reviewer's actual sequence: four consecutive thrown limit hits, the
+    // last three of which cost 0 tokens because they never got a turn.
+    const { agent, orchestrator, dataDir } = harness({ events: [] }, {}, throwingRunner(SESSION_LIMIT));
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+
+    expect(await new BreakerStore(dataDir).isTripped(agent.name)).toBe(false);
+  });
+
+  it("tells the governor the reset instant a thrown limit named", async () => {
+    // Not being disabled is only half of it. The emitted path hands the
+    // governor the reset time so admission can hold off until the window
+    // actually clears; the thrown path handed it nothing, so the next
+    // dispatch went straight back into the live limit — which is why three of
+    // pr-reviewer's four failures landed 2.5 seconds apart.
+    const { agent, orchestrator, governor } = harness({ events: [] }, {}, throwingRunner(SESSION_LIMIT));
+
+    await orchestrator.executeRun(agent);
+
+    expect(governor.recordRateLimitError).toHaveBeenCalledTimes(1);
+    expect(governor.recordRateLimitError.mock.calls[0]?.[0]).toBeInstanceOf(Date);
+  });
+
+  it("still records a thrown genuine error as failed", async () => {
+    const { agent, orchestrator, dataDir } = harness(
+      { events: [] },
+      {},
+      throwingRunner("TypeError: cannot read property of undefined"),
+    );
+
+    expect((await orchestrator.executeRun(agent))?.status).toBe("failed");
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    expect(await new BreakerStore(dataDir).isTripped(agent.name)).toBe(true);
   });
 });
 
