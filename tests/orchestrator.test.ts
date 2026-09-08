@@ -487,6 +487,36 @@ describe("Orchestrator.executeRun", () => {
 ${workspaceNote(agent.workspace)}`);
   });
 
+  it("substitutes {{repoRoot}} in the prompt with the supervisor's own checkout path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-orch-tmpl-"));
+    const promptPath = join(dir, "prompt.md");
+    writeFileSync(promptPath, "Audit {{repoRoot}}/README.md and {{repoRoot}}/src/.");
+    const agent = { ...AGENT, promptPath, workspace: join(dir, "ws") } as AgentDef;
+    const runner = new FakeRunner({ events: [{ type: "assistant", text: "ok" }] });
+    const executeSpy = vi.spyOn(runner, "execute");
+    const orchestrator = new Orchestrator({
+      runner,
+      store: new RunStore(dir),
+      outbox: { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() } as never,
+      dataDir: dir,
+      governor: {
+        admit: vi.fn().mockResolvedValue({ kind: "admit" }),
+        releaseSlot: vi.fn(),
+        recordRateLimit: vi.fn(),
+        recordRateLimitError: vi.fn(),
+      } as never,
+      breaker: new BreakerStore(dir),
+      approvedGrants: new ApprovedGrantsStore(dir),
+      repoRoot: "/srv/checkout",
+    });
+
+    await orchestrator.executeRun(agent);
+
+    const ctxArg = executeSpy.mock.calls[0]![1] as { prompt: string };
+    expect(ctxArg.prompt).toContain("Audit /srv/checkout/README.md and /srv/checkout/src/.");
+    expect(ctxArg.prompt).not.toContain("{{repoRoot}}");
+  });
+
   it("refuses to resume a pending entry with no sessionId, without touching the runner", async () => {
     const governor = { admit: vi.fn().mockResolvedValue({ kind: "admit" }), releaseSlot: vi.fn() };
     const outbox = { post: vi.fn().mockResolvedValue("delivered"), postAlert: vi.fn() };

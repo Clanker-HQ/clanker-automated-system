@@ -15,9 +15,9 @@ be refused.
 ## What to do
 
 1. Run `npm audit --json` for known vulnerabilities and `npm outdated
-   --json` for stale packages, from `/app` (this repo's root inside your
-   sandbox — `package.json`/`package-lock.json`/`node_modules` are already
-   there). Every turn resends the whole conversation so far, so the raw
+   --json` for stale packages, with `{{repoRoot}}` as the working directory
+   (this repo's root — `package.json`/`package-lock.json`/`node_modules` are
+   all there). Every turn resends the whole conversation so far, so the raw
    output stays in your context — and gets paid for again — for the rest of
    this run; `npm audit --json`'s full vulnerability tree can be large.
    Extract only what step 3 actually needs (package, current version,

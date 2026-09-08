@@ -250,6 +250,23 @@ describe("parseAgent", () => {
 });
 
 describe("loadRegistry", () => {
+  it("rejects a prompt.md whose placeholder nothing will ever substitute", () => {
+    // The failure mode this guards is precisely the `/app` one: a path the
+    // prompt states confidently and the runtime never makes true. An unknown
+    // placeholder would otherwise reach the model as a literal `{{appRoot}}`.
+    const { agentsDir, dataDir } = scaffold(AGENT);
+    writeFileSync(join(agentsDir, "smoke", "prompt.md"), "Audit {{appRoot}}/README.md.");
+    expect(() => loadRegistry({ agentsDir, dataDir, config: CONFIG, env: ENV })).toThrow(
+      /appRoot/,
+    );
+  });
+
+  it("accepts a prompt.md using the repoRoot placeholder", () => {
+    const { agentsDir, dataDir } = scaffold(AGENT);
+    writeFileSync(join(agentsDir, "smoke", "prompt.md"), "Audit {{repoRoot}}/README.md.");
+    expect(() => loadRegistry({ agentsDir, dataDir, config: CONFIG, env: ENV })).not.toThrow();
+  });
+
   it("loads a valid agent and resolves its paths", () => {
     const { agentsDir, dataDir } = scaffold(AGENT);
     const agents = loadRegistry({ agentsDir, dataDir, config: CONFIG, env: ENV });

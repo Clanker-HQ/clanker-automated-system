@@ -299,6 +299,10 @@ async function main(): Promise<void> {
     governor,
     breaker,
     approvedGrants,
+    // What `{{repoRoot}}` in a prompt.md resolves to. ROOT, not DATA_DIR's
+    // parent: DATA_DIR can be pointed elsewhere independently, and the scouts
+    // that use the placeholder are auditing the source tree, not the data.
+    repoRoot: ROOT,
     verifier: buildOutcomeVerifier(),
     onParked: async (pendingId, kind) => {
       if (!bot) return;
