@@ -17,8 +17,9 @@ recorded as achieved will be refused.
 
 ## What to look for
 
-Read broadly, using absolute paths rooted at `/app` (your working directory
-is not the repo): `src/`, `agents/`, `scripts/`, `tests/`, `docs/`,
+Read broadly, prefixing every path below with `{{repoRoot}}` — that is this
+repo's root, and your working directory is NOT it, so a bare or relative
+path will not resolve: `src/`, `agents/`, `scripts/`, `tests/`, `docs/`,
 `README.md`, `CONFIGURING.md`, `package.json`, `Dockerfile`,
 `docker-compose.yml`, `.github/`, `grants.yaml`, `config.yaml`. Look
 specifically for:

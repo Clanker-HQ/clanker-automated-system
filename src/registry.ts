@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { AgentSchema, type AgentYaml } from "./agent-schema.js";
 import { isValidCron, type Config } from "./config.js";
 import { ValidationError, combineValidationErrors, formatZodError } from "./errors.js";
+import { KNOWN_PROMPT_PLACEHOLDERS, unknownPlaceholders } from "./prompt-template.js";
 
 export type AgentDef = AgentYaml & {
   dir: string;
@@ -102,6 +103,18 @@ export function loadRegistry(opts: {
     }
     if (!existsSync(promptPath)) {
       lines.push(`prompt.md is missing. Every agent needs its task in prompt.md`);
+    } else {
+      // A placeholder the orchestrator will not substitute reaches the model
+      // as literal `{{...}}` — a path-shaped claim that is simply false, which
+      // is the exact failure `{{repoRoot}}` exists to end. Fail at boot, where
+      // the operator sees it, rather than mid-run inside an agent.
+      const unknown = unknownPlaceholders(readFileSync(promptPath, "utf8"));
+      if (unknown.length > 0) {
+        lines.push(
+          `prompt.md uses ${unknown.map((n) => `{{${n}}}`).join(", ")}, which nothing substitutes. ` +
+            `Known placeholders: ${KNOWN_PROMPT_PLACEHOLDERS.map((n) => `{{${n}}}`).join(", ")}`,
+        );
+      }
     }
     if (triggerType === "cron" && schedule !== undefined && timezone !== undefined && !isValidCron(schedule, timezone)) {
       lines.push(

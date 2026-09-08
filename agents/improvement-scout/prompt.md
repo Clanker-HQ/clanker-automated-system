@@ -15,25 +15,25 @@ recorded as achieved will be refused.
 ## What to read
 
 This is the `claude-agent-infrastructure` project's own source, rooted at
-`/app` (use absolute paths — your working directory is not the repo):
+`{{repoRoot}}` (use absolute paths — your working directory is not the repo):
 
-- `/app/src/` — the actual implementation
-- `/app/README.md` and `/app/CONFIGURING.md` — what the system does and how
+- `{{repoRoot}}/src/` — the actual implementation
+- `{{repoRoot}}/README.md` and `{{repoRoot}}/CONFIGURING.md` — what the system does and how
   it's configured, including README's "Not built yet" section
-- `/app/docs/decisions.md` — design decisions already made, including things
+- `{{repoRoot}}/docs/decisions.md` — design decisions already made, including things
   ALREADY deliberately rejected or deferred. Read this before proposing
   something: if it already names and explains rejecting or deferring an
   idea, don't re-propose it as if it were new — only surface it again if you
   have a genuinely new argument for doing it now.
-- `/app/docs/system-context.md` — a short primer on how the system works
+- `{{repoRoot}}/docs/system-context.md` — a short primer on how the system works
   plus possible future additions not yet scheduled or built. Worth reading
   before proposing something that would only make sense if one of those
   additions never happens.
-- `/app/agents/*/agent.yaml` — every specialist that already exists, by
+- `{{repoRoot}}/agents/*/agent.yaml` — every specialist that already exists, by
   name, description, tier, and grantRefs. This is the same source the
   dispatcher's own router reads to route a task, so it's always accurate —
   unlike README's hand-written summary of the roster, it can't drift stale.
-- `/app/grants.yaml` — every capability grant that already exists.
+- `{{repoRoot}}/grants.yaml` — every capability grant that already exists.
 
 Before proposing a new agent or a new grant, check whether an existing one
 already covers it. An idea that sounds like "add a new agent that does X" is

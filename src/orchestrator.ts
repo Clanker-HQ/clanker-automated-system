@@ -6,6 +6,7 @@ import type { Governor } from "./governor.js";
 import type { DiscordOutbox } from "./outbox/discord.js";
 import type { AgentDef } from "./registry.js";
 import { RunStore, newRunId, type RunResult, type RunStatus } from "./run-store.js";
+import { renderPrompt } from "./prompt-template.js";
 import type { RunContext, Runner } from "./runner/types.js";
 import type { ApprovedGrantsStore } from "./state/approved-grants.js";
 import type { BreakerStore } from "./state/breaker.js";
@@ -48,6 +49,7 @@ export class Orchestrator {
   private readonly onParked?: (pendingId: string, kind: "approval" | "question") => Promise<void>;
   private readonly onBreakerTripped?: (agentName: string, reason: string) => void | Promise<void>;
   private readonly verifier?: OutcomeVerifier;
+  private readonly repoRoot: string;
 
   constructor(opts: {
     runner: Runner;
@@ -84,6 +86,14 @@ export class Orchestrator {
      * default "unclear" for every run.
      */
     verifier?: OutcomeVerifier;
+    /**
+     * Absolute path of the supervisor's OWN checkout — what `{{repoRoot}}` in
+     * an agent's prompt.md resolves to. index.ts passes `ROOT` (APP_ROOT, or
+     * the working directory), which is the only place that value is known;
+     * the default keeps every existing test construction valid and matches
+     * what index.ts computes anyway when APP_ROOT is unset.
+     */
+    repoRoot?: string;
   }) {
     this.runner = opts.runner;
     this.store = opts.store;
@@ -95,6 +105,7 @@ export class Orchestrator {
     this.onParked = opts.onParked;
     this.onBreakerTripped = opts.onBreakerTripped;
     this.verifier = opts.verifier;
+    this.repoRoot = opts.repoRoot ?? process.cwd();
   }
 
   /**
@@ -140,7 +151,13 @@ export class Orchestrator {
 
     try {
       const runId = newRunId(agent.name, now);
-      const basePrompt = await readFile(agent.promptPath, "utf8");
+      // renderPrompt only touches prompt.md, not promptContext or the notes
+      // below: the placeholder is a thing a prompt AUTHOR opts into, and the
+      // other two parts are built by this process, which already has the
+      // values literally.
+      const basePrompt = renderPrompt(await readFile(agent.promptPath, "utf8"), {
+        repoRoot: this.repoRoot,
+      });
       const prompt = [basePrompt, promptContext, workspaceNote(agent.workspace)]
         .filter((part): part is string => Boolean(part))
         .join("\n\n");
