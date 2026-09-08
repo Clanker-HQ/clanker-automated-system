@@ -566,7 +566,7 @@ async function main(): Promise<void> {
   // plan is built on.
   void import("./triggers/cron.js")
     .then(({ startCron }) => {
-      startCron(agents.filter((a) => a.name !== "overseer"), orchestrator, world, strategyStore, runStore);
+      startCron(agents.filter((a) => a.name !== "overseer"), orchestrator, world, strategyStore, runStore, governor);
       console.log("[boot] supervisor running");
     })
     .catch((error: unknown) => {

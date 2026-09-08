@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import type { OutcomeVerifier } from "./control/outcome-verifier.js";
 import type { PendingEntry } from "./control/pending.js";
+import { isLimitError, parseRateLimitReset } from "./control/rate-limit-reset.js";
 import type { Governor } from "./governor.js";
 import type { DiscordOutbox } from "./outbox/discord.js";
 import type { AgentDef } from "./registry.js";
@@ -34,15 +35,6 @@ export function workspaceNote(workspace: string): string {
     `does NOT land in your workspace — it lands wherever this process happens to be running, ` +
     `which is not yours to write to.`
   );
-}
-
-/**
- * Whether a run's error came from the subscription's rate limit rather than
- * from anything the agent did. Shared by the status classification and the
- * governor's backoff so the two can never disagree about what counts.
- */
-function isRateLimitError(message: string): boolean {
-  return message.includes("rate_limit");
 }
 
 export class Orchestrator {
@@ -266,14 +258,24 @@ export class Orchestrator {
         // (SdkRunner maps the last message it pulled so the run's cost
         // accounting is not lost) — that must not re-label the run "failed".
         if (event.type === "error" && (status as RunStatus) !== "timeout") {
-          // A rate-limited run is the environment saying "not now", not the
-          // agent failing at its task — so it is "interrupted", which
-          // BreakerStore's FAILURE_STATUSES deliberately excludes. Recorded as
-          // "failed" it took three limit hits to disable an agent that had
-          // done nothing wrong, and every dispatch afterwards re-posted
-          // "circuit breaker tripped" to Discord. Same reasoning as the
-          // tool-failure stop in sdk-runner.ts.
-          status = isRateLimitError(event.message) ? "interrupted" : "failed";
+          // A limited run is the environment saying "not now", not the agent
+          // failing at its task — so it is "interrupted", which BreakerStore's
+          // FAILURE_STATUSES deliberately excludes. Recorded as "failed" it
+          // took three limit hits to disable an agent that had done nothing
+          // wrong, and every dispatch afterwards re-posted "circuit breaker
+          // tripped" to Discord. Same reasoning as the tool-failure stop in
+          // sdk-runner.ts.
+          //
+          // The detector matters as much as the classification. This branch
+          // originally tested `message.includes("rate_limit")` — the SDK's
+          // structured error string, and nothing else — so the wording Claude
+          // Code actually emits ("You've hit your session limit · resets
+          // 1:20pm (Europe/Bratislava)") fell through to "failed" and
+          // disabled improvement-scout on 2026-09-08, with the intended
+          // protection sitting right here the whole time. isLimitError is now
+          // the one place that question is answered, for this, for the
+          // governor's backoff below, and for the dispatcher's defer.
+          status = isLimitError(event.message) ? "interrupted" : "failed";
           error = event.message;
         }
         // Recorded and reported like any other outcome, but deliberately NOT
@@ -322,9 +324,15 @@ export class Orchestrator {
             })
             .catch((err: unknown) => console.error("[orchestrator] failed to record rate-limit snapshot", err));
         }
-        if (event.type === "error" && isRateLimitError(event.message)) {
+        if (event.type === "error" && isLimitError(event.message)) {
+          // Hand the governor the reset instant the message itself names,
+          // when it names one. Without it the governor can only guess with
+          // its own doubling backoff, which caps at 30 minutes — and a
+          // five-hour window that resets at 1:20pm does not care that the
+          // guess expired at 11:30. Guessing is exactly why the next
+          // scheduled fire dispatched straight back into a live limit.
           await this.governor
-            .recordRateLimitError()
+            .recordRateLimitError(parseRateLimitReset(event.message, new Date()))
             .catch((err: unknown) => console.error("[orchestrator] failed to record rate-limit backoff", err));
         }
         // Display-only enrichment from the experimental usage_EXPERIMENTAL...

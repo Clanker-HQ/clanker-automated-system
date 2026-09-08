@@ -74,3 +74,36 @@ export function parseRateLimitReset(message: string, now: Date): Date | undefine
   }
   return candidate;
 }
+
+/**
+ * Wording that means "the subscription is out of capacity right now", as
+ * opposed to anything the agent itself did wrong.
+ *
+ * `rate_limit` is the SDK's own structured error string. The rest is what
+ * Claude Code actually prints to a human — and that difference is what broke
+ * improvement-scout on 2026-09-08. The only detector in the system tested for
+ * the substring `rate_limit`, so the message its own runs recorded ("You've
+ * hit your session limit · resets 1:20pm (Europe/Bratislava)") did not match:
+ * two limit hits were filed as agent failures, a genuine max-turns failure
+ * landed between them, and three "failures" is a tripped circuit breaker. The
+ * agent was disabled for the one thing it demonstrably had no control over.
+ */
+const LIMIT_WORDING = /rate_limit|(?:rate|session|usage)[\s-]+limit/i;
+
+/**
+ * Whether a run's error came from the subscription's limits rather than from
+ * anything the agent did — the single detector for that question, shared by
+ * the orchestrator's status classification (which keeps a limit hit out of
+ * the circuit breaker), the governor's admission backoff, and the
+ * dispatcher's retry deferral, so the three can never disagree about what
+ * counts as "not now".
+ *
+ * A parseable reset suffix counts on its own: message wording is Claude
+ * Code's to change at will, but "· resets 3:00pm (Europe/Bratislava)" is a
+ * statement only a capacity window ever makes. That also covers phrasings
+ * this file has never seen — "You've reached your 5-hour limit", say, which
+ * matches none of the nouns above.
+ */
+export function isLimitError(message: string): boolean {
+  return LIMIT_WORDING.test(message) || RESET_PATTERN.test(message);
+}
