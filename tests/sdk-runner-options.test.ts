@@ -302,6 +302,63 @@ describe("SdkRunner query options", () => {
     expect(events.some((e) => e.type === "error")).toBe(false);
   });
 
+  // The bug this closes: `maxBudgetUsd` was only ever handed to the SDK as a
+  // query() option, and the SDK's own enforcement of it apparently doesn't
+  // stop a run before it can rack up several times its cap — a pr-reviewer
+  // run configured with maxBudgetUsd: 3.00 actually spent $8.64. This loop
+  // must not depend on the SDK noticing at all: it tracks the same running
+  // token total `accumulateUsage` already maintains for the abort-fallback
+  // report, and stops the instant its own estimate crosses the cap.
+  function assistantUsage(inputTokens: number, outputTokens: number) {
+    return {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "working" }],
+        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+      },
+    };
+  }
+
+  it("stops a run the moment estimated cumulative cost exceeds maxBudgetUsd, in a single oversized turn", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+
+    // AGENT.maxBudgetUsd is 0.25 on claude-haiku-4-5 ($1/$5 per million
+    // input/output tokens) — this one turn alone estimates to $0.301.
+    const { events } = await run([assistantUsage(1_000, 60_000), RESULT_MESSAGE]);
+
+    const stopped = events.find((e) => e.type === "interrupted");
+    expect(stopped).toBeDefined();
+    expect((stopped as { reason: string }).reason).toMatch(/budget/i);
+    expect((stopped as { reason: string }).reason).toMatch(/\$0\.25/);
+    // The RESULT_MESSAGE that would have followed is never reached — the SDK's
+    // own $0.002 total_cost_usd for it must not appear, since that would mean
+    // the loop kept consuming turns instead of aborting on the spot.
+    expect(events.some((e) => e.type === "usage" && e.costUsd === 0.002)).toBe(false);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
+  // The actual shape of the incident this closes: no single turn looks
+  // expensive, and every tool call SUCCEEDS (so the unrelated
+  // consecutiveToolFailures cap above never engages) — only the running total
+  // across many turns of a retry loop crosses the cap.
+  it("stops a tool-retry loop of many small, individually-cheap turns once their sum exceeds maxBudgetUsd", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+
+    // Each turn estimates to (1_000 + 5*15_000) / 1e6 = $0.076 — comfortably
+    // under the $0.25 cap on its own. The 4th turn's cumulative total ($0.304)
+    // is the first to cross it.
+    const turn = () => [assistantUsage(1_000, 15_000), toolSuccess];
+    const { events } = await run([...turn(), ...turn(), ...turn(), ...turn(), ...turn(), RESULT_MESSAGE]);
+
+    const stopped = events.find((e) => e.type === "interrupted");
+    expect(stopped).toBeDefined();
+    expect((stopped as { reason: string }).reason).toMatch(/budget/i);
+    // Stopped on the 4th turn, not left running for all 5 provided: the 5th
+    // turn's tool_result must never have been reached.
+    expect(events.filter((e) => e.type === "tool_result").length).toBeLessThan(5);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
   it("maps the SDK's yielded messages into RunEvents", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
 
