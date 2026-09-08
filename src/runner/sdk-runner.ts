@@ -203,10 +203,13 @@ const TASK_QUEUE_AGENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Consecutive failing tool calls — with nothing succeeding in between — after
- * which a run is stopped rather than left to retry until it exhausts its
- * turns. Five, because four is still plausibly a stubborn-but-recoverable
- * sequence while five with zero successes is a broken dependency.
+ * Net tool-call failure score — failures increment it, successes decrement it
+ * (floor zero) — past which a run is stopped rather than left to retry until
+ * it exhausts its turns. Five, because four is still plausibly a
+ * stubborn-but-recoverable sequence while five net failures is a broken
+ * dependency, whether or not an unrelated tool happened to succeed along the
+ * way. See `consecutiveToolFailures` below for why this isn't a plain
+ * consecutive-run counter reset to zero by any success.
  */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 5;
 
@@ -1941,13 +1944,29 @@ export class SdkRunner implements Runner {
 
     let partial: PartialUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     let sawTerminalUsage = false;
-    // Counted across ALL tools, with any success resetting it, rather than
-    // per-tool: the run this exists because of alternated WebFetch and
-    // WebSearch failures, so a per-tool counter would never have tripped.
-    // The reset is also what keeps this away from `builder`, whose red-green
-    // loop fails Bash on purpose — an Edit or Read between two failing test
-    // runs clears the count, so tripping it takes five consecutive failures
-    // with no tool succeeding at all, which is not a working loop by then.
+    // Counted across ALL tools, not per-tool: the run this exists because of
+    // alternated WebFetch and WebSearch failures, so a per-tool counter would
+    // never have tripped.
+    //
+    // NOT reset to zero by a single success, though — a plain "any success
+    // resets it" counter is bypassable by exactly the interleaving pattern
+    // that defeats a real safety stop: a broken dependency retried over and
+    // over with one unrelated tool call (or a retry that occasionally, by
+    // luck, half-succeeds) succeeding often enough to zero the count before
+    // it ever reaches the threshold. The `pr-reviewer` run this comment
+    // replaces demonstrated it — a repeatedly-failing tool with a success
+    // landing every few calls ran indefinitely because each success wiped
+    // out every prior failure.
+    //
+    // Instead this is a net score: every failure adds one, every success
+    // subtracts one (floored at zero), and the threshold is checked against
+    // that net value. A `builder` red-green loop — real successes (Edit,
+    // Read) roughly as often as its deliberate Bash failures — keeps the net
+    // score low or flat, since each success cancels one prior failure instead
+    // of erasing all of them; see the "leaves a red-green loop alone" test.
+    // A genuinely broken dependency, retried well more often than it
+    // succeeds, still accumulates net failures and trips the stop even with
+    // occasional unrelated successes mixed in.
     let consecutiveToolFailures = 0;
 
     // Invariant: a message already pulled off the stream is NEVER discarded,
@@ -1994,7 +2013,7 @@ export class SdkRunner implements Runner {
 
         for (const event of events) {
           if (event.type !== "tool_result") continue;
-          consecutiveToolFailures = event.ok ? 0 : consecutiveToolFailures + 1;
+          consecutiveToolFailures = event.ok ? Math.max(0, consecutiveToolFailures - 1) : consecutiveToolFailures + 1;
         }
         if (consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
           // "interrupted", not "error": the agent did nothing wrong, and an
@@ -2005,7 +2024,8 @@ export class SdkRunner implements Runner {
           terminalEvent = {
             type: "interrupted",
             reason:
-              `Stopped after ${consecutiveToolFailures} consecutive tool failures with nothing succeeding in between. ` +
+              `Stopped after consecutive tool failures reached a net score of ${consecutiveToolFailures} (failures minus successes), ` +
+              `with any successes along the way not clearing out enough of the failures. ` +
               `The tools this run depends on are not working, and retrying a broken tool costs the same as using a working one.`,
           };
           controller.abort();
