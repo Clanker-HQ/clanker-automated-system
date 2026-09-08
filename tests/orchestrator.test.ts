@@ -15,7 +15,7 @@ import { BreakerStore } from "../src/state/breaker.js";
 import { RateLimitTracker } from "../src/state/rate-limit.js";
 import { FakeRunner } from "../src/runner/fake-runner.js";
 import type { FakeScript } from "../src/runner/fake-runner.js";
-import type { RunContext, Runner } from "../src/runner/types.js";
+import type { RunContext, RunEvent, Runner } from "../src/runner/types.js";
 
 const CONFIG = parseConfig(
   "config.yaml",
@@ -936,6 +936,46 @@ describe("Orchestrator rate-limit classification", () => {
     const { agent, orchestrator, dataDir } = harness({
       events: [{ type: "error", message: "assistant message reported error: rate_limit" }],
     });
+
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+    await orchestrator.executeRun(agent);
+
+    expect(await new BreakerStore(dataDir).isTripped(agent.name)).toBe(false);
+  });
+
+  // The 2026-09-08 incident, verbatim. improvement-scout's own result.json
+  // recorded status "failed" with this exact error, twice in three runs; the
+  // third was a real max-turns failure, and three "failures" is a trip. The
+  // classification above already intended to prevent this — the detector just
+  // never matched the wording Claude Code actually emits.
+  const SESSION_LIMIT =
+    "Claude Code returned an error result: You've hit your session limit · resets 1:20pm (Europe/Bratislava)";
+
+  it("records a session-limit run as interrupted, not failed", async () => {
+    const { agent, orchestrator, store } = harness({
+      events: [{ type: "error", message: SESSION_LIMIT }],
+    });
+
+    const result = await orchestrator.executeRun(agent);
+
+    expect(result?.status).toBe("interrupted");
+    expect((await store.listRecent(5))[0]?.status).toBe("interrupted");
+  });
+
+  it("does not let session limits interleaved with one real failure trip the breaker", async () => {
+    // The exact 3-run sequence that disabled improvement-scout: limit, a real
+    // max-turns failure, limit. Only the middle one is the agent's own doing,
+    // so one failure is all the breaker may ever count here.
+    const messages = [SESSION_LIMIT, "Reached maximum number of turns (30)", SESSION_LIMIT];
+    let call = 0;
+    const runner: Runner = {
+      // eslint-disable-next-line require-yield
+      async *execute() {
+        yield { type: "error", message: messages[call++]! } as RunEvent;
+      },
+    };
+    const { agent, orchestrator, dataDir } = harness({ events: [] }, {}, runner);
 
     await orchestrator.executeRun(agent);
     await orchestrator.executeRun(agent);

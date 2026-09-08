@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRateLimitReset } from "../src/control/rate-limit-reset.js";
+import { isLimitError, parseRateLimitReset } from "../src/control/rate-limit-reset.js";
 
 describe("parseRateLimitReset", () => {
   it("parses a 12-hour reset time with am/pm into today's occurrence in that zone, when it hasn't passed yet", () => {
@@ -40,5 +40,33 @@ describe("parseRateLimitReset", () => {
   it("returns undefined when the parenthesized timezone is not a valid IANA zone", () => {
     const now = new Date("2026-01-01T10:00:00.000Z");
     expect(parseRateLimitReset("resets 3pm (Nowhere/Fake)", now)).toBeUndefined();
+  });
+});
+
+// The real incident: improvement-scout was disabled on 2026-09-08 because
+// two of its three breaker-tripping "failures" were subscription limit hits,
+// whose message ("You've hit your session limit · resets 1:20pm
+// (Europe/Bratislava)") contains no "rate_limit" substring — the only thing
+// the old detector looked for. See src/control/rate-limit-reset.ts.
+describe("isLimitError", () => {
+  it.each([
+    "Claude Code returned an error result: You've hit your session limit · resets 1:20pm (Europe/Bratislava)",
+    "You've hit your session limit · resets 3:30pm (Europe/Bratislava)",
+    "Claude usage limit reached",
+    "assistant message reported error: rate_limit",
+    "You've reached your 5-hour limit · resets 3:00pm (UTC)",
+    "Rate limit exceeded",
+  ])("recognises %s as the environment refusing, not the agent failing", (message) => {
+    expect(isLimitError(message)).toBe(true);
+  });
+
+  it.each([
+    "Claude Code returned an error result: Reached maximum number of turns (30)",
+    "TypeError: cannot read property of undefined",
+    "Stopped after 5 consecutive tool failures with nothing succeeding in between.",
+    "git push rejected: non-fast-forward",
+    "",
+  ])("does not mistake a genuine agent failure (%s) for a limit hit", (message) => {
+    expect(isLimitError(message)).toBe(false);
   });
 });

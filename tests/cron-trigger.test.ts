@@ -5,8 +5,8 @@ import { Cron } from "croner";
 import { describe, expect, it, vi } from "vitest";
 import type { Orchestrator } from "../src/orchestrator.js";
 import type { AgentDef } from "../src/registry.js";
-import type { RunStore } from "../src/run-store.js";
-import { catchUpIfMissed, missedFireAt, startCron } from "../src/triggers/cron.js";
+import type { RunResult, RunStore } from "../src/run-store.js";
+import { catchUpIfMissed, limitRetryAt, missedFireAt, runCronFiring, startCron } from "../src/triggers/cron.js";
 import { StrategyStore, type Strategy } from "../src/world/strategy.js";
 import { WorldModel } from "../src/world/world-model.js";
 
@@ -281,5 +281,105 @@ describe("startCron", () => {
         rmSync(dataDir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+// A cron agent that collides with a subscription limit used to lose its slot
+// outright: improvement-scout fires once a day at 13:00, hit its session
+// limit on 2026-09-08, and nothing ever re-ran it — catchUpIfMissed sees the
+// failed run's own startedAt and concludes the fire was not missed. Not being
+// disabled for the collision is only half a fix; the run still has to happen.
+describe("limit-aware retry", () => {
+  const NOW = new Date("2026-09-08T11:00:00.000Z");
+  const SESSION_LIMIT =
+    "Claude Code returned an error result: You've hit your session limit \u00b7 resets 1:20pm (Europe/Bratislava)";
+
+  function result(overrides: Partial<RunResult> = {}): RunResult {
+    return { status: "interrupted", error: SESSION_LIMIT, ...overrides } as RunResult;
+  }
+
+  const rejectedGovernor = (resetsAt: number | null) => ({
+    status: async () => ({ rateLimitStatus: "rejected" as const, rateLimitResetsAt: resetsAt }),
+  });
+
+  it("retries just after the reset instant the run's own error named", async () => {
+    const at = await limitRetryAt(result(), undefined, NOW);
+    // 1:20pm Europe/Bratislava (UTC+2 in September) is 11:20 UTC, plus grace.
+    expect(at?.toISOString()).toBe("2026-09-08T11:21:00.000Z");
+  });
+
+  it("does not retry a genuine failure", async () => {
+    const failure = result({ status: "failed", error: "Reached maximum number of turns (30)" });
+    expect(await limitRetryAt(failure, rejectedGovernor(null), NOW)).toBeNull();
+  });
+
+  it("does not retry a successful run", async () => {
+    expect(await limitRetryAt(result({ status: "success", error: undefined }), undefined, NOW)).toBeNull();
+  });
+
+  it("falls back to the governor's reset instant when the run was refused before it ever started", async () => {
+    const resetsAt = Math.floor(new Date("2026-09-08T11:20:00.000Z").getTime() / 1000);
+    const at = await limitRetryAt(undefined, rejectedGovernor(resetsAt), NOW);
+    expect(at?.toISOString()).toBe("2026-09-08T11:21:00.000Z");
+  });
+
+  it("does not retry a refusal that was nothing to do with a limit", async () => {
+    const quietHours = { status: async () => ({ rateLimitStatus: null, rateLimitResetsAt: null }) };
+    expect(await limitRetryAt(undefined, quietHours, NOW)).toBeNull();
+  });
+
+  // Bounded like the governor's own hold: a reset further out than any real
+  // window is a parsing slip or a clock skew, and a cron agent that would
+  // rather wait for its next scheduled fire than sit on a day-long timer.
+  it("declines to schedule a retry further out than any real window", async () => {
+    const resetsAt = Math.floor(new Date("2026-09-15T11:00:00.000Z").getTime() / 1000);
+    expect(await limitRetryAt(undefined, rejectedGovernor(resetsAt), NOW)).toBeNull();
+  });
+
+  it("re-runs the agent when the scheduled retry fires, and stops once it succeeds", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-cron-retry-"));
+    const executeRun = vi
+      .fn()
+      .mockResolvedValueOnce(result())
+      .mockResolvedValueOnce(result({ status: "success", error: undefined }));
+    const scheduled: Array<() => void> = [];
+
+    await runCronFiring(agent(), {
+      orchestrator: { executeRun } as unknown as Orchestrator,
+      world: new WorldModel(dataDir),
+      strategyStore: new StrategyStore(dataDir),
+      now: () => NOW,
+      schedule: (_at, run) => scheduled.push(run),
+    });
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()!();
+    await vi.waitFor(() => expect(executeRun).toHaveBeenCalledTimes(2));
+    // The retry succeeded, so nothing further is queued.
+    expect(scheduled).toHaveLength(0);
+  });
+
+  it("gives up after a bounded number of retries instead of looping on a limit that never clears", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "cai-cron-retry-"));
+    const executeRun = vi.fn().mockResolvedValue(result());
+    const scheduled: Array<() => void> = [];
+
+    await runCronFiring(agent(), {
+      orchestrator: { executeRun } as unknown as Orchestrator,
+      world: new WorldModel(dataDir),
+      strategyStore: new StrategyStore(dataDir),
+      now: () => NOW,
+      schedule: (_at, run) => scheduled.push(run),
+    });
+
+    for (let i = 0; i < 10 && scheduled.length > 0; i += 1) {
+      scheduled.shift()!();
+      await vi.waitFor(() => expect(executeRun).toHaveBeenCalledTimes(i + 2));
+    }
+    // The scheduled fire plus two retries — MAX_LIMIT_ATTEMPTS total, then it
+    // waits for tomorrow's fire rather than polling a limit that never clears.
+    expect(executeRun).toHaveBeenCalledTimes(3);
+    expect(scheduled).toHaveLength(0);
   });
 });

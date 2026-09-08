@@ -328,6 +328,47 @@ describe("Governor.admit", () => {
     expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
   });
 
+  // The other half of the 2026-09-08 improvement-scout incident. The
+  // one-hour age cap above is a guard against a snapshot with nothing
+  // trustworthy to expire on — but applied to a snapshot that names its own
+  // reset instant it threw away the only hard fact available, and the next
+  // scheduled fire walked straight back into a live five-hour window. An
+  // explicit resetsAt is a statement about the future, not a reading that
+  // goes stale, so it is honoured on its own terms.
+  it("keeps refusing past the age cap while an explicit resetsAt is still in the future", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "rejected", resetsAt: FIXED_NOW_SECONDS + 2 * 60 * 60 },
+      new Date(FIXED_NOW_MS - 90 * 60 * 1000),
+    );
+    expect(await build(dir).admit(agent(), "trigger")).toMatchObject({ kind: "refuse" });
+  });
+
+  // Only a REJECTED snapshot earns the longer hold. On an allowed_warning
+  // reading, resetsAt says when the window rolls, not that the utilization
+  // figure beside it is still accurate — that number only climbs, so an
+  // hours-old one must not keep pausing dispatch on evidence it no longer has.
+  it("does not extend the age cap for a high-utilization reading just because it names a resetsAt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "allowed_warning", utilization: 0.99, resetsAt: FIXED_NOW_SECONDS + 2 * 60 * 60 },
+      new Date(FIXED_NOW_MS - 90 * 60 * 1000),
+    );
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
+  // Still bounded, so honouring resetsAt can never recreate the 2026-09-01
+  // deadlock: a window longer than anything the subscription actually has
+  // expires at the ceiling regardless of what it claims.
+  it("admits again once an implausibly distant resetsAt passes the maximum hold", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await new RateLimitTracker(dir).record(
+      { status: "rejected", resetsAt: FIXED_NOW_SECONDS + 30 * 24 * 60 * 60 },
+      new Date(FIXED_NOW_MS - 7 * 60 * 60 * 1000),
+    );
+    expect(await build(dir).admit(agent(), "trigger")).toEqual({ kind: "admit" });
+  });
+
   // The utilization gate deadlocks identically: a recorded 0.99 refuses every
   // run, and no run can then record the reading that would clear it.
   it("admits again on a stale high-utilization reading", async () => {
@@ -716,6 +757,34 @@ describe("Governor rate-limit recording", () => {
     await governor.recordRateLimitError();
     const snapshot = await new RateLimitTracker(dir).read();
     expect(snapshot?.status).toBe("rejected");
+    expect(snapshot?.resetsAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("recordRateLimitError prefers the reset instant the error message named over its own guess", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    // Real wall-clock, not FIXED_NOW: recordRateLimitError deliberately
+    // computes against the real clock (its own comment says why), so a reset
+    // instant relative to the test's frozen "now" is already in the past.
+    const resetAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    await build(dir).recordRateLimitError(resetAt);
+    const snapshot = await new RateLimitTracker(dir).read();
+    expect(snapshot?.resetsAt).toBe(Math.floor(resetAt.getTime() / 1000));
+  });
+
+  it("recordRateLimitError falls back to the doubling cooldown when the message named no reset time", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await build(dir).recordRateLimitError(undefined);
+    const snapshot = await new RateLimitTracker(dir).read();
+    expect(snapshot?.resetsAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  // A reset time already in the past would write a snapshot currentRateLimit
+  // discards on sight, so a limit hit whose message parsed oddly would gate
+  // nothing at all. Fall back rather than trust it.
+  it("recordRateLimitError ignores a named reset time that has already passed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    await build(dir).recordRateLimitError(new Date(Date.now() - 60_000));
+    const snapshot = await new RateLimitTracker(dir).read();
     expect(snapshot?.resetsAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 

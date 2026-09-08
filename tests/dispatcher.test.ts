@@ -155,6 +155,28 @@ describe("runDispatchTick", () => {
   });
 
   describe("a failure carrying a rate/session-limit reset time", () => {
+    // The orchestrator now classifies a limit hit "interrupted" rather than
+    // "failed", so that BreakerStore stops counting it as the agent's fault.
+    // This branch keys off the message rather than the status, so the defer
+    // must survive that reclassification — a task quietly losing its
+    // reset-aware defer would just move the 2026-09-08 problem downstream.
+    it("still defers on the reset time when the limit hit arrives as interrupted, not failed", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(
+        successResult({ status: "interrupted", error: "You've hit your session limit · resets 3:00pm (UTC)" }),
+      );
+      const now = () => new Date("2026-01-01T10:00:00.000Z");
+      const outcome = await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, world, now,
+      });
+      expect(outcome).toEqual({ ran: true, taskId: task.id, deferred: true });
+      const updated = await tasks.get(task.id);
+      expect(updated?.nextRetryAt).toBe("2026-01-01T15:00:00.000Z");
+      expect(updated?.retryCount ?? 0).toBe(0);
+    });
+
     it("schedules the retry at the parsed reset time instead of the fixed backoff, without spending a retry", async () => {
       const { tasks, dataDir, world } = taskStore();
       const task = await tasks.create({ text: "x", createdBy: "discord:owner" });

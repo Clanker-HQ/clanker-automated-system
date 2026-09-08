@@ -43,15 +43,40 @@ function isWithinQuietHours(quietHours: QuietHours, now: Date): boolean {
 }
 
 /**
- * How long a rate-limit snapshot keeps refusing runs when it carries no
- * `resetsAt`, and the hard ceiling on how long one may refuse even when it
- * does. Deliberately short, because the failure modes are wildly asymmetric:
- * letting a run through when the account really is throttled costs one run
- * that fails immediately at the API — and that failure records a fresh
- * snapshot, so the system self-corrects at most once an hour. Refusing on a
- * stale snapshot costs everything, forever.
+ * How long a rate-limit snapshot keeps refusing runs when it has nothing
+ * trustworthy to expire on — no `resetsAt`, or a `resetsAt` on a reading
+ * whose real content is a utilization figure that ages (see
+ * currentRateLimit). Deliberately short, because the failure modes are wildly
+ * asymmetric: letting a run through when the account really is throttled
+ * costs one run that fails immediately at the API — and that failure records
+ * a fresh snapshot, so the system self-corrects at most once an hour.
+ * Refusing on a stale snapshot costs everything, forever.
+ *
+ * A *rejected* snapshot that names its own reset instant is the one case this
+ * bound is wrong for, and RATE_LIMIT_MAX_HOLD_MS below is its ceiling
+ * instead.
  */
 const RATE_LIMIT_SNAPSHOT_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * The hard ceiling on how long a snapshot may refuse runs when it DOES carry
+ * an explicit `resetsAt` — six hours, just past the longest window the
+ * subscription actually has (five hours).
+ *
+ * The age cap above is the right bound for a snapshot with nothing
+ * trustworthy to expire on. Applied to one that names its own reset instant
+ * it discards the only hard fact available, and that is the second half of
+ * the 2026-09-08 improvement-scout incident: a five-hour window reported as
+ * resetting at 1:20pm stopped gating at 11:30, so the next scheduled fire
+ * dispatched straight back into a limit that was still live, failed, and
+ * (with the classifier bug of the day) tripped the agent's breaker.
+ *
+ * A ceiling rather than unbounded trust, so this can never recreate the
+ * 2026-09-01 deadlock: a `resetsAt` further out than any real window — a
+ * parsing slip, a clock skew, an API changing units — expires here regardless
+ * of what it claims.
+ */
+const RATE_LIMIT_MAX_HOLD_MS = 6 * 60 * 60 * 1000;
 
 /**
  * The snapshot only if it still describes the present, else null.
@@ -63,16 +88,34 @@ const RATE_LIMIT_SNAPSHOT_MAX_AGE_MS = 60 * 60 * 1000;
  * `resetsAt` had already elapsed refused every dispatch for hours, with no
  * path back except deleting the file by hand.
  *
- * `resetsAt` is the cooldown `recordRateLimitError` already computes (doubling
- * per consecutive miss, capped at 30 minutes) and documents as being consulted
- * here. It was written and never read. Whichever of the two bounds expires
- * first wins, so a long window reported by the API cannot pin the system shut
- * either.
+ * `resetsAt` is either the reset instant a limit error itself named, or —
+ * when it named none — the cooldown `recordRateLimitError` computes (doubling
+ * per consecutive miss, capped at 30 minutes) and documents as being
+ * consulted here. It was written and never read. A `resetsAt` in the past
+ * always discards the snapshot, so a long window reported by the API cannot
+ * pin the system shut either; the age bound each kind of snapshot is held to
+ * beyond that is decided just below.
  */
 function currentRateLimit(snapshot: RateLimitSnapshot | null, now: Date): RateLimitSnapshot | null {
   if (!snapshot) return null;
-  if (now.getTime() - new Date(snapshot.recordedAt).getTime() >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS) return null;
+  const age = now.getTime() - new Date(snapshot.recordedAt).getTime();
   if (snapshot.resetsAt !== undefined && now.getTime() >= snapshot.resetsAt * 1000) return null;
+  // A REJECTED snapshot naming its own reset instant is a statement about the
+  // future ("blocked until T"), not a reading that goes stale, so it is
+  // trusted until T — bounded by RATE_LIMIT_MAX_HOLD_MS rather than by the
+  // much shorter "is this reading still roughly current" cap.
+  //
+  // Deliberately only when rejected. On an allowed/allowed_warning snapshot
+  // `resetsAt` says merely when the window rolls, which for a seven-day
+  // window is days out and says nothing about whether the `utilization`
+  // figure beside it is still true — that number climbs continuously, and the
+  // window may well have started rejecting since. Extending trust to those
+  // would let a single hours-old reading of 0.79 keep pausing dispatch on
+  // evidence it no longer has, so they keep the age bound.
+  const maxAge = snapshot.status === "rejected" && snapshot.resetsAt !== undefined
+    ? RATE_LIMIT_MAX_HOLD_MS
+    : RATE_LIMIT_SNAPSHOT_MAX_AGE_MS;
+  if (age >= maxAge) return null;
   return snapshot;
 }
 
@@ -429,13 +472,20 @@ export class Governor {
    * Reactive backoff: called when the SDK itself reports a rate_limit error
    * (distinct from recordRateLimit, which reflects the SDK's own live
    * utilization figure — this fires when no such figure caught it in time).
-   * Marks the shared snapshot "rejected" so admit() refuses new runs, with a
-   * cooldown that doubles per consecutive miss, capped at 30 minutes.
+   * Marks the shared snapshot "rejected" so admit() refuses new runs, until
+   * `resetsAt` if the caller could parse one out of the error message, else
+   * after a cooldown that doubles per consecutive miss, capped at 30 minutes.
    * consecutiveRateLimitErrors is in-memory only: a restart resets the
    * backoff level but not safety, since the snapshot itself still reads
    * "rejected" until a genuinely fresh non-rejected reading arrives.
+   *
+   * @param resetsAt the instant the error message said the limit clears, if
+   * it said. Preferred over the cooldown whenever it is in the future — the
+   * cooldown is a guess made with no information, and a 30-minute ceiling
+   * cannot bridge a five-hour window, so every expiry it invents early is a
+   * run dispatched into a limit that has not moved.
    */
-  async recordRateLimitError(): Promise<void> {
+  async recordRateLimitError(resetsAt?: Date): Promise<void> {
     this.consecutiveRateLimitErrors += 1;
     const cooldownMinutes = Math.min(2 ** this.consecutiveRateLimitErrors, 30);
     // Deliberately real wall-clock time, not the injectable this.now(): this
@@ -443,8 +493,19 @@ export class Governor {
     // of state/rate-limit.json) against the real clock, so it must never be
     // computed from a test-fixed or otherwise skewed "now".
     const now = new Date();
+    // Only if it is actually in the future: a reset time already past would
+    // write a snapshot currentRateLimit discards on sight, gating nothing at
+    // all, so that case falls back to the cooldown like a message that named
+    // no time in the first place.
+    const named =
+      resetsAt !== undefined && resetsAt.getTime() > now.getTime()
+        ? Math.floor(resetsAt.getTime() / 1000)
+        : undefined;
     await this.rateLimits.record(
-      { status: "rejected", resetsAt: Math.floor(now.getTime() / 1000) + cooldownMinutes * 60 },
+      {
+        status: "rejected",
+        resetsAt: named ?? Math.floor(now.getTime() / 1000) + cooldownMinutes * 60,
+      },
       now,
     );
   }
