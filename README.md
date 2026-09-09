@@ -420,12 +420,26 @@ in would mean `!stop` no longer stops anything).
 spent, breaker tripped, rate-limit rejection, STOP file, a disabled agent)
 simply drops that cron fire: it is logged, alert-worthy ones post a Discord
 alert, and nothing is retried or queued. The agent's next run is its next
-scheduled fire. **One exception: a dispatched task.** A `!task` refused
-admission goes back to `pending` with its routing decision kept, and is
-retried on the dispatcher's next periodic tick (or the next `!task` / finished
-run) — a queued task has nowhere else to go, unlike a cron agent that gets
-another fire regardless. It is not dropped, and it is not notified per retry
-either; `!tasks` still showing it is how you know it's waiting on the governor.
+scheduled fire. **Two exceptions: a dispatched task, and a webhook event.**
+A `!task` refused admission goes back to `pending` with its routing decision
+kept, and is retried on the dispatcher's next periodic tick (or the next
+`!task` / finished run) — a queued task has nowhere else to go, unlike a cron
+agent that gets another fire regardless. It is not dropped, and it is not
+notified per retry either; `!tasks` still showing it is how you know it's
+waiting on the governor.
+
+A webhook-triggered agent (`pr-reviewer`) has no cron fire to fall back on
+either, and until this was fixed a refusal here just vanished — silently,
+forever, with no run record, no retry, nothing to notice a PR never got
+reviewed. `makeWebhookHandler` now persists a refused event via
+`WebhookRetryStore` (`src/control/webhook-retry-store.ts`), and
+`drainWebhookRetries` retries every pending one on the same 30s cadence the
+dispatcher polls the task queue on (cheap to check — a refusal is a local
+read, no API call, no spend). An event still refused after
+`MAX_WEBHOOK_RETRY_ATTEMPTS` (20) attempts is given up on — removed from the
+retry store, with a comment posted on the PR explaining automated review
+never actually ran, so it doesn't just sit there with no comment and no
+explanation.
 
 Don't read "parked" into this — in this system **parked** means
 something narrower and quite different: an *in-flight* run that stopped
