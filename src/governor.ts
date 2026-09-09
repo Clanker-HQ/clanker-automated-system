@@ -9,6 +9,13 @@ import { RateLimitTracker, type RateLimitSnapshot } from "./state/rate-limit.js"
 
 export type AdmitResult = { kind: "admit" } | { kind: "refuse"; reason: string; alert: boolean };
 
+/**
+ * Agents whose admit() calls jump the free-slot queue ahead of everything
+ * already waiting — see `priorityWaiters` on Governor for why this exists
+ * and why it's scoped this narrowly.
+ */
+const PRIORITY_AGENTS: ReadonlySet<string> = new Set(["pr-reviewer"]);
+
 export interface GovernorStatus {
   stopped: boolean;
   quietHours: QuietHours | null;
@@ -188,6 +195,19 @@ export class Governor {
   private readonly now: () => Date;
   private activeSlots = 0;
   private readonly waiters: Array<() => void> = [];
+  /**
+   * A second, higher-priority FIFO line for the free-slot queue below —
+   * always drained before `waiters`. Exists because PR review competes for
+   * the same single global slot as everything else (builder, research, the
+   * daily scouts) with no distinction: whoever calls admit() first gets it,
+   * so a burst of self-improvement/product work can leave real, actionable
+   * reviews (and the fixes a rejection should trigger — see the
+   * `pr-reviewer` grant on the taskQueue server) waiting behind it for
+   * hours. `pr-reviewer` itself is the only agent enqueued here (see
+   * admit()) — deliberately narrow: this is about clearing the review
+   * bottleneck specifically, not about ranking agents in general.
+   */
+  private readonly priorityWaiters: Array<() => void> = [];
   private consecutiveRateLimitErrors = 0;
   /**
    * Serialized identity of the last rate-limit snapshot a refusal has already
@@ -315,7 +335,7 @@ export class Governor {
       };
     }
 
-    await this.acquireSlot(settings.maxConcurrent);
+    await this.acquireSlot(settings.maxConcurrent, PRIORITY_AGENTS.has(agent.name));
     return { kind: "admit" };
   }
 
@@ -369,18 +389,23 @@ export class Governor {
     };
   }
 
-  private async acquireSlot(maxConcurrent: number): Promise<void> {
+  private async acquireSlot(maxConcurrent: number, priority: boolean): Promise<void> {
     if (this.activeSlots < maxConcurrent) {
       this.activeSlots += 1;
       return;
     }
-    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    await new Promise<void>((resolve) => (priority ? this.priorityWaiters : this.waiters).push(resolve));
+  }
+
+  /** priorityWaiters drained first, same FIFO-within-a-line semantics `waiters` always had — see that field's doc comment. */
+  private nextWaiter(): (() => void) | undefined {
+    return this.priorityWaiters.shift() ?? this.waiters.shift();
   }
 
   /** Exactly one slot just freed up, so at most one queued waiter (if any) is granted — same as before this was split out. */
   releaseSlot(): void {
     this.activeSlots -= 1;
-    const next = this.waiters.shift();
+    const next = this.nextWaiter();
     if (next) {
       this.activeSlots += 1;
       next();
@@ -399,9 +424,9 @@ export class Governor {
    * against it — there is no way to revoke a slot already granted.
    */
   adjustConcurrency(maxConcurrent: number): void {
-    while (this.activeSlots < maxConcurrent && this.waiters.length > 0) {
+    while (this.activeSlots < maxConcurrent && (this.priorityWaiters.length > 0 || this.waiters.length > 0)) {
       this.activeSlots += 1;
-      this.waiters.shift()!();
+      this.nextWaiter()!();
     }
   }
 

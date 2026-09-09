@@ -42,6 +42,7 @@ import { SdkRunner } from "./runner/sdk-runner.js";
 import type { Runner } from "./runner/types.js";
 import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
+import { PrFixAttemptStore } from "./state/pr-fix-attempts.js";
 import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
 import { StrategyStore } from "./world/strategy.js";
@@ -112,6 +113,7 @@ async function main(): Promise<void> {
   // (Task C3) needs them threaded through buildRunner below.
   const overrides = new ConfigOverridesStore(DATA_DIR);
   const breaker = new BreakerStore(DATA_DIR);
+  const fixAttempts = new PrFixAttemptStore(DATA_DIR);
   // Builds a GithubTransport bound to an arbitrary token — no I/O, so it
   // belongs alongside the plain constructors just above rather than inside
   // the try block. Shared by buildRunner below (so createRepo/openPR/mergePR/
@@ -226,6 +228,7 @@ async function main(): Promise<void> {
       // agent run actually invokes queueTask, by which point `dispatcher`
       // is always set.
       wake: async () => { if (dispatcher) await dispatcher.wake(); },
+      fixAttempts,
     });
     if (runner instanceof SdkRunner) {
       // Resolved once, here, rather than only inside SdkRunner.execute: that
