@@ -480,6 +480,31 @@ allowed to do, rather than by `method`, which is unenforced everywhere, or
 `branches`, which is enforced only for `pushBranch` and still unenforced for a
 raw Bash `git push`.
 
+**This is a deliberate, accepted scope decision, not an oversight left to
+fix later.** `method` can't be enforced without solving the same adversarial
+free-form-string parsing problem `detectOutwardEffect` already declines to
+solve for hostnames (see `isLocalUrl`'s doc comment) — a method flag has too
+many equivalent spellings (`-X DELETE`, `-XDELETE`, `--request=DELETE`, a
+`-d` body implying POST) to regex reliably, and `OutwardEffect` doesn't even
+carry a method field today. `limit.perDay` is enforceable in principle, but
+doing it right means `matchGrant`/`decide` becoming stateful and async (a
+`GrantStore` tracking per-grant, per-day usage counts, consulted from every
+call site in `src/runner/sdk-runner.ts`) — a real feature with its own
+day-rollover and corruption-fallback edge cases, not a narrowing of an
+existing pure function. The mitigations that stand in for enforcement today:
+`grants.yaml`'s real grants are scoped tightly by `urlPattern`/`remote`/`scope`
+and by what the credential behind each one is actually capable of, not by
+these fields; every `provision`-kind effect either parks for a human or
+leaves a visible trace (a PR, a run log) an operator reviews after the fact;
+and `EXCLUDED_PATHS` (`src/control/excluded-paths.ts`) plus the hardcoded
+`Bash` regexes in `detectOutwardEffect` catch the effects that matter most
+regardless of which grant they'd otherwise match. `tests/grants.test.ts`'s
+"matchGrant: documented gaps" block pins this behavior down with tests, so a
+future change either has to explicitly update them or is the change that
+finally closes the gap. If a `method`-sensitive http credential or an
+expensive `provision` resource is ever added, revisit this — until then, the
+gap is priced in, not ignored.
+
 **Tool calls need absolute paths.** An agent prompt that says "read `notes.md` in
 your working directory" will fail its first tool call. Say so explicitly in the
 prompt, and give the agent `Glob` so it can locate itself.
