@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { touchesExcludedPath } from "../src/control/excluded-paths.js";
+import { INFRA_REPO, touchesExcludedPath } from "../src/control/excluded-paths.js";
 import { GithubApiTransport } from "../src/control/github-api-transport.js";
 
 /** A minimal Response-shaped stub — only the members GithubApiTransport reads. */
@@ -73,7 +73,7 @@ describe("GithubApiTransport.getPullRequest", () => {
     expect(info.changedFiles).toContain("src/core/governor.ts");
     expect(info.changedFiles).toContain("README.md");
     // And the mapping that produces it is what Lock 4 actually consumes.
-    expect(touchesExcludedPath(info.changedFiles)).toBe(true);
+    expect(touchesExcludedPath(info.changedFiles, INFRA_REPO)).toBe(true);
   });
 
   it("fails closed — refuses rather than silently truncating — when the changed-files list is paginated", async () => {

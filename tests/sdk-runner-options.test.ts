@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeGitCloner } from "../src/control/git-cloner.js";
 import { FakeGitPusher } from "../src/control/git-pusher.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
+import { INFRA_REPO } from "../src/control/excluded-paths.js";
 import { PendingStore } from "../src/control/pending.js";
 import type { Grant } from "../src/grants.js";
 import type { AgentDef } from "../src/registry.js";
@@ -961,13 +962,15 @@ describe("SdkRunner GitHub PR tools", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
-    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/governor.ts"], diff: "", title: "t", body: "b" });
+    // touchesExcludedPath is scoped to INFRA_REPO — see the rename test below.
+    const infraGrant: Grant = { id: "infra-repo", kind: "github-pr", repos: [INFRA_REPO], secret: "X" };
+    github.seedPullRequest({ number: 1, repo: INFRA_REPO, headSha: "sha-1", changedFiles: ["src/governor.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
-    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    const runner = new SdkRunner({ grants: [infraGrant], pending: new PendingStore(dir), github });
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
-    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+    const result = await mergeToolHandler(params)({ repo: INFRA_REPO, number: 1, expectedHeadSha: "sha-1" });
 
     expect(github.merged).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
@@ -990,12 +993,14 @@ describe("SdkRunner GitHub PR tools", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
+    // touchesExcludedPath is scoped to INFRA_REPO — see the rename test below.
+    const infraGrant: Grant = { id: "infra-repo", kind: "github-pr", repos: [INFRA_REPO], secret: "X" };
     // The PR's REAL diff touches an excluded path — this is what
     // getPullRequest will report, and it's what Gate 1 must be checked
     // against.
-    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["src/governor.ts", "README.md"], diff: "", title: "t", body: "b" });
+    github.seedPullRequest({ number: 1, repo: INFRA_REPO, headSha: "sha-1", changedFiles: ["src/governor.ts", "README.md"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
-    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    const runner = new SdkRunner({ grants: [infraGrant], pending: new PendingStore(dir), github });
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
@@ -1005,7 +1010,7 @@ describe("SdkRunner GitHub PR tools", () => {
     // a competing `changedFiles` field gets ignored, since the handler never
     // reads it from its input.
     const result = await mergeToolHandler(params)({
-      repo: "owner/repo",
+      repo: INFRA_REPO,
       number: 1,
       expectedHeadSha: "sha-1",
       changedFiles: ["README.md"],
@@ -1027,11 +1032,16 @@ describe("SdkRunner GitHub PR tools", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
+    // touchesExcludedPath is scoped to INFRA_REPO (see excluded-paths.ts) —
+    // the excluded set describes only this project's own file layout, so the
+    // seeded PR/grant/merge call all have to target that exact repo for this
+    // gate to have anything to refuse.
+    const infraGrant: Grant = { id: "infra-repo", kind: "github-pr", repos: [INFRA_REPO], secret: "X" };
     // What GithubApiTransport's rename mapping produces: the new path and the
     // previous (excluded) path, both in the flat changedFiles list.
     github.seedPullRequest({
       number: 1,
-      repo: "owner/repo",
+      repo: INFRA_REPO,
       headSha: "sha-1",
       changedFiles: ["src/core/governor.ts", "src/governor.ts"],
       diff: "",
@@ -1039,11 +1049,11 @@ describe("SdkRunner GitHub PR tools", () => {
       body: "b",
     });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
-    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    const runner = new SdkRunner({ grants: [infraGrant], pending: new PendingStore(dir), github });
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
-    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+    const result = await mergeToolHandler(params)({ repo: INFRA_REPO, number: 1, expectedHeadSha: "sha-1" });
 
     expect(github.merged).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });
@@ -1214,13 +1224,15 @@ describe("SdkRunner GitHub PR tools", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const github = new FakeGithubTransport();
-    github.seedPullRequest({ number: 1, repo: "owner/repo", headSha: "sha-1", changedFiles: ["grants.yaml", "src/orchestrator.ts"], diff: "", title: "t", body: "b" });
+    // touchesExcludedPath is scoped to INFRA_REPO — see the rename test above.
+    const infraGrant: Grant = { id: "infra-repo", kind: "github-pr", repos: [INFRA_REPO], secret: "X" };
+    github.seedPullRequest({ number: 1, repo: INFRA_REPO, headSha: "sha-1", changedFiles: ["grants.yaml", "src/orchestrator.ts"], diff: "", title: "t", body: "b" });
     queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
-    const runner = new SdkRunner({ grants: [GITHUB_PR_GRANT], pending: new PendingStore(dir), github });
+    const runner = new SdkRunner({ grants: [infraGrant], pending: new PendingStore(dir), github });
     await collect(runner.execute(granted(), CTX, new AbortController().signal));
     const params = queryMock.mock.calls[0]![0] as unknown as GithubPrParams;
 
-    const result = await mergeToolHandler(params)({ repo: "owner/repo", number: 1, expectedHeadSha: "sha-1" });
+    const result = await mergeToolHandler(params)({ repo: INFRA_REPO, number: 1, expectedHeadSha: "sha-1" });
 
     expect(github.merged).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/excluded|sensitive/i) }] });

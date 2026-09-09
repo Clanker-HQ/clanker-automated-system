@@ -949,7 +949,7 @@ export class SdkRunner implements Runner {
                   // Passed all four rules — fall through to gates 2/3 below, same as
                   // any other merge: a self-build change still needs a grant and a
                   // fresh SHA.
-                } else if (touchesExcludedPath(info.changedFiles)) {
+                } else if (touchesExcludedPath(info.changedFiles, repo)) {
                   return {
                     content: [
                       {

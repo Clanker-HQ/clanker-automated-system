@@ -102,6 +102,27 @@ export const EXCLUDED_PATHS: readonly string[] = [
  */
 export const EXCLUDED_PREFIXES: readonly string[] = ["agents/", "scripts/"];
 
-export function touchesExcludedPath(changedFiles: string[]): boolean {
+/**
+ * The one repo `EXCLUDED_PATHS`/`EXCLUDED_PREFIXES` actually describe — this
+ * project's own. Every path above is meaningful only against this
+ * codebase's own file layout; it says nothing about a product repo's files,
+ * which happen to be built by the very pipeline this exclusion protects but
+ * are otherwise unrelated to it.
+ */
+export const INFRA_REPO = "Clanker-HQ/clanker-automated-system";
+
+/**
+ * `repo` matters here: without it, this returns true for ANY repo whose
+ * changed files happen to share one of these path strings — and `src/index.ts`
+ * in particular is an extremely ordinary name for a Node/Workers entrypoint,
+ * not a coincidence unique to this codebase. Discovered 2026-09-09: two
+ * AAS-Labs/pilot-01 PRs (#4, #6) each got an unconditional "security-sensitive
+ * excluded path" refusal purely because their own Workers entrypoint is also
+ * named `src/index.ts` — a bare filename collision with zero bearing on
+ * *this* repo's actual safety rails, silently blocking legitimate product-repo
+ * merges as if they'd tripped a deliberate security gate.
+ */
+export function touchesExcludedPath(changedFiles: string[], repo: string): boolean {
+  if (repo !== INFRA_REPO) return false;
   return changedFiles.some((f) => EXCLUDED_PATHS.includes(f) || EXCLUDED_PREFIXES.some((p) => f.startsWith(p)));
 }
