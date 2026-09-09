@@ -181,6 +181,27 @@ const SUBAGENT_TOOLS_BY_PARENT: ReadonlyMap<string, readonly string[]> = new Map
 const GITHUB_PR_AGENTS: ReadonlySet<string> = new Set(["builder", "pr-reviewer", "repair"]);
 
 /**
+ * Agents this server is withheld from entirely, even though AskHuman is
+ * otherwise mounted unconditionally for everyone (see askHumanServer's
+ * mcpServers entry below). pr-reviewer's own prompt.md ends with an explicit,
+ * whole-run contract — "You will never be asked to approve anything and
+ * nobody is waiting on you — decide, act, and be done" — and on
+ * 2026-09-09 it broke that contract anyway: mid-review, while waiting on its
+ * own parallel pr-review-angle sub-reviews, it called AskHuman with "No
+ * action needed — just checking in... No response needed unless you want to
+ * intervene." That parks the run (AskHuman aborts and waits for an answer
+ * regardless of what the question says), and nothing auto-resumes a parked
+ * question, so the PR silently sat unreviewed until a human noticed and
+ * manually retriggered it — the second time this exact pattern happened
+ * (AAS-Labs/pilot-01#2, after an earlier occurrence on this repo's own #52).
+ * Tightening AskHuman's own description discourages this for every other
+ * agent; this removes the capability outright for the one agent whose
+ * design already promises never to need it, so the same run of tool calls
+ * that produced the incident above cannot reach AskHuman at all next time.
+ */
+const NO_ASK_HUMAN_AGENTS: ReadonlySet<string> = new Set(["pr-reviewer"]);
+
+/**
  * Agents whose own prompt.md references at least one taskQueue tool -- grep
  * every agents/*\/prompt.md for queueTask/listMyTasks/recentFailures/
  * recallMemory/cancelTask to keep this in sync. builder, pr-reviewer, repair,
@@ -767,7 +788,7 @@ export class SdkRunner implements Runner {
       tools: [
         tool(
           "AskHuman",
-          "Ask the owner a free-text question and stop this run until they answer. Use this when you're blocked on information only the owner can provide.",
+          "Ask the owner a free-text question and stop this run until they answer. Use this ONLY when you're genuinely blocked on information only the owner can provide, and the question needs an actual answer to proceed. Never call this to post a status update, a progress note, or a question you don't need answered (e.g. \"just checking in\", \"no response needed\") — this always parks the run waiting for a reply regardless of what the question says, and nothing resumes it automatically. If you're merely waiting on your own sub-tasks or tool calls to finish, that isn't a reason to call this — just continue your turn normally.",
           { question: z.string().min(1) },
           async ({ question }) => {
             controller.abort();
@@ -1974,7 +1995,7 @@ export class SdkRunner implements Runner {
         abortController: controller,
         canUseTool,
         mcpServers: {
-          askHuman: askHumanServer,
+          ...(NO_ASK_HUMAN_AGENTS.has(agent.name) ? {} : { askHuman: askHumanServer }),
           ...(githubPrServer ? { githubPr: githubPrServer } : {}),
           ...(taskQueueServer ? { taskQueue: taskQueueServer } : {}),
           ...(systemContextServer ? { systemContext: systemContextServer } : {}),
