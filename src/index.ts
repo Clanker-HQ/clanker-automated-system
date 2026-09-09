@@ -23,7 +23,8 @@ import { FakeRevenueTransport, type RevenueTransport } from "./control/revenue-t
 import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
-import { makeWebhookHandler } from "./control/webhook-wiring.js";
+import { WebhookRetryStore } from "./control/webhook-retry-store.js";
+import { drainWebhookRetries, makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
 import { writeDeployArtifacts } from "./deploy/caddyfile.js";
 import { type Deployment, loadDeploys } from "./deploy/deploys-schema.js";
@@ -114,6 +115,7 @@ async function main(): Promise<void> {
   const overrides = new ConfigOverridesStore(DATA_DIR);
   const breaker = new BreakerStore(DATA_DIR);
   const fixAttempts = new PrFixAttemptStore(DATA_DIR);
+  const webhookRetries = new WebhookRetryStore(DATA_DIR);
   // Builds a GithubTransport bound to an arbitrary token — no I/O, so it
   // belongs alongside the plain constructors just above rather than inside
   // the try block. Shared by buildRunner below (so createRepo/openPR/mergePR/
@@ -399,7 +401,7 @@ async function main(): Promise<void> {
   });
 
   const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
-  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator }));
+  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries }));
   void webhookReceiver.listen(webhookPort).then(
     () => {
       console.log(`[boot] webhook receiver listening on :${webhookPort}`);
@@ -413,6 +415,22 @@ async function main(): Promise<void> {
       console.error(error instanceof Error ? error.message : String(error));
     },
   );
+
+  // A run Governor.admit() refuses (rate limit, daily budget, quiet hours)
+  // used to just vanish — no run record, no retry, unlike a cron agent (next
+  // scheduled fire) or a dispatched task (requeued by the dispatcher). This
+  // periodically retries every such refusal makeWebhookHandler persisted
+  // above, on the same 30s cadence Dispatcher already polls the task queue
+  // on — cheap to check (Governor's refusal checks are local reads, no API
+  // call, no spend) and means a retry lands within a minute of whatever it
+  // was waiting on actually clearing, not whenever a human happens to notice.
+  setInterval(() => {
+    void drainWebhookRetries({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries }).catch(
+      (error: unknown) => {
+        console.error("[webhook-retry] drainWebhookRetries failed", error);
+      },
+    );
+  }, 30_000);
 
   if (dashboardUser && dashboardPassword) {
     const dashboard = new DashboardServer({

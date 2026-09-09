@@ -1,10 +1,15 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { WebhookEvent } from "../src/control/webhook-receiver.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
-import { makeWebhookHandler } from "../src/control/webhook-wiring.js";
+import { drainWebhookRetries, makeWebhookHandler } from "../src/control/webhook-wiring.js";
+import { MAX_WEBHOOK_RETRY_ATTEMPTS, WebhookRetryStore } from "../src/control/webhook-retry-store.js";
 import type { Grant } from "../src/grants.js";
 import type { Orchestrator } from "../src/orchestrator.js";
 import type { AgentDef } from "../src/registry.js";
+import type { RunResult } from "../src/run-store.js";
 
 function agent(overrides: Partial<AgentDef> = {}): AgentDef {
   return {
@@ -289,5 +294,147 @@ describe("makeWebhookHandler transport resolution", () => {
 
     expect(executeRun).toHaveBeenCalledTimes(1);
     expect(githubForToken).not.toHaveBeenCalled();
+  });
+});
+
+/** A stand-in "admitted" RunResult — only its presence (vs. executeRun resolving to undefined) matters to processEvent/drainWebhookRetries. */
+function admittedResult(): RunResult {
+  return {
+    runId: "pr-reviewer-run", agent: "pr-reviewer", status: "success",
+    startedAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:01:00.000Z",
+    durationMs: 60_000, costUsd: 0.01, inputTokens: 1, outputTokens: 1, turns: 1, summary: "done",
+  };
+}
+
+// Regression coverage for the bug this store fixes: a run Governor.admit()
+// refused (rate limit, daily budget, quiet hours) used to just vanish —
+// executeRun resolving to undefined was indistinguishable from "nothing to
+// do here," so the event was dropped silently and forever, with no run
+// record and no retry, unlike a cron agent (next scheduled fire) or a
+// dispatched task (requeued by the dispatcher).
+describe("makeWebhookHandler retry persistence", () => {
+  it("persists a retry entry when executeRun is refused and a retryStore is wired in", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+    await handler(event());
+
+    const pending = await retryStore.list();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.event).toEqual(event());
+    expect(pending[0]!.attempts).toBe(1);
+  });
+
+  it("does not persist anything when executeRun actually admits the run", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+    await handler(event());
+
+    expect(await retryStore.list()).toEqual([]);
+  });
+
+  it("does nothing extra when executeRun is refused but no retryStore is wired in — same behavior as before this existed", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await expect(handler(event())).resolves.toBeUndefined();
+  });
+
+  it("does not persist a retry entry when no agent matches — nothing was ever going to run", async () => {
+    const github = new FakeGithubTransport();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+    await handler(event({ repo: "owner/some-other-repo" }));
+
+    expect(await retryStore.list()).toEqual([]);
+  });
+});
+
+describe("drainWebhookRetries", () => {
+  it("resolves an entry once a retry actually gets admitted", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    await retryStore.create(event());
+
+    await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect(await retryStore.list()).toEqual([]);
+    expect(github.postedComments).toEqual([]);
+  });
+
+  it("leaves a still-refused entry in place with its attempt count bumped, below the cap", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const created = await retryStore.create(event());
+
+    await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+    const pending = await retryStore.list();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.id).toBe(created.id);
+    expect(pending[0]!.attempts).toBe(2);
+    expect(github.postedComments).toEqual([]);
+  });
+
+  it(`gives up after ${MAX_WEBHOOK_RETRY_ATTEMPTS} refused attempts — removes the entry and posts a notice on the PR`, async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const created = await retryStore.create(event());
+    // Fast-forward to one attempt short of the cap without re-running the
+    // drain loop MAX_WEBHOOK_RETRY_ATTEMPTS times.
+    for (let i = created.attempts; i < MAX_WEBHOOK_RETRY_ATTEMPTS - 1; i++) {
+      await retryStore.recordAttempt(created.id);
+    }
+
+    await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+    expect(await retryStore.list()).toEqual([]);
+    expect(github.postedComments).toHaveLength(1);
+    const [comment] = github.postedComments;
+    expect(comment!.repo).toBe("owner/repo");
+    expect(comment!.number).toBe(7);
+    expect(comment!.body).toMatch(new RegExp(`after ${MAX_WEBHOOK_RETRY_ATTEMPTS} attempts`));
+    expect(comment!.body).toMatch(/Giving up/i);
+    expect(comment!.body).toMatch(/re-push/i);
+  });
+
+  it("catches a per-entry throw (e.g. the PR vanished) and still processes the remaining entries", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    // Nothing seeded for PR #99 — getPullRequest throws for it, same as the
+    // pre-run-failure test above.
+    await retryStore.create(event({ pullRequestNumber: 99 }));
+    const okEntry = await retryStore.create(event({ pullRequestNumber: 7 }));
+
+    await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+    // The broken entry is kept (counted as a failed attempt), not silently
+    // dropped or left crashing the loop; the healthy one still got admitted.
+    const pending = await retryStore.list();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.event.pullRequestNumber).toBe(99);
+    expect(pending[0]!.attempts).toBe(2);
+    expect(await retryStore.get(okEntry.id)).toBeNull();
   });
 });
