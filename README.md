@@ -426,10 +426,31 @@ retried on the dispatcher's next periodic tick (or the next `!task` / finished
 run) — a queued task has nowhere else to go, unlike a cron agent that gets
 another fire regardless. It is not dropped, and it is not notified per retry
 either; `!tasks` still showing it is how you know it's waiting on the governor.
+
 Don't read "parked" into this — in this system **parked** means
 something narrower and quite different: an *in-flight* run that stopped
 mid-execution to await a human approve/deny/answer, and which resumes its
 original session when you give it.
+
+**`pr-reviewer` jumps the `maxConcurrent` queue.** Among runs waiting on a
+free slot, `pr-reviewer`'s admit() call is granted the next one ahead of
+anything else already queued (builder, research, a scout) — a second,
+higher-priority FIFO line inside Governor, drained first (see
+`priorityWaiters` in governor.ts). Without this, review work waited in the
+exact same line as everything that keeps proposing new work, and a burst of
+self-improvement/product PRs could leave a real, actionable review (or the
+fix `requestFix` just queued — next paragraph) stalled behind it for hours.
+
+**A `pr-reviewer` rejection can trigger its own fix, bounded.** Deciding not
+to merge used to be a dead end: the comment got posted and nothing else ever
+looked at it, so a rejected PR just sat open until a human noticed. When the
+findings are concretely fixable, `pr-reviewer` can now call `requestFix` to
+queue a `builder` task carrying them, routed directly (no router guess
+needed) — the fix, once pushed, re-triggers review automatically through the
+same `synchronize` webhook a manual retry always used. Capped at
+`MAX_FIX_ATTEMPTS_PER_PR` (3) attempts per PR (`src/state/pr-fix-attempts.ts`)
+so a PR a builder genuinely can't fix doesn't loop forever — past the cap,
+`requestFix` refuses and `pr-reviewer` is told to hand it to a human instead.
 
 **`Bash`'s outward-effect detection is a pattern list, not a hard boundary.**
 Every tier below `autonomous`-with-auto-approval is only as safe as the code's

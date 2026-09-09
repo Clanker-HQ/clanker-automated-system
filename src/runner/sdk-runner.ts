@@ -21,6 +21,7 @@ import { priorityScore, toPriority } from "../memory/scoring.js";
 import type { DiscordOutbox } from "../outbox/discord.js";
 import type { AgentDef } from "../registry.js";
 import type { BreakerStore } from "../state/breaker.js";
+import { MAX_FIX_ATTEMPTS_PER_PR, type PrFixAttemptStore } from "../state/pr-fix-attempts.js";
 import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
 import { resolveCredentials } from "./credentials.js";
@@ -209,6 +210,16 @@ const TASK_QUEUE_AGENTS: ReadonlySet<string> = new Set([
  * sequence while five with zero successes is a broken dependency.
  */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 5;
+
+/**
+ * Priority requestFix queues its builder task at — above TaskStore's own
+ * default of 50 (see task-store.ts), and well above the 30 self-queued
+ * proposals from research/the scouts get (DEFAULT_SELF_QUEUED_PRIORITY,
+ * below): a fix for a PR that's already been reviewed and found blocking is
+ * finishing existing work, not discovering new work, and should clear the
+ * queue ahead of discretionary proposals — the whole point of this tool.
+ */
+const FIX_TASK_PRIORITY = 60;
 
 /**
  * Overrides the SDK's default auto-compaction ceiling (the model's context
@@ -540,8 +551,10 @@ export class SdkRunner implements Runner {
       gitCloner?: GitCloner;
       /** Wired in production (src/index.ts); optional so tests/scripts that don't care about task-queueing can skip it, the same shape `github` already uses. */
       tasks?: TaskStore;
-      /** Wakes the dispatcher after queueTask adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
+      /** Wakes the dispatcher after queueTask (or requestFix) adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
       wake?: () => Promise<void>;
+      /** Backs requestFix's per-PR attempt cap (see MAX_FIX_ATTEMPTS_PER_PR). Optional, same posture as `tasks`/`wake` above: without it requestFix is simply not registered. */
+      fixAttempts?: PrFixAttemptStore;
       /** Optional: without it, queueTask queues exactly what's given, no automated rationale check — same fallback posture as findingReviewer below. */
       taskReviewer?: TaskReviewer;
       /**
@@ -955,6 +968,17 @@ export class SdkRunner implements Runner {
                 if (!result.merged) {
                   return { content: [{ type: "text" as const, text: `Refused: ${result.reason}` }] };
                 }
+                // Best-effort, like the other bookkeeping writes in this file:
+                // a merged PR is done, so requestFix's attempt count for it no
+                // longer means anything, but losing this write costs nothing
+                // beyond a stale count for a PR nobody will review again.
+                if (this.deps.fixAttempts) {
+                  try {
+                    await this.deps.fixAttempts.reset(`${repo}#${number}`);
+                  } catch (error) {
+                    console.error(`[mergePR] failed to reset fix-attempt count for ${repo}#${number}`, error);
+                  }
+                }
                 return { content: [{ type: "text" as const, text: `Successfully merged ${repo}#${number}.` }] };
               },
             ),
@@ -976,6 +1000,69 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: `Comment posted on ${repo}#${number}.` }] };
               },
             ),
+            // pr-reviewer only (not builder/repair, the other two agents on
+            // this server) — a reaction to a verdict THIS agent just reached
+            // on a PR it's already looking at, not a general "discover and
+            // propose work" capability, which is why this is a narrow,
+            // purpose-built tool instead of exposing the general queueTask
+            // (see TASK_QUEUE_AGENTS below, which pr-reviewer deliberately
+            // stays out of). Closes the loop a "don't merge" verdict used to
+            // be a dead end at: nothing previously read that comment and
+            // acted on it, so a rejected PR just sat open forever. Routes
+            // straight to `builder` — no Router call needed, the target is
+            // never ambiguous — and the fix, once pushed, re-triggers review
+            // automatically via the same synchronize webhook a human's retry
+            // push always has.
+            ...(agent.name === "pr-reviewer" && this.deps.tasks && this.deps.wake && this.deps.fixAttempts
+              ? [
+                  tool(
+                    "requestFix",
+                    `After deciding NOT to merge a PR for concrete, fixable reasons, use this to queue a builder task that attempts the fix — the branch's next push re-triggers a fresh review automatically, closing the loop without a human. Capped at ${MAX_FIX_ATTEMPTS_PER_PR} attempts per PR: once exhausted, this refuses and you should post a comment saying the PR needs a human instead of calling this again.`,
+                    {
+                      repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
+                      number: z.number().int().positive(),
+                      findings: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
+                    },
+                    async ({ repo, number, findings }) => {
+                      const tasks = this.deps.tasks!;
+                      const wake = this.deps.wake!;
+                      const fixAttempts = this.deps.fixAttempts!;
+                      const key = `${repo}#${number}`;
+                      const attempts = await fixAttempts.get(key);
+                      if (attempts >= MAX_FIX_ATTEMPTS_PER_PR) {
+                        return {
+                          content: [
+                            {
+                              type: "text" as const,
+                              text: `Refused: already queued ${attempts} fix attempts for ${key}, the maximum allowed. Post a comment explaining this PR needs a human to take it from here — do not call requestFix again for it.`,
+                            },
+                          ],
+                        };
+                      }
+                      const attemptNumber = await fixAttempts.increment(key);
+                      const created = await tasks.create({
+                        text: `Fix the following pr-reviewer findings on ${repo}#${number} (automatic fix attempt ${attemptNumber}/${MAX_FIX_ATTEMPTS_PER_PR}), then push the fix to the PR's existing branch so it gets re-reviewed:\n\n${findings}`.slice(0, MAX_TASK_TEXT_LENGTH),
+                        priority: FIX_TASK_PRIORITY,
+                        createdBy: `agent:${agent.name}`,
+                        wantsDetail: true,
+                        category: "maintenance",
+                        specialistAgent: "builder",
+                      });
+                      void wake().catch((err: unknown) => {
+                        console.error(`[requestFix] dispatcher wake failed after queuing ${created.id} (agent ${agent.name})`, err);
+                      });
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: `Queued fix task ${created.id} for builder (attempt ${attemptNumber}/${MAX_FIX_ATTEMPTS_PER_PR} for ${key}).`,
+                          },
+                        ],
+                      };
+                    },
+                  ),
+                ]
+              : []),
             tool(
               "createRepo",
               "Create a new GitHub repository for a product this system is building. Use this before pushBranch/openPR when the task names a product with no repo yet — those tools require a repo that already exists. Only succeeds when a provision grant covers the target org.",
