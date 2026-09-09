@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parseGrants } from "../src/grants.js";
+import { globMatch, parseGrants } from "../src/grants.js";
 import { ValidationError } from "../src/errors.js";
 import { parseAgent } from "../src/registry.js";
 
@@ -331,6 +331,50 @@ describe("detectOutwardEffect: cloneRepo", () => {
   it("returns null when repo is missing or not a string", () => {
     expect(detectOutwardEffect("cloneRepo", {})).toBeNull();
     expect(detectOutwardEffect("cloneRepo", { repo: 1 })).toBeNull();
+  });
+});
+
+describe("globMatch", () => {
+  it("matches an exact literal pattern with no wildcard", () => {
+    expect(globMatch("AAS-Labs/foo", "AAS-Labs/foo")).toBe(true);
+  });
+
+  it("does not match a different value when the pattern has no wildcard", () => {
+    expect(globMatch("AAS-Labs/foo", "AAS-Labs/bar")).toBe(false);
+  });
+
+  it("'*' matches any value, including one containing slashes", () => {
+    expect(globMatch("*", "AAS-Labs/anything/at/all")).toBe(true);
+  });
+
+  it("a trailing '*' matches any suffix", () => {
+    expect(globMatch("AAS-Labs/*", "AAS-Labs/some-new-repo")).toBe(true);
+    expect(globMatch("AAS-Labs/*", "Other-Org/some-new-repo")).toBe(false);
+  });
+
+  it("requires a full match, not merely a substring match", () => {
+    expect(globMatch("AAS-Labs/foo", "AAS-Labs/foobar")).toBe(false);
+    expect(globMatch("AAS-Labs/foo", "prefix-AAS-Labs/foo")).toBe(false);
+  });
+
+  // Security-sensitive: a grant's pattern is untrusted-adjacent input, and a
+  // naive glob-to-regex conversion (e.g. leaving "." as a regex metachar, or
+  // failing to escape the value side) could let a scope string that LOOKS
+  // narrow ("host.example.com") accidentally authorise a lookalike target
+  // ("hostXexample.com") a real dot-anchored match would have rejected.
+  it("treats a literal '.' in the pattern as a literal character, not 'any character'", () => {
+    expect(globMatch("host.example.com", "host.example.com")).toBe(true);
+    expect(globMatch("host.example.com", "hostXexample.com")).toBe(false);
+  });
+
+  it("escapes other regex metacharacters in the pattern so they match literally", () => {
+    expect(globMatch("a+b?c(d)", "a+b?c(d)")).toBe(true);
+    expect(globMatch("a+b?c(d)", "aXbXcXdX")).toBe(false);
+  });
+
+  it("does not treat regex metacharacters in the value as active regex syntax", () => {
+    expect(globMatch("AAS-Labs/*", "AAS-Labs/.*")).toBe(true);
+    expect(globMatch("exact-repo", "exact-repo)")).toBe(false);
   });
 });
 

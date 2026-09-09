@@ -53,6 +53,24 @@ describe("LlmRouter", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null when the stream produces no usable assistant text at all", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    // No assistant-text event at all (e.g. only a system/result message) —
+    // distinct from an explicit "none" reply: this is the "empty answer"
+    // branch, logged separately from "model said none" in llm-router.ts so
+    // the two causes of an unrouted task aren't conflated when debugging.
+    queryMock.mockReturnValue(stream([{ type: "result", subtype: "success" }]));
+    const result = await new LlmRouter().route("x", [{ name: "research", description: "d" }]);
+    expect(result).toBeNull();
+  });
+
+  it("treats a whitespace-only assistant reply as no usable answer", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    queryMock.mockReturnValue(stream([assistantMessage("   ")]));
+    const result = await new LlmRouter().route("x", [{ name: "research", description: "d" }]);
+    expect(result).toBeNull();
+  });
+
   it("returns null when the model names something not in the specialist list", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     queryMock.mockReturnValue(stream([assistantMessage("some-made-up-agent")]));
