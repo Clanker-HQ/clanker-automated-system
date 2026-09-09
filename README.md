@@ -572,3 +572,12 @@ Still genuinely deferred:
   infra-repo pipeline's fixed `GITHUB_PR_TOKEN`. `WEBHOOK_PUBLIC_URL` still
   needs a real tunnel/reverse-proxy URL configured to actually receive
   anything (see `.env.example`).
+  <br><br>
+  `mergePR`'s excluded-path gate (`touchesExcludedPath`) is now explicitly
+  scoped to `INFRA_REPO` (`src/control/excluded-paths.ts`) — it used to check
+  a changed PR's files by bare name against every repo, so a product repo's
+  own, unrelated `src/index.ts` (an entirely ordinary Workers/Node entrypoint
+  name) tripped the same unconditional "security-sensitive excluded path"
+  refusal this repo's *own* `src/index.ts` is meant to trigger. Caught
+  2026-09-09 after two `AAS-Labs/pilot-01` PRs were refused this way with no
+  real security path involved at all.
