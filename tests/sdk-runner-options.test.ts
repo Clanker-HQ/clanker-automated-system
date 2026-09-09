@@ -556,6 +556,34 @@ describe("SdkRunner grant enforcement", () => {
     expect(params.options.mcpServers.askHuman).toBeDefined();
   });
 
+  // Regression test: on 2026-09-09, pr-reviewer called AskHuman mid-review
+  // with a self-answered "just checking in, no response needed" question
+  // while waiting on its own parallel sub-reviews — which still parks the
+  // run, since AskHuman aborts unconditionally regardless of what the
+  // question says. Nothing auto-resumes a parked question, so the PR sat
+  // unreviewed until a human noticed. pr-reviewer's own prompt already
+  // promises it "will never be asked to approve anything," so the tool is
+  // withheld outright for it — see NO_ASK_HUMAN_AGENTS in sdk-runner.ts.
+  it("withholds the AskHuman tool from pr-reviewer, whose own prompt promises it never needs to ask", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const prReviewer = { ...AGENT, name: "pr-reviewer", tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(prReviewer, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueryParams & { options: { mcpServers: Record<string, unknown> } };
+    expect(params.options.mcpServers.askHuman).toBeUndefined();
+  });
+
+  it("still mounts AskHuman for every other agent", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+    const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
+    const builder = { ...AGENT, name: "builder", tier: "granted", grantRefs: ["test-echo"], approval: "notify" } as unknown as AgentDef;
+    queryMock.mockReturnValue(stream([RESULT_MESSAGE]));
+    await collect(sdkRunnerWith([TEST_ECHO], dir).execute(builder, CTX, new AbortController().signal));
+    const params = queryMock.mock.calls[0]![0] as QueryParams & { options: { mcpServers: Record<string, unknown> } };
+    expect(params.options.mcpServers.askHuman).toBeDefined();
+  });
+
   it("parks and writes a pending entry when canUseTool sees a matching-grant effect on a granted agent", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
