@@ -62,4 +62,34 @@ describe("WebhookRetryStore", () => {
     const entry = await new WebhookRetryStore(dir).create(event());
     expect(await new WebhookRetryStore(dir).get(entry.id)).toEqual(entry);
   });
+
+  describe("rate-limit deferral (a known reset instant)", () => {
+    it("create() with rateLimitResetAt starts attempts at 0 and rateLimitDeferCount at 1, deferred to that instant", async () => {
+      const store = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const resetAt = new Date(Date.now() + 60_000);
+      const entry = await store.create(event(), { rateLimitResetAt: resetAt });
+      expect(entry.attempts).toBe(0);
+      expect(entry.rateLimitDeferCount).toBe(1);
+      expect(entry.nextRetryAt).toBe(resetAt.toISOString());
+    });
+
+    it("recordAttempt with rateLimitResetAt bumps rateLimitDeferCount, not attempts, and refreshes nextRetryAt", async () => {
+      const store = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const entry = await store.create(event());
+      const resetAt = new Date(Date.now() + 60_000);
+      const updated = await store.recordAttempt(entry.id, { rateLimitResetAt: resetAt });
+      expect(updated?.attempts).toBe(1); // unchanged from create()'s plain-path default
+      expect(updated?.rateLimitDeferCount).toBe(1);
+      expect(updated?.nextRetryAt).toBe(resetAt.toISOString());
+    });
+
+    it("a plain recordAttempt (no rateLimitResetAt) clears a previously-set nextRetryAt", async () => {
+      const store = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const entry = await store.create(event(), { rateLimitResetAt: new Date(Date.now() + 60_000) });
+      const updated = await store.recordAttempt(entry.id);
+      expect(updated?.attempts).toBe(1);
+      expect(updated?.rateLimitDeferCount).toBe(1); // untouched by the plain branch
+      expect(updated?.nextRetryAt).toBeUndefined();
+    });
+  });
 });

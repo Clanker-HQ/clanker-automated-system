@@ -441,6 +441,24 @@ retry store, with a comment posted on the PR explaining automated review
 never actually ran, so it doesn't just sit there with no comment and no
 explanation.
 
+That fix only covered a refusal *before* admission (Governor.admit()
+returning "refuse"). Discovered 2026-09-09: a run that WAS admitted and then
+got cut short mid-run by the subscription's own session/rate limit —
+orchestrator.ts's "interrupted" status — looked identical to a normal
+completed run to the retry check (`result === undefined` was the only thing
+ever treated as retryable), so it was silently dropped in exactly the same
+way, just one step later in the lifecycle. Three PRs sat with zero review
+activity on their current commit for 14+ hours because of this before it was
+found. `processEvent` now also treats `status === "interrupted"` as
+retry-worthy, and — since dispatcher.ts already learned this lesson for
+dispatched tasks (see `rateLimitDeferCount` above) — parses the reset instant
+out of the error message the same way and defers the retry entry to that
+exact time (`nextRetryAt`) rather than hammering it every 30s tick, which
+would burn through all 20 attempts in 10 minutes, nowhere near enough to
+bridge an hours-long session limit. This defer path is capped separately, by
+`MAX_WEBHOOK_RATE_LIMIT_DEFERS` (5), so a plain Governor refusal and a
+recurring session limit can't exhaust each other's budget.
+
 Don't read "parked" into this — in this system **parked** means
 something narrower and quite different: an *in-flight* run that stopped
 mid-execution to await a human approve/deny/answer, and which resumes its
