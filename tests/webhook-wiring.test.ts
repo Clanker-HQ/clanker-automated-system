@@ -432,6 +432,70 @@ describe("makeWebhookHandler retry persistence", () => {
   });
 });
 
+// Regression coverage for the bug this fallback fixes: a pr-reviewer run
+// finishing "success" (a real review, a real verdict) was previously assumed
+// to mean the PR heard about it — but the SDK's own postReviewComment tool
+// call can fail with "AbortError: Stream closed" (confirmed to originate
+// inside the Claude Code CLI binary, not this codebase) late in a run, after
+// its own retry budget is spent, leaving the PR with no comment and no trace
+// of why. pilot-01#7 and book-pipeline#1/#2 all hit this on 2026-09-09/10.
+describe("makeWebhookHandler fallback comment", () => {
+  it("posts the run's summary as a fallback comment when a successful run never actually got one posted", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue({ ...admittedResult(), summary: "Do not merge: found a real bug." });
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(github.postedComments).toHaveLength(1);
+    const [comment] = github.postedComments;
+    expect(comment!.repo).toBe("owner/repo");
+    expect(comment!.number).toBe(7);
+    expect(comment!.body).toContain("Do not merge: found a real bug.");
+    expect(comment!.body).toMatch(/fallback/i);
+  });
+
+  it("does not double-post when the run's own postReviewComment call already succeeded", async () => {
+    const github = githubWithSeededPr();
+    // Simulates the agent's own tool call succeeding mid-run, before
+    // executeRun resolves — exactly what a real successful post looks like
+    // from the outside, since GithubApiTransport is the same class either way.
+    const executeRun = vi.fn().mockImplementation(async () => {
+      await github.postReviewComment("owner/repo", 7, "Do not merge: found a real bug.");
+      return admittedResult();
+    });
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(github.postedComments).toHaveLength(1);
+    expect(github.postedComments[0]!.body).toBe("Do not merge: found a real bug.");
+  });
+
+  it("does not attempt a fallback post for a non-success status (e.g. interrupted) — that path returns retry: true instead", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(interruptedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(github.postedComments).toEqual([]);
+  });
+
+  it("a fallback-post failure is swallowed — never thrown back to the caller", async () => {
+    const github = githubWithSeededPr();
+    vi.spyOn(github, "hasCommentSince").mockRejectedValue(new Error("comment API down"));
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await expect(handler(event())).resolves.toBeUndefined();
+  });
+});
+
 describe("drainWebhookRetries", () => {
   it("resolves an entry once a retry actually gets admitted", async () => {
     const github = githubWithSeededPr();
@@ -444,7 +508,11 @@ describe("drainWebhookRetries", () => {
 
     expect(executeRun).toHaveBeenCalledTimes(1);
     expect(await retryStore.list()).toEqual([]);
-    expect(github.postedComments).toEqual([]);
+    // A fallback comment DOES get posted here — admittedResult()'s fake run
+    // never actually posts one of its own, so the post-run check correctly
+    // treats it as missing. See the "fallback comment" describe block below
+    // for dedicated coverage of that behavior.
+    expect(github.postedComments).toHaveLength(1);
   });
 
   it("leaves a still-refused entry in place with its attempt count bumped, below the cap", async () => {

@@ -32,11 +32,24 @@ export interface GithubTransport {
   getFileContent(repo: string, ref: string, path: string): Promise<string | null>;
   /** Every blob path under `pathPrefix` at `ref`, recursively. */
   listRepoFiles(repo: string, ref: string, pathPrefix: string): Promise<string[]>;
+  /**
+   * Whether at least one issue/PR comment exists with a timestamp at or
+   * after `since` — from a human, or from a prior postReviewComment call.
+   * Exists purely as the detection signal for webhook-wiring.ts's
+   * post-run check: a pr-reviewer run can finish "success" having reasoned
+   * through a full review, yet never actually get its postReviewComment
+   * call through to GitHub — discovered 2026-09-09/10, "AbortError: Stream
+   * closed" inside the Claude Code CLI's own transport, not this codebase,
+   * so it can't be fixed at the source. Deliberately this narrow (a
+   * boolean-ish existence check, not a general listComments) since nothing
+   * else in this system needs more.
+   */
+  hasCommentSince(repo: string, number: number, since: Date): Promise<boolean>;
 }
 
 /** Test double: lets a test seed PR state and inspect what was posted/merged, with no real GitHub calls. */
 export class FakeGithubTransport implements GithubTransport {
-  postedComments: { repo: string; number: number; body: string }[] = [];
+  postedComments: { repo: string; number: number; body: string; createdAt: string }[] = [];
   merged: { repo: string; number: number }[] = [];
   createdPullRequests: { repo: string; head: string; base: string; title: string; body: string }[] = [];
   createdRepos: { org: string; name: string; private: boolean; description?: string }[] = [];
@@ -78,7 +91,13 @@ export class FakeGithubTransport implements GithubTransport {
   }
 
   async postReviewComment(repo: string, number: number, body: string): Promise<void> {
-    this.postedComments.push({ repo, number, body });
+    this.postedComments.push({ repo, number, body, createdAt: new Date().toISOString() });
+  }
+
+  async hasCommentSince(repo: string, number: number, since: Date): Promise<boolean> {
+    return this.postedComments.some(
+      (c) => c.repo === repo && c.number === number && new Date(c.createdAt).getTime() >= since.getTime(),
+    );
   }
 
   async mergePullRequest(repo: string, number: number, expectedHeadSha: string): Promise<MergeResult> {

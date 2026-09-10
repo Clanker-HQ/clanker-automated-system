@@ -161,6 +161,33 @@ describe("GithubApiTransport.mergePullRequest", () => {
   });
 });
 
+describe("GithubApiTransport.hasCommentSince", () => {
+  it("passes `since` through as an ISO-8601 query param and returns true when at least one comment comes back", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: true, status: 200, json: [{ id: 1 }] })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    const since = new Date("2026-09-09T20:16:43.000Z");
+
+    await expect(t.hasCommentSince("owner/repo", 7, since)).resolves.toBe(true);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.stringContaining(`/repos/owner/repo/issues/7/comments?since=${encodeURIComponent(since.toISOString())}`),
+      expect.anything(),
+    );
+  });
+
+  it("returns false when no comments come back", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: true, status: 200, json: [] })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.hasCommentSince("owner/repo", 7, new Date())).resolves.toBe(false);
+  });
+
+  it("throws on a non-2xx response", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: false, status: 500 })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.hasCommentSince("owner/repo", 7, new Date())).rejects.toThrow(/failed to list comments/);
+  });
+});
+
 describe("GithubApiTransport.createPullRequest", () => {
   it("posts to the pulls endpoint and returns the created PR's number and url", async () => {
     const fetchImpl = vi.fn(async () =>

@@ -221,12 +221,49 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
     end,
   ].join("\n");
 
-  const result = await deps.orchestrator.executeRun(agent, new Date(), promptContext);
+  const triggeredAt = new Date();
+  const result = await deps.orchestrator.executeRun(agent, triggeredAt, promptContext);
   if (result === undefined) return { retry: true };
   if (result.status === "interrupted") {
     return { retry: true, rateLimitResetAt: result.error ? parseRateLimitReset(result.error, new Date()) : undefined };
   }
+  if (result.status === "success") await postFallbackCommentIfMissing(github, pr, triggeredAt, result.summary);
   return { retry: false };
+}
+
+/**
+ * A pr-reviewer run can finish "success" — having reasoned through a full
+ * review and reached a verdict — without ever getting its own
+ * postReviewComment call through to GitHub. Discovered 2026-09-09/10: the
+ * Claude Code CLI's own transport intermittently throws "AbortError: Stream
+ * closed" on exactly that call (confirmed to originate inside the CLI binary
+ * itself, not this codebase — nothing here can fix it at the source), often
+ * late enough in a long review that nothing else in the run's own retry
+ * budget recovers it. The result: a PR that sat open with real, correct
+ * findings computed and then never communicated anywhere — indistinguishable
+ * from the system having done nothing at all.
+ *
+ * Checked from OUTSIDE the run, via the same reliable REST transport used for
+ * everything else in this file, specifically because the run's OWN attempt
+ * to reach GitHub (through the SDK's own tool-call path) is what's
+ * unreliable — retrying through the same broken path would just fail the
+ * same way. A harmless double-post (if the agent's own comment actually did
+ * land and this check somehow missed it) costs far less than a PR that
+ * silently never hears back at all.
+ */
+async function postFallbackCommentIfMissing(github: GithubTransport, pr: PullRequestInfo, since: Date, summary: string): Promise<void> {
+  try {
+    if (await github.hasCommentSince(pr.repo, pr.number, since)) return;
+    await github.postReviewComment(
+      pr.repo,
+      pr.number,
+      `_Posted by the host process, not the reviewer's own tool call — its \`postReviewComment\` call didn't reach ` +
+        `GitHub (a connection issue on Claude Code's own side), so this is arriving via a fallback path instead of a ` +
+        `silent miss. The reviewer's own summary from that run:_\n\n${summary}`,
+    );
+  } catch (err: unknown) {
+    console.error(`[webhook] fallback comment check/post failed for ${pr.repo}#${pr.number}`, err);
+  }
 }
 
 /**

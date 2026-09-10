@@ -31,7 +31,17 @@ describe("FakeGithubTransport", () => {
     const t = new FakeGithubTransport();
     t.seedPullRequest(pr());
     await t.postReviewComment("owner/repo", 1, "Looks fine.");
-    expect(t.postedComments).toEqual([{ repo: "owner/repo", number: 1, body: "Looks fine." }]);
+    expect(t.postedComments).toEqual([{ repo: "owner/repo", number: 1, body: "Looks fine.", createdAt: expect.any(String) }]);
+  });
+
+  it("hasCommentSince finds a comment posted at or after the given instant, not before", async () => {
+    const t = new FakeGithubTransport();
+    t.seedPullRequest(pr());
+    const before = new Date();
+    await t.postReviewComment("owner/repo", 1, "Looks fine.");
+    expect(await t.hasCommentSince("owner/repo", 1, before)).toBe(true);
+    expect(await t.hasCommentSince("owner/repo", 1, new Date(Date.now() + 60_000))).toBe(false);
+    expect(await t.hasCommentSince("owner/repo", 2, before)).toBe(false);
   });
 
   it("merges when the expected SHA matches the current head", async () => {

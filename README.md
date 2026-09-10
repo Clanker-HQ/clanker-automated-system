@@ -464,6 +464,26 @@ something narrower and quite different: an *in-flight* run that stopped
 mid-execution to await a human approve/deny/answer, and which resumes its
 original session when you give it.
 
+**A "success" run doesn't guarantee the PR ever heard about it.** Every fix
+above assumes a completed run reaches GitHub through its own tool calls. It
+often doesn't: the Claude Code CLI's own transport can throw `AbortError:
+Stream closed` on `postReviewComment` specifically (confirmed to originate
+inside the CLI binary, not this codebase — nothing here can fix it at the
+source), frequently late in a long review after the run's own one-retry
+budget (see prompt.md) is already spent. The run finishes `"success"` — a
+real review happened, a real verdict was reached — but the PR gets no
+comment, no explanation, and no `requestFix`, indistinguishable from the
+system having done nothing at all. `pilot-01#7` and `book-pipeline#1/#2` all
+sat with zero review activity on their current commit for 14+ hours because
+of exactly this. `processEvent` now checks, from outside the run, via the
+same reliable REST transport used everywhere else in this file (specifically
+*not* through the SDK's own unreliable tool-call path), whether a comment
+actually landed on the PR since the run started (`GithubTransport.
+hasCommentSince`); if not, it posts the run's own summary as a fallback
+comment itself. A harmless double-post, if the agent's own comment did land
+and this check somehow missed it, costs far less than a PR that silently
+never hears back at all.
+
 **`pr-reviewer` jumps the `maxConcurrent` queue.** Among runs waiting on a
 free slot, `pr-reviewer`'s admit() call is granted the next one ahead of
 anything else already queued (builder, research, a scout) — a second,

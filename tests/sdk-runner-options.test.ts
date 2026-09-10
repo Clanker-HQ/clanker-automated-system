@@ -936,7 +936,7 @@ describe("SdkRunner GitHub PR tools", () => {
     const result = await commentToolHandler(params)({ repo: "AAS-Labs/pilot-01", number: 1, body: "Looks clean." });
 
     expect(githubForToken).toHaveBeenCalledWith("the-real-products-token");
-    expect(rightTransport.postedComments).toEqual([{ repo: "AAS-Labs/pilot-01", number: 1, body: "Looks clean." }]);
+    expect(rightTransport.postedComments).toEqual([{ repo: "AAS-Labs/pilot-01", number: 1, body: "Looks clean.", createdAt: expect.any(String) }]);
     expect(wrongTransport.postedComments).toEqual([]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("posted") }] });
   });
@@ -1169,7 +1169,7 @@ describe("SdkRunner GitHub PR tools", () => {
 
     const result = await commentToolHandler(params)({ repo: "owner/repo", number: 1, body: "Looks clean." });
 
-    expect(github.postedComments).toEqual([{ repo: "owner/repo", number: 1, body: "Looks clean." }]);
+    expect(github.postedComments).toEqual([{ repo: "owner/repo", number: 1, body: "Looks clean.", createdAt: expect.any(String) }]);
     expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("posted") }] });
   });
 
