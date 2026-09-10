@@ -286,6 +286,10 @@ describe("runDispatchTick", () => {
     expect(updated?.nextRetryAt).toBe("2026-08-28T00:01:00.000Z");
     expect(updated?.finishedAt).toBeUndefined();
     expect(notify).not.toHaveBeenCalled();
+    // So the next attempt knows what the last one actually did (e.g. a PR it
+    // already opened), not just that it failed — see lastAttemptSummary's
+    // own doc comment in task-store.ts.
+    expect(updated?.lastAttemptSummary).toBe("Found three ideas.");
   });
 
   it("backs off for 5 minutes on the second failure, and 15 minutes on the third", async () => {
@@ -333,6 +337,7 @@ describe("runDispatchTick", () => {
       expect(updated?.retryCount).toBe(1);
       expect(updated?.finishedAt).toBeUndefined();
       expect(updated?.lastVerificationReason).toBe("only checked one option");
+      expect(updated?.lastAttemptSummary).toBe("Found three ideas.");
       expect(notify).not.toHaveBeenCalled();
     });
 
@@ -382,6 +387,53 @@ describe("runDispatchTick", () => {
       const [, , promptContext] = secondExecuteRun.mock.calls[0]!;
       expect(promptContext).toContain("find providers");
       expect(promptContext).toContain("only looked at named examples");
+    });
+
+    // Regression coverage for the 2026-09-10 discovery: a retried task has no
+    // memory of its own (each attempt is a cold restart), so without this a
+    // deliverable that includes opening a pull request just opens a brand
+    // new one on every retry — one real task left 4 near-duplicate open PRs
+    // behind before anyone noticed.
+    it("threads the previous attempt's own summary into the retry's prompt, with guidance against duplicating a PR", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      await tasks.create({ text: "build the widget", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValueOnce(
+        successResult({
+          summary: "PR opened: https://github.com/owner/repo/pull/42",
+          verifiedOutcome: { verdict: "not-achieved", reason: "forgot the tests" },
+        }),
+      );
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+      });
+
+      const [task] = await tasks.list();
+      expect(task?.lastAttemptSummary).toBe("PR opened: https://github.com/owner/repo/pull/42");
+      await tasks.update(task!.id, { nextRetryAt: undefined });
+      const secondExecuteRun = vi.fn().mockResolvedValue(successResult({ verifiedOutcome: { verdict: "achieved", reason: "fine" } }));
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun: secondExecuteRun }, notify: vi.fn(), dataDir, world,
+      });
+
+      const [, , promptContext] = secondExecuteRun.mock.calls[0]!;
+      expect(promptContext).toContain("build the widget");
+      expect(promptContext).toContain("PR opened: https://github.com/owner/repo/pull/42");
+      expect(promptContext).toMatch(/continue and fix THAT one/i);
+    });
+
+    it("does not mention a previous attempt in the prompt when this is the task's first run", async () => {
+      const { tasks, dataDir, world } = taskStore();
+      await tasks.create({ text: "build the widget", createdBy: "discord:owner" });
+      const executeRun = vi.fn().mockResolvedValue(successResult({ verifiedOutcome: { verdict: "achieved", reason: "fine" } }));
+      await runDispatchTick({
+        tasks, router: new FakeRouter("research"), agents: [specialist()],
+        orchestrator: { executeRun }, notify: vi.fn(), dataDir, world,
+      });
+
+      const [, , promptContext] = executeRun.mock.calls[0]!;
+      expect(promptContext).not.toMatch(/previous attempt/i);
     });
 
     it("marks the task done normally, with no retry, when the run is graded achieved", async () => {

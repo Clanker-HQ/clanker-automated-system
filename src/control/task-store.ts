@@ -95,6 +95,20 @@ export interface Task {
    */
   lastVerificationReason?: string;
   /**
+   * The previous attempt's own `result.summary` — threaded into the retry's
+   * prompt (see dispatcher.ts) alongside `lastVerificationReason` so the next
+   * attempt knows what the last one actually DID, not just why it fell short.
+   * Exists because a builder task retried after a "not-achieved" grading has
+   * no memory of its own: each attempt is a cold restart (no session
+   * resume), so without this, a task whose deliverable includes opening a
+   * pull request just opens a brand new one on every retry, leaving a trail
+   * of near-duplicate open PRs behind — observed 2026-09-10 on the pilot-01
+   * MVP task, which retried 3 times and left 4 separate PRs open (#4, #5,
+   * #6, #7) for what was always meant to be one. Left in place once the task
+   * finishes; nothing reads it after that.
+   */
+  lastAttemptSummary?: string;
+  /**
    * Cumulative `costUsd` across every not-achieved attempt at this task so
    * far (see dispatcher.ts's RETRY_COST_CAP_MULTIPLIER) — a full-cost run
    * that finishes clean but gets graded not-achieved has already spent real
