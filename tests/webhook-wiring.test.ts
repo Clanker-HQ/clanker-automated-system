@@ -380,9 +380,9 @@ describe("makeWebhookHandler retry persistence", () => {
     expect(pending[0]!.nextRetryAt).toBeDefined();
   });
 
-  it("persists an interrupted run with no parseable reset time as a plain (immediately-eligible) retry", async () => {
+  it("persists an interrupted run whose limit-wording message has no parseable reset time as a plain (immediately-eligible) retry", async () => {
     const github = githubWithSeededPr();
-    const executeRun = vi.fn().mockResolvedValue(interruptedResult("something went wrong, no reset info here"));
+    const executeRun = vi.fn().mockResolvedValue(interruptedResult("You've hit your session limit, no reset info given"));
     const orchestrator = { executeRun } as unknown as Orchestrator;
     const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
     const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
@@ -394,6 +394,30 @@ describe("makeWebhookHandler retry persistence", () => {
     expect(pending[0]!.attempts).toBe(1);
     expect(pending[0]!.rateLimitDeferCount).toBeUndefined();
     expect(pending[0]!.nextRetryAt).toBeUndefined();
+  });
+
+  // Regression coverage for the gap this PR closes: orchestrator.ts also
+  // sets status "interrupted" for MAX_CONSECUTIVE_TOOL_FAILURES (see
+  // sdk-runner.ts) — a cause unrelated to any rate/session limit, and one
+  // retrying on a timer cannot fix. Before this fix, processEvent treated
+  // ANY "interrupted" status as retry-worthy, so a broken-tool interruption
+  // was persisted and retried every 30s up to MAX_WEBHOOK_RETRY_ATTEMPTS
+  // (20) times — up to 20 full paid agent runs in ~10 minutes for a fault
+  // that will not resolve that fast. Gated on isLimitError, same as
+  // src/triggers/cron.ts's limitRetryAt(), so only a genuine rate/session
+  // limit interruption is ever persisted.
+  it("does not persist a retry entry for an interrupted run stopped by repeated tool failures, not a rate/session limit", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(
+      interruptedResult("Stopped after 3 consecutive tool failures — retrying a broken tool costs the same as using a working one."),
+    );
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+    await handler(event());
+
+    expect(await retryStore.list()).toEqual([]);
   });
 
   it("does not persist a retry entry for a real failure, timeout, denial, or park — only success and interrupted are terminal here", async () => {

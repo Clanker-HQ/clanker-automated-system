@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
-import { parseRateLimitReset } from "./rate-limit-reset.js";
+import { isLimitError, parseRateLimitReset } from "./rate-limit-reset.js";
 import type { GithubTransport, PullRequestInfo } from "./github-transport.js";
 import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, type WebhookRetryStore } from "./webhook-retry-store.js";
 import type { WebhookEvent } from "./webhook-receiver.js";
@@ -224,8 +224,13 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
   const triggeredAt = new Date();
   const result = await deps.orchestrator.executeRun(agent, triggeredAt, promptContext);
   if (result === undefined) return { retry: true };
-  if (result.status === "interrupted") {
-    return { retry: true, rateLimitResetAt: result.error ? parseRateLimitReset(result.error, new Date()) : undefined };
+  // isLimitError, not the status alone: "interrupted" also covers a run
+  // stopped after MAX_CONSECUTIVE_TOOL_FAILURES broken-tool failures (see
+  // sdk-runner.ts), which retrying at any cadence — let alone a rate-limit
+  // reset instant — cannot help. Same gate src/triggers/cron.ts's
+  // limitRetryAt() already applies for the identical reason.
+  if (result.status === "interrupted" && isLimitError(result.error ?? "")) {
+    return { retry: true, rateLimitResetAt: parseRateLimitReset(result.error ?? "", new Date()) };
   }
   if (result.status === "success") await postFallbackCommentIfMissing(github, pr, triggeredAt, result.summary);
   return { retry: false };
