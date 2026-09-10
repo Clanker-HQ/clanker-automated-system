@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WebhookEvent } from "../src/control/webhook-receiver.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { drainWebhookRetries, makeWebhookHandler } from "../src/control/webhook-wiring.js";
-import { MAX_WEBHOOK_RETRY_ATTEMPTS, WebhookRetryStore } from "../src/control/webhook-retry-store.js";
+import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, WebhookRetryStore } from "../src/control/webhook-retry-store.js";
 import type { Grant } from "../src/grants.js";
 import type { Orchestrator } from "../src/orchestrator.js";
 import type { AgentDef } from "../src/registry.js";
@@ -306,6 +306,23 @@ function admittedResult(): RunResult {
   };
 }
 
+/**
+ * A run that WAS admitted but got cut short by the subscription's own
+ * session/rate limit — orchestrator.ts's "interrupted" classification (see
+ * its doc comment on isLimitError). Regression fixture for the 2026-09-09
+ * discovery: `result === undefined` was the only thing ever treated as
+ * retryable, so this exact outcome — admitted, then silently dropped
+ * mid-run — looked identical to "ran and finished" and was never persisted.
+ */
+function interruptedResult(message = "You've hit your session limit · resets 2:20am (Europe/Bratislava)"): RunResult {
+  return {
+    runId: "pr-reviewer-run", agent: "pr-reviewer", status: "interrupted",
+    startedAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:00:04.000Z",
+    durationMs: 4_000, costUsd: 0, inputTokens: 0, outputTokens: 0, turns: 0,
+    summary: message, error: message,
+  };
+}
+
 // Regression coverage for the bug this store fixes: a run Governor.admit()
 // refused (rate limit, daily budget, quiet hours) used to just vanish —
 // executeRun resolving to undefined was indistinguishable from "nothing to
@@ -340,6 +357,83 @@ describe("makeWebhookHandler retry persistence", () => {
     expect(await retryStore.list()).toEqual([]);
   });
 
+  // Regression coverage for the 2026-09-09 discovery: a run that WAS
+  // admitted but then got session-limit "interrupted" looked exactly like a
+  // successful run to the old boolean check (`result === undefined`), so it
+  // was never persisted for retry — pilot-01#7 and book-pipeline#1/#2 sat
+  // with no review activity on their current commit for 14+ hours because of
+  // exactly this gap.
+  it("persists a retry entry, deferred to the parsed reset instant, when executeRun comes back interrupted by a session limit", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(interruptedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+    await handler(event());
+
+    const pending = await retryStore.list();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.event).toEqual(event());
+    expect(pending[0]!.attempts).toBe(0);
+    expect(pending[0]!.rateLimitDeferCount).toBe(1);
+    expect(pending[0]!.nextRetryAt).toBeDefined();
+  });
+
+  it("persists an interrupted run whose limit-wording message has no parseable reset time as a plain (immediately-eligible) retry", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(interruptedResult("You've hit your session limit, no reset info given"));
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+    await handler(event());
+
+    const pending = await retryStore.list();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.attempts).toBe(1);
+    expect(pending[0]!.rateLimitDeferCount).toBeUndefined();
+    expect(pending[0]!.nextRetryAt).toBeUndefined();
+  });
+
+  // Regression coverage for the gap this PR closes: orchestrator.ts also
+  // sets status "interrupted" for MAX_CONSECUTIVE_TOOL_FAILURES (see
+  // sdk-runner.ts) — a cause unrelated to any rate/session limit, and one
+  // retrying on a timer cannot fix. Before this fix, processEvent treated
+  // ANY "interrupted" status as retry-worthy, so a broken-tool interruption
+  // was persisted and retried every 30s up to MAX_WEBHOOK_RETRY_ATTEMPTS
+  // (20) times — up to 20 full paid agent runs in ~10 minutes for a fault
+  // that will not resolve that fast. Gated on isLimitError, same as
+  // src/triggers/cron.ts's limitRetryAt(), so only a genuine rate/session
+  // limit interruption is ever persisted.
+  it("does not persist a retry entry for an interrupted run stopped by repeated tool failures, not a rate/session limit", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(
+      interruptedResult("Stopped after 3 consecutive tool failures — retrying a broken tool costs the same as using a working one."),
+    );
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+    await handler(event());
+
+    expect(await retryStore.list()).toEqual([]);
+  });
+
+  it("does not persist a retry entry for a real failure, timeout, denial, or park — only success and interrupted are terminal here", async () => {
+    for (const status of ["failed", "timeout", "denied", "parked", "question"] as const) {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue({ ...admittedResult(), status, error: "some concrete reason" });
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+      await handler(event());
+
+      expect(await retryStore.list(), `status "${status}" should not be retried`).toEqual([]);
+    }
+  });
+
   it("does nothing extra when executeRun is refused but no retryStore is wired in — same behavior as before this existed", async () => {
     const github = githubWithSeededPr();
     const executeRun = vi.fn().mockResolvedValue(undefined);
@@ -362,6 +456,70 @@ describe("makeWebhookHandler retry persistence", () => {
   });
 });
 
+// Regression coverage for the bug this fallback fixes: a pr-reviewer run
+// finishing "success" (a real review, a real verdict) was previously assumed
+// to mean the PR heard about it — but the SDK's own postReviewComment tool
+// call can fail with "AbortError: Stream closed" (confirmed to originate
+// inside the Claude Code CLI binary, not this codebase) late in a run, after
+// its own retry budget is spent, leaving the PR with no comment and no trace
+// of why. pilot-01#7 and book-pipeline#1/#2 all hit this on 2026-09-09/10.
+describe("makeWebhookHandler fallback comment", () => {
+  it("posts the run's summary as a fallback comment when a successful run never actually got one posted", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue({ ...admittedResult(), summary: "Do not merge: found a real bug." });
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(github.postedComments).toHaveLength(1);
+    const [comment] = github.postedComments;
+    expect(comment!.repo).toBe("owner/repo");
+    expect(comment!.number).toBe(7);
+    expect(comment!.body).toContain("Do not merge: found a real bug.");
+    expect(comment!.body).toMatch(/fallback/i);
+  });
+
+  it("does not double-post when the run's own postReviewComment call already succeeded", async () => {
+    const github = githubWithSeededPr();
+    // Simulates the agent's own tool call succeeding mid-run, before
+    // executeRun resolves — exactly what a real successful post looks like
+    // from the outside, since GithubApiTransport is the same class either way.
+    const executeRun = vi.fn().mockImplementation(async () => {
+      await github.postReviewComment("owner/repo", 7, "Do not merge: found a real bug.");
+      return admittedResult();
+    });
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(github.postedComments).toHaveLength(1);
+    expect(github.postedComments[0]!.body).toBe("Do not merge: found a real bug.");
+  });
+
+  it("does not attempt a fallback post for a non-success status (e.g. interrupted) — that path returns retry: true instead", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(interruptedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(github.postedComments).toEqual([]);
+  });
+
+  it("a fallback-post failure is swallowed — never thrown back to the caller", async () => {
+    const github = githubWithSeededPr();
+    vi.spyOn(github, "hasCommentSince").mockRejectedValue(new Error("comment API down"));
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await expect(handler(event())).resolves.toBeUndefined();
+  });
+});
+
 describe("drainWebhookRetries", () => {
   it("resolves an entry once a retry actually gets admitted", async () => {
     const github = githubWithSeededPr();
@@ -374,7 +532,11 @@ describe("drainWebhookRetries", () => {
 
     expect(executeRun).toHaveBeenCalledTimes(1);
     expect(await retryStore.list()).toEqual([]);
-    expect(github.postedComments).toEqual([]);
+    // A fallback comment DOES get posted here — admittedResult()'s fake run
+    // never actually posts one of its own, so the post-run check correctly
+    // treats it as missing. See the "fallback comment" describe block below
+    // for dedicated coverage of that behavior.
+    expect(github.postedComments).toHaveLength(1);
   });
 
   it("leaves a still-refused entry in place with its attempt count bumped, below the cap", async () => {
@@ -415,6 +577,55 @@ describe("drainWebhookRetries", () => {
     expect(comment!.body).toMatch(new RegExp(`after ${MAX_WEBHOOK_RETRY_ATTEMPTS} attempts`));
     expect(comment!.body).toMatch(/Giving up/i);
     expect(comment!.body).toMatch(/re-push/i);
+  });
+
+  it("skips an entry whose nextRetryAt is still in the future — no processEvent call, no counter bumped", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    await retryStore.create(event(), { rateLimitResetAt: new Date(Date.now() + 60 * 60 * 1000) });
+
+    await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+    expect(executeRun).not.toHaveBeenCalled();
+    const pending = await retryStore.list();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.rateLimitDeferCount).toBe(1);
+  });
+
+  it("retries an entry once its nextRetryAt has passed, and resolves it once admitted", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    await retryStore.create(event(), { rateLimitResetAt: new Date(Date.now() - 1000) });
+
+    await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+    expect(await retryStore.list()).toEqual([]);
+  });
+
+  it("gives up on a session limit that keeps recurring, capped by MAX_WEBHOOK_RATE_LIMIT_DEFERS rather than MAX_WEBHOOK_RETRY_ATTEMPTS", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(interruptedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const created = await retryStore.create(event(), { rateLimitResetAt: new Date(Date.now() - 1000) });
+    // Fast-forward to one defer short of the cap directly through the store,
+    // each already past-due — sidesteps depending on what real wall-clock
+    // instant interruptedResult()'s fixed message parses to relative to
+    // whenever this test happens to run.
+    for (let i = 1; i < MAX_WEBHOOK_RATE_LIMIT_DEFERS; i++) {
+      await retryStore.recordAttempt(created.id, { rateLimitResetAt: new Date(Date.now() - 1000) });
+    }
+
+    await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+    expect(await retryStore.list()).toEqual([]);
+    expect(github.postedComments).toHaveLength(1);
+    expect(github.postedComments[0]!.body).toMatch(/Giving up/i);
   });
 
   it("catches a per-entry throw (e.g. the PR vanished) and still processes the remaining entries", async () => {

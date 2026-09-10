@@ -441,10 +441,48 @@ retry store, with a comment posted on the PR explaining automated review
 never actually ran, so it doesn't just sit there with no comment and no
 explanation.
 
+That fix only covered a refusal *before* admission (Governor.admit()
+returning "refuse"). Discovered 2026-09-09: a run that WAS admitted and then
+got cut short mid-run by the subscription's own session/rate limit —
+orchestrator.ts's "interrupted" status — looked identical to a normal
+completed run to the retry check (`result === undefined` was the only thing
+ever treated as retryable), so it was silently dropped in exactly the same
+way, just one step later in the lifecycle. Three PRs sat with zero review
+activity on their current commit for 14+ hours because of this before it was
+found. `processEvent` now also treats `status === "interrupted"` as
+retry-worthy, and — since dispatcher.ts already learned this lesson for
+dispatched tasks (see `rateLimitDeferCount` above) — parses the reset instant
+out of the error message the same way and defers the retry entry to that
+exact time (`nextRetryAt`) rather than hammering it every 30s tick, which
+would burn through all 20 attempts in 10 minutes, nowhere near enough to
+bridge an hours-long session limit. This defer path is capped separately, by
+`MAX_WEBHOOK_RATE_LIMIT_DEFERS` (5), so a plain Governor refusal and a
+recurring session limit can't exhaust each other's budget.
+
 Don't read "parked" into this — in this system **parked** means
 something narrower and quite different: an *in-flight* run that stopped
 mid-execution to await a human approve/deny/answer, and which resumes its
 original session when you give it.
+
+**A "success" run doesn't guarantee the PR ever heard about it.** Every fix
+above assumes a completed run reaches GitHub through its own tool calls. It
+often doesn't: the Claude Code CLI's own transport can throw `AbortError:
+Stream closed` on `postReviewComment` specifically (confirmed to originate
+inside the CLI binary, not this codebase — nothing here can fix it at the
+source), frequently late in a long review after the run's own one-retry
+budget (see prompt.md) is already spent. The run finishes `"success"` — a
+real review happened, a real verdict was reached — but the PR gets no
+comment, no explanation, and no `requestFix`, indistinguishable from the
+system having done nothing at all. `pilot-01#7` and `book-pipeline#1/#2` all
+sat with zero review activity on their current commit for 14+ hours because
+of exactly this. `processEvent` now checks, from outside the run, via the
+same reliable REST transport used everywhere else in this file (specifically
+*not* through the SDK's own unreliable tool-call path), whether a comment
+actually landed on the PR since the run started (`GithubTransport.
+hasCommentSince`); if not, it posts the run's own summary as a fallback
+comment itself. A harmless double-post, if the agent's own comment did land
+and this check somehow missed it, costs far less than a PR that silently
+never hears back at all.
 
 **`pr-reviewer` jumps the `maxConcurrent` queue.** Among runs waiting on a
 free slot, `pr-reviewer`'s admit() call is granted the next one ahead of
