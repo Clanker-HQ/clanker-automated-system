@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
-import { parseRateLimitReset } from "./rate-limit-reset.js";
+import { isLimitError, parseRateLimitReset } from "./rate-limit-reset.js";
 import type { GithubTransport, PullRequestInfo } from "./github-transport.js";
 import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, type WebhookRetryStore } from "./webhook-retry-store.js";
 import type { WebhookEvent } from "./webhook-receiver.js";
@@ -223,8 +223,14 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
 
   const result = await deps.orchestrator.executeRun(agent, new Date(), promptContext);
   if (result === undefined) return { retry: true };
-  if (result.status === "interrupted") {
-    return { retry: true, rateLimitResetAt: result.error ? parseRateLimitReset(result.error, new Date()) : undefined };
+  // `status === "interrupted"` alone is not enough: orchestrator.ts also sets
+  // it when sdk-runner.ts's MAX_CONSECUTIVE_TOOL_FAILURES trips, a cause a
+  // 30-second retry cadence cannot fix and that isLimitError's own reset-time
+  // parse correctly returns undefined for. Gating on isLimitError as well
+  // mirrors src/triggers/cron.ts's limitRetryAt() — see its comment for the
+  // same distinction.
+  if (result.status === "interrupted" && isLimitError(result.error ?? "")) {
+    return { retry: true, rateLimitResetAt: parseRateLimitReset(result.error ?? "", new Date()) };
   }
   return { retry: false };
 }
