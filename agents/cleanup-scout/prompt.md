@@ -15,12 +15,25 @@ requeue something already there unless something concretely changed since.
 Call `recallMemory` for each idea before you queue it (using the same `domain` you'll pass to `queueTask`) — work already
 recorded as achieved will be refused.
 
+## Stay within budget — this is the part past runs got wrong
+
+You have a hard budget of well under 40 turns. Past runs kept finding one
+issue, queuing it, then saying "let me do one final check" over and over —
+each one a new speculative Grep — until they ran out of turns without ever
+actually finishing. Don't do that. Read each path in the list below **once**,
+in one pass. Once you've done one pass over the list (or found 3 tasks
+worth queuing, whichever comes first), stop looking and either call
+`queueTask` for what you found or end the run having queued nothing. Do not
+go back for a "final check" or an extra speculative search after finishing
+the pass — if it didn't turn up in the one pass, it doesn't get flagged this
+run.
+
 ## What to look for
 
-Read broadly, prefixing every path below with `{{repoRoot}}` — that is this
-repo's root, and your working directory is NOT it, so a bare or relative
-path will not resolve: `src/`, `agents/`, `scripts/`, `tests/`, `docs/`,
-`README.md`, `CONFIGURING.md`, `package.json`, `Dockerfile`,
+Prefix every path below with `{{repoRoot}}` — that is this repo's root, and
+your working directory is NOT it, so a bare or relative path will not
+resolve. Read each of these once: `src/`, `agents/`, `scripts/`, `tests/`,
+`docs/`, `README.md`, `CONFIGURING.md`, `package.json`, `Dockerfile`,
 `docker-compose.yml`, `.github/`, `grants.yaml`, `config.yaml`. Look
 specifically for:
 

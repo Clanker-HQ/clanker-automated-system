@@ -3,7 +3,7 @@ import type { SDKControlGetUsageResponse } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import type { MemoryConfig } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
-import { touchesExcludedPath } from "../control/excluded-paths.js";
+import { isGovernanceOnlyChange, touchesExcludedPath } from "../control/excluded-paths.js";
 import type { FindingReviewer } from "../control/finding-reviewer.js";
 import { specialistsOf, type Router } from "../control/router.js";
 import type { GitCloner } from "../control/git-cloner.js";
@@ -21,6 +21,8 @@ import { priorityScore, toPriority } from "../memory/scoring.js";
 import type { DiscordOutbox } from "../outbox/discord.js";
 import type { AgentDef } from "../registry.js";
 import type { BreakerStore } from "../state/breaker.js";
+import { MAX_GOVERNANCE_MERGES_PER_WINDOW, type GovernanceGateStore } from "../state/governance-gate.js";
+import { MAX_FIX_ATTEMPTS_PER_PR, type PrFixAttemptStore } from "../state/pr-fix-attempts.js";
 import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
 import { resolveCredentials } from "./credentials.js";
@@ -180,6 +182,27 @@ const SUBAGENT_TOOLS_BY_PARENT: ReadonlyMap<string, readonly string[]> = new Map
 const GITHUB_PR_AGENTS: ReadonlySet<string> = new Set(["builder", "pr-reviewer", "repair"]);
 
 /**
+ * Agents this server is withheld from entirely, even though AskHuman is
+ * otherwise mounted unconditionally for everyone (see askHumanServer's
+ * mcpServers entry below). pr-reviewer's own prompt.md ends with an explicit,
+ * whole-run contract — "You will never be asked to approve anything and
+ * nobody is waiting on you — decide, act, and be done" — and on
+ * 2026-09-09 it broke that contract anyway: mid-review, while waiting on its
+ * own parallel pr-review-angle sub-reviews, it called AskHuman with "No
+ * action needed — just checking in... No response needed unless you want to
+ * intervene." That parks the run (AskHuman aborts and waits for an answer
+ * regardless of what the question says), and nothing auto-resumes a parked
+ * question, so the PR silently sat unreviewed until a human noticed and
+ * manually retriggered it — the second time this exact pattern happened
+ * (AAS-Labs/pilot-01#2, after an earlier occurrence on this repo's own #52).
+ * Tightening AskHuman's own description discourages this for every other
+ * agent; this removes the capability outright for the one agent whose
+ * design already promises never to need it, so the same run of tool calls
+ * that produced the incident above cannot reach AskHuman at all next time.
+ */
+const NO_ASK_HUMAN_AGENTS: ReadonlySet<string> = new Set(["pr-reviewer"]);
+
+/**
  * Agents whose own prompt.md references at least one taskQueue tool -- grep
  * every agents/*\/prompt.md for queueTask/listMyTasks/recentFailures/
  * recallMemory/cancelTask to keep this in sync. builder, pr-reviewer, repair,
@@ -209,6 +232,16 @@ const TASK_QUEUE_AGENTS: ReadonlySet<string> = new Set([
  * sequence while five with zero successes is a broken dependency.
  */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 5;
+
+/**
+ * Priority requestFix queues its builder task at — above TaskStore's own
+ * default of 50 (see task-store.ts), and well above the 30 self-queued
+ * proposals from research/the scouts get (DEFAULT_SELF_QUEUED_PRIORITY,
+ * below): a fix for a PR that's already been reviewed and found blocking is
+ * finishing existing work, not discovering new work, and should clear the
+ * queue ahead of discretionary proposals — the whole point of this tool.
+ */
+const FIX_TASK_PRIORITY = 60;
 
 /**
  * Overrides the SDK's default auto-compaction ceiling (the model's context
@@ -540,8 +573,19 @@ export class SdkRunner implements Runner {
       gitCloner?: GitCloner;
       /** Wired in production (src/index.ts); optional so tests/scripts that don't care about task-queueing can skip it, the same shape `github` already uses. */
       tasks?: TaskStore;
-      /** Wakes the dispatcher after queueTask adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
+      /** Wakes the dispatcher after queueTask (or requestFix) adds work, so it's picked up on this tick rather than waiting for the next periodic one. */
       wake?: () => Promise<void>;
+      /** Backs requestFix's per-PR attempt cap (see MAX_FIX_ATTEMPTS_PER_PR). Optional, same posture as `tasks`/`wake` above: without it requestFix is simply not registered. */
+      fixAttempts?: PrFixAttemptStore;
+      /**
+       * Backs the governance gate (attestGovernanceSafety, and mergePR's own
+       * consultation of it — see GOVERNANCE_PATHS in excluded-paths.ts).
+       * Optional, same posture as `fixAttempts`: without it, attestGovernanceSafety
+       * is simply not registered, and mergePR falls back to refusing every
+       * governance-tier PR unconditionally, exactly as it refuses every other
+       * excluded path.
+       */
+      governanceGate?: GovernanceGateStore;
       /** Optional: without it, queueTask queues exactly what's given, no automated rationale check — same fallback posture as findingReviewer below. */
       taskReviewer?: TaskReviewer;
       /**
@@ -754,7 +798,7 @@ export class SdkRunner implements Runner {
       tools: [
         tool(
           "AskHuman",
-          "Ask the owner a free-text question and stop this run until they answer. Use this when you're blocked on information only the owner can provide.",
+          "Ask the owner a free-text question and stop this run until they answer. Use this ONLY when you're genuinely blocked on information only the owner can provide, and the question needs an actual answer to proceed. Never call this to post a status update, a progress note, or a question you don't need answered (e.g. \"just checking in\", \"no response needed\") — this always parks the run waiting for a reply regardless of what the question says, and nothing resumes it automatically. If you're merely waiting on your own sub-tasks or tool calls to finish, that isn't a reason to call this — just continue your turn normally.",
           { question: z.string().min(1) },
           async ({ question }) => {
             controller.abort();
@@ -897,12 +941,21 @@ export class SdkRunner implements Runner {
 
                 const info = await transport.getPullRequest(repo, number);
 
+                // Set only on the governance-gate branch below, and read after a
+                // successful merge further down — the trigger for recording a
+                // merge in GovernanceGateStore's velocity log and posting the
+                // distinct Discord alert. Every other path through this handler
+                // (an ordinary merge, a self-build merge) leaves this false.
+                let mergedViaGovernanceGate = false;
+
                 // Gate 1 — self-build changes (grants.yaml, or agents/*/{agent.yaml,
                 // prompt.md} in isolation — see isSelfBuildChange) get the mechanical
-                // four-rule self-build gate instead of an unconditional refusal;
-                // everything else still gets the unconditional excluded-path refusal,
-                // exactly as before this gate existed. This runs first: no grant, no
-                // review verdict, nothing later in this handler can override either branch.
+                // four-rule self-build gate; a governance-tier-only change (see
+                // GOVERNANCE_PATHS) gets the attestation+velocity-cap gate just
+                // below; everything else still gets the unconditional excluded-path
+                // refusal, exactly as before either gate existed. This runs first:
+                // no grant, no review verdict, nothing later in this handler can
+                // override any of the three branches.
                 if (isSelfBuildChange(info.changedFiles)) {
                   const verdict = await evaluateSelfBuildPr(transport, repo, info, process.env);
                   if (!verdict.allowed) {
@@ -915,15 +968,52 @@ export class SdkRunner implements Runner {
                   // Passed all four rules — fall through to gates 2/3 below, same as
                   // any other merge: a self-build change still needs a grant and a
                   // fresh SHA.
-                } else if (touchesExcludedPath(info.changedFiles)) {
-                  return {
-                    content: [
-                      {
-                        type: "text" as const,
-                        text: "Refused: this PR touches a security-sensitive excluded path and can never merge through this pipeline. Changes to that code must be made directly by a human, outside this pipeline.",
-                      },
-                    ],
-                  };
+                } else if (touchesExcludedPath(info.changedFiles, repo)) {
+                  const governanceGate = this.deps.governanceGate;
+                  if (governanceGate && isGovernanceOnlyChange(info.changedFiles, repo)) {
+                    const attestation = await governanceGate.getAttestation(repo, number);
+                    if (!attestation || attestation.headSha !== info.headSha) {
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: "Refused: this PR touches only governance-tier files, but there is no safety attestation for its current head — call attestGovernanceSafety first (a fresh one, if the head has moved since an earlier attestation).",
+                          },
+                        ],
+                      };
+                    }
+                    if (attestation.verdict !== "safe") {
+                      return {
+                        content: [
+                          { type: "text" as const, text: `Refused: the governance safety review found a concern — ${attestation.reasoning}` },
+                        ],
+                      };
+                    }
+                    const recentMerges = await governanceGate.countRecentMerges();
+                    if (recentMerges >= MAX_GOVERNANCE_MERGES_PER_WINDOW) {
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: `Refused: the automated governance-merge cap (${MAX_GOVERNANCE_MERGES_PER_WINDOW} per rolling 24h) has already been reached — this needs a human to merge directly instead of waiting for the window to clear.`,
+                          },
+                        ],
+                      };
+                    }
+                    mergedViaGovernanceGate = true;
+                    // Passed the attestation + velocity-cap checks — fall through to
+                    // gates 2/3 below, same as any other merge: a governance-tier
+                    // change still needs a grant and a fresh SHA.
+                  } else {
+                    return {
+                      content: [
+                        {
+                          type: "text" as const,
+                          text: "Refused: this PR touches a security-sensitive excluded path and can never merge through this pipeline. Changes to that code must be made directly by a human, outside this pipeline.",
+                        },
+                      ],
+                    };
+                  }
                 }
 
                 // Gate 2 — does this agent hold a github-pr grant covering this repo?
@@ -955,6 +1045,40 @@ export class SdkRunner implements Runner {
                 if (!result.merged) {
                   return { content: [{ type: "text" as const, text: `Refused: ${result.reason}` }] };
                 }
+                // Real, distinct after-the-fact visibility for the one kind of
+                // merge nobody — human or live session — looked at before it
+                // happened: logged for the velocity cap, and alerted loudly so
+                // a human reading the ops channel sees exactly what landed and
+                // why the reviewing agent judged it safe, even with no
+                // before-the-fact click. Best-effort like every other
+                // bookkeeping write here: losing either must never undo an
+                // already-completed merge.
+                if (mergedViaGovernanceGate && this.deps.governanceGate) {
+                  try {
+                    await this.deps.governanceGate.recordMerge({ repo, number, headSha: expectedHeadSha });
+                  } catch (error) {
+                    console.error(`[mergePR] failed to record governance-gate merge velocity for ${repo}#${number}`, error);
+                  }
+                  const attestation = await this.deps.governanceGate.getAttestation(repo, number).catch(() => null);
+                  await this.deps.outbox
+                    ?.postAlert(
+                      agent.outbox.discord,
+                      `⚙️ **${repo}#${number}** merged through the governance gate (touches governor.ts/grants.ts/agent-schema.ts/bot.ts/config.yaml only) — no human looked at this before it merged.\n` +
+                        `Safety review: ${attestation?.reasoning ?? "(reasoning not found)"}`,
+                    )
+                    .catch((err: unknown) => console.error(`[mergePR] failed to post the governance-merge alert for ${repo}#${number}`, err));
+                }
+                // Best-effort, like the other bookkeeping writes in this file:
+                // a merged PR is done, so requestFix's attempt count for it no
+                // longer means anything, but losing this write costs nothing
+                // beyond a stale count for a PR nobody will review again.
+                if (this.deps.fixAttempts) {
+                  try {
+                    await this.deps.fixAttempts.reset(`${repo}#${number}`);
+                  } catch (error) {
+                    console.error(`[mergePR] failed to reset fix-attempt count for ${repo}#${number}`, error);
+                  }
+                }
                 return { content: [{ type: "text" as const, text: `Successfully merged ${repo}#${number}.` }] };
               },
             ),
@@ -976,6 +1100,113 @@ export class SdkRunner implements Runner {
                 return { content: [{ type: "text" as const, text: `Comment posted on ${repo}#${number}.` }] };
               },
             ),
+            // pr-reviewer only (not builder/repair, the other two agents on
+            // this server) — a reaction to a verdict THIS agent just reached
+            // on a PR it's already looking at, not a general "discover and
+            // propose work" capability, which is why this is a narrow,
+            // purpose-built tool instead of exposing the general queueTask
+            // (see TASK_QUEUE_AGENTS below, which pr-reviewer deliberately
+            // stays out of). Closes the loop a "don't merge" verdict used to
+            // be a dead end at: nothing previously read that comment and
+            // acted on it, so a rejected PR just sat open forever. Routes
+            // straight to `builder` — no Router call needed, the target is
+            // never ambiguous — and the fix, once pushed, re-triggers review
+            // automatically via the same synchronize webhook a human's retry
+            // push always has.
+            ...(agent.name === "pr-reviewer" && this.deps.tasks && this.deps.wake && this.deps.fixAttempts
+              ? [
+                  tool(
+                    "requestFix",
+                    `After deciding NOT to merge a PR for concrete, fixable reasons, use this to queue a builder task that attempts the fix — the branch's next push re-triggers a fresh review automatically, closing the loop without a human. Capped at ${MAX_FIX_ATTEMPTS_PER_PR} attempts per PR: once exhausted, this refuses and you should post a comment saying the PR needs a human instead of calling this again.`,
+                    {
+                      repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
+                      number: z.number().int().positive(),
+                      findings: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
+                    },
+                    async ({ repo, number, findings }) => {
+                      const tasks = this.deps.tasks!;
+                      const wake = this.deps.wake!;
+                      const fixAttempts = this.deps.fixAttempts!;
+                      const key = `${repo}#${number}`;
+                      const attempts = await fixAttempts.get(key);
+                      if (attempts >= MAX_FIX_ATTEMPTS_PER_PR) {
+                        return {
+                          content: [
+                            {
+                              type: "text" as const,
+                              text: `Refused: already queued ${attempts} fix attempts for ${key}, the maximum allowed. Post a comment explaining this PR needs a human to take it from here — do not call requestFix again for it.`,
+                            },
+                          ],
+                        };
+                      }
+                      const attemptNumber = await fixAttempts.increment(key);
+                      const created = await tasks.create({
+                        text: `Fix the following pr-reviewer findings on ${repo}#${number} (automatic fix attempt ${attemptNumber}/${MAX_FIX_ATTEMPTS_PER_PR}), then push the fix to the PR's existing branch so it gets re-reviewed:\n\n${findings}`.slice(0, MAX_TASK_TEXT_LENGTH),
+                        priority: FIX_TASK_PRIORITY,
+                        createdBy: `agent:${agent.name}`,
+                        wantsDetail: true,
+                        category: "maintenance",
+                        specialistAgent: "builder",
+                      });
+                      void wake().catch((err: unknown) => {
+                        console.error(`[requestFix] dispatcher wake failed after queuing ${created.id} (agent ${agent.name})`, err);
+                      });
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: `Queued fix task ${created.id} for builder (attempt ${attemptNumber}/${MAX_FIX_ATTEMPTS_PER_PR} for ${key}).`,
+                          },
+                        ],
+                      };
+                    },
+                  ),
+                ]
+              : []),
+            // Records pr-reviewer's own dedicated, adversarially-framed safety
+            // verdict on a governance-tier diff (see GOVERNANCE_PATHS,
+            // excluded-paths.ts) — the data point mergePR's own gate 1
+            // independently consults before it will act on the exception at
+            // all, never trusted blindly. This tool only ever WRITES that
+            // verdict; it authorizes nothing itself. The head SHA is fetched
+            // here, not accepted as an argument, for the same reason mergePR
+            // never trusts a model-supplied `changedFiles`: an attestation
+            // for a SHA the agent merely claims is current would let a
+            // confused or manipulated run attest against a stale diff and
+            // have a LATER, unreviewed commit ride through on it.
+            ...(agent.name === "pr-reviewer" && this.deps.governanceGate
+              ? [
+                  tool(
+                    "attestGovernanceSafety",
+                    "Record the verdict of a DEDICATED safety review for a PR that touches a governance-tier file (governor.ts, grants.ts, agent-schema.ts, bot.ts, or config.yaml) — separate from, and in addition to, your ordinary review. Before calling this, specifically ask: does this diff remove, weaken, or add a bypass to any check, cap, refusal, or credential scope? Does it expand what any agent can do (a new tool, a broader grant match, wider filesystem/network/credential access, a relaxed validation)? Call this once with your verdict before attempting mergePR — mergePR will refuse a governance-tier PR with no matching 'safe' attestation for its exact current head, or one recorded as 'unsafe', the same as any other excluded path.",
+                    {
+                      repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
+                      number: z.number().int().positive(),
+                      verdict: z.enum(["safe", "unsafe"]),
+                      reasoning: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
+                    },
+                    async ({ repo, number, verdict, reasoning }) => {
+                      const governanceGate = this.deps.governanceGate!;
+                      const effect = detectOutwardEffect("mergePR", { repo })!;
+                      const relevantGrants = this.deps.grants.filter((g) => agent.grantRefs.includes(g.id));
+                      const grant = matchGrant(relevantGrants, effect);
+                      const token = grant ? process.env[grant.secret] : undefined;
+                      const transport = token && this.deps.githubForToken ? this.deps.githubForToken(token) : github;
+
+                      const info = await transport.getPullRequest(repo, number);
+                      await governanceGate.recordAttestation({ repo, number, headSha: info.headSha, verdict, reasoning });
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: `Recorded a "${verdict}" governance-safety attestation for ${repo}#${number} at head ${info.headSha}.`,
+                          },
+                        ],
+                      };
+                    },
+                  ),
+                ]
+              : []),
             tool(
               "createRepo",
               "Create a new GitHub repository for a product this system is building. Use this before pushBranch/openPR when the task names a product with no repo yet — those tools require a repo that already exists. Only succeeds when a provision grant covers the target org.",
@@ -1887,7 +2118,7 @@ export class SdkRunner implements Runner {
         abortController: controller,
         canUseTool,
         mcpServers: {
-          askHuman: askHumanServer,
+          ...(NO_ASK_HUMAN_AGENTS.has(agent.name) ? {} : { askHuman: askHumanServer }),
           ...(githubPrServer ? { githubPr: githubPrServer } : {}),
           ...(taskQueueServer ? { taskQueue: taskQueueServer } : {}),
           ...(systemContextServer ? { systemContext: systemContextServer } : {}),

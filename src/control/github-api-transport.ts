@@ -88,6 +88,22 @@ export class GithubApiTransport implements GithubTransport {
     if (!res.ok) throw new Error(`GitHub API: failed to post comment on ${repo}#${number} (${res.status})`);
   }
 
+  /**
+   * GitHub's `since` filter on this endpoint matches `updated_at`, not
+   * `created_at` — fine here since a just-posted comment's two timestamps
+   * are identical, and nothing in this codebase edits a comment after
+   * posting it. `per_page=1` since existence is all that's asked.
+   */
+  async hasCommentSince(repo: string, number: number, since: Date): Promise<boolean> {
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${repo}/issues/${number}/comments?since=${encodeURIComponent(since.toISOString())}&per_page=1`,
+      { headers: this.headers(), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
+    );
+    if (!res.ok) throw new Error(`GitHub API: failed to list comments for ${repo}#${number} (${res.status})`);
+    const comments = (await res.json()) as unknown[];
+    return comments.length > 0;
+  }
+
   async mergePullRequest(repo: string, number: number, expectedHeadSha: string): Promise<MergeResult> {
     const res = await this.fetchImpl(`https://api.github.com/repos/${repo}/pulls/${number}/merge`, {
       method: "PUT",

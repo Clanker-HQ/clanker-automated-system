@@ -286,6 +286,20 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       ? `\n\n(A previous attempt at this task finished without error, but grading found it did not fully achieve ` +
         `the objective: "${task.lastVerificationReason}". Address that gap this time.)`
       : "";
+    // Without this, a retried task has no memory of its own — each attempt
+    // is a cold restart — so a deliverable that includes opening a pull
+    // request just opens a brand new one every time instead of continuing
+    // the last one. Observed 2026-09-10: one retried task left 4 separate
+    // near-duplicate PRs open on the same repo before anyone noticed. The
+    // raw summary (not just the verifier's reason) is pasted in because it's
+    // usually where a PR/branch URL from the previous attempt actually
+    // lives — the agent can read it out of the prose same as a human would.
+    const previousAttemptNote = task.lastAttemptSummary
+      ? `\n\n(A previous attempt at this task did the following: "${task.lastAttemptSummary}". If that already ` +
+        `opened a pull request or pushed a branch for this same task, check whether it's still open before doing ` +
+        `anything else — continue and fix THAT one instead of starting over or opening a new one, unless it shows ` +
+        `there's genuinely nothing usable to build on.)`
+      : "";
     let memoryContext = "";
     if (deps.memory && deps.memoryConfig?.enabled) {
       try {
@@ -305,7 +319,7 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       // bonus, never a reason to stop the task from running.
       console.error("[dispatcher] world model summary skipped", error);
     }
-    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${memoryContext}${worldContext}`;
+    const promptContext = `${task.text}${task.wantsDetail ? `\n\n${DETAIL_INSTRUCTION}` : ""}${verificationNote}${previousAttemptNote}${memoryContext}${worldContext}`;
     // "queued" (set by claimNextPending) becomes "running" only once this run
     // actually clears Governor concurrency — not at claim time, and not just
     // because executeRun was called. Best-effort: a write failure here must
@@ -353,6 +367,7 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
           startedAt: undefined,
           nextRetryAt: new Date(now().getTime() + delayMs).toISOString(),
           lastVerificationReason: result.verifiedOutcome.reason,
+          lastAttemptSummary: result.summary || undefined,
         });
         return { ran: true, taskId: task.id, deferred: true };
       }
@@ -470,6 +485,7 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
           retryCount: previousRetries + 1,
           startedAt: undefined,
           nextRetryAt: new Date(now().getTime() + delayMs).toISOString(),
+          lastAttemptSummary: result.summary || undefined,
         });
         return { ran: true, taskId: task.id, deferred: true };
       }

@@ -23,7 +23,8 @@ import { FakeRevenueTransport, type RevenueTransport } from "./control/revenue-t
 import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
-import { makeWebhookHandler } from "./control/webhook-wiring.js";
+import { WebhookRetryStore } from "./control/webhook-retry-store.js";
+import { drainWebhookRetries, makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
 import { writeDeployArtifacts } from "./deploy/caddyfile.js";
 import { type Deployment, loadDeploys } from "./deploy/deploys-schema.js";
@@ -42,6 +43,8 @@ import { SdkRunner } from "./runner/sdk-runner.js";
 import type { Runner } from "./runner/types.js";
 import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
+import { GovernanceGateStore } from "./state/governance-gate.js";
+import { PrFixAttemptStore } from "./state/pr-fix-attempts.js";
 import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
 import { StrategyStore } from "./world/strategy.js";
@@ -112,6 +115,9 @@ async function main(): Promise<void> {
   // (Task C3) needs them threaded through buildRunner below.
   const overrides = new ConfigOverridesStore(DATA_DIR);
   const breaker = new BreakerStore(DATA_DIR);
+  const fixAttempts = new PrFixAttemptStore(DATA_DIR);
+  const governanceGate = new GovernanceGateStore(DATA_DIR);
+  const webhookRetries = new WebhookRetryStore(DATA_DIR);
   // Builds a GithubTransport bound to an arbitrary token — no I/O, so it
   // belongs alongside the plain constructors just above rather than inside
   // the try block. Shared by buildRunner below (so createRepo/openPR/mergePR/
@@ -226,6 +232,8 @@ async function main(): Promise<void> {
       // agent run actually invokes queueTask, by which point `dispatcher`
       // is always set.
       wake: async () => { if (dispatcher) await dispatcher.wake(); },
+      fixAttempts,
+      governanceGate,
     });
     if (runner instanceof SdkRunner) {
       // Resolved once, here, rather than only inside SdkRunner.execute: that
@@ -396,7 +404,7 @@ async function main(): Promise<void> {
   });
 
   const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
-  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator }));
+  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor }));
   void webhookReceiver.listen(webhookPort).then(
     () => {
       console.log(`[boot] webhook receiver listening on :${webhookPort}`);
@@ -410,6 +418,22 @@ async function main(): Promise<void> {
       console.error(error instanceof Error ? error.message : String(error));
     },
   );
+
+  // A run Governor.admit() refuses (rate limit, daily budget, quiet hours)
+  // used to just vanish — no run record, no retry, unlike a cron agent (next
+  // scheduled fire) or a dispatched task (requeued by the dispatcher). This
+  // periodically retries every such refusal makeWebhookHandler persisted
+  // above, on the same 30s cadence Dispatcher already polls the task queue
+  // on — cheap to check (Governor's refusal checks are local reads, no API
+  // call, no spend) and means a retry lands within a minute of whatever it
+  // was waiting on actually clearing, not whenever a human happens to notice.
+  setInterval(() => {
+    void drainWebhookRetries({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor }).catch(
+      (error: unknown) => {
+        console.error("[webhook-retry] drainWebhookRetries failed", error);
+      },
+    );
+  }, 30_000);
 
   if (dashboardUser && dashboardPassword) {
     const dashboard = new DashboardServer({
