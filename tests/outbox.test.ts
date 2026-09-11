@@ -170,4 +170,23 @@ describe("DiscordOutbox", () => {
     const body = JSON.parse((fetchImpl.mock.calls[0]![1] as { body: string }).body);
     expect(body.content).toContain("daily budget reached");
   });
+
+  // Regression test for a real incident on 2026-09-11: unlike formatRunMessage
+  // (used by post()), postAlert had no truncation at all, so a digest or
+  // task-completion summary over 2000 chars got an unconditional HTTP 400
+  // from Discord and silently landed in data/undelivered/ — 23 times over 9
+  // days before this was noticed. A dropped alert defeats the after-the-fact
+  // Discord visibility this pipeline substitutes for a human approval click.
+  it("truncates postAlert text over Discord's 2000-character limit instead of letting Discord reject it", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(null, { status: 204 }),
+    );
+    const { instance } = outbox(fetchImpl as unknown as typeof fetch);
+    const longText = "x".repeat(2500);
+    await expect(instance.postAlert("smoke", longText)).resolves.toBe("delivered");
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as { body: string }).body);
+    expect(body.content.length).toBeLessThanOrEqual(2000);
+    expect(body.content.endsWith("...")).toBe(true);
+  });
 });
