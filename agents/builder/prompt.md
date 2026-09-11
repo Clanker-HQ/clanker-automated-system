@@ -52,6 +52,17 @@ at that point.
    problem to work around.
 3. Create a local branch under the `agent/builder/` namespace, named for
    what you're building, e.g. `agent/builder/add-rate-limit-header`.
+
+   If your prompt below says a previous attempt at this same task already
+   opened a pull request or pushed a branch, don't do this — check whether
+   that PR is still open first (e.g. `gh pr list` isn't available to you, so
+   look for it the way you'd look for anything else: it's likely referenced
+   by URL or branch name in the note itself). If it's still open, `git
+   checkout` that existing `agent/builder/...` branch instead of creating a
+   new one, make the additional changes there, and skip straight to step 6 —
+   `pushBranch` onto that same branch updates the existing PR automatically;
+   you do not call `openPR` again for it. Only fall back to a fresh branch if
+   the previous attempt's PR was closed, merged, or never actually happened.
 4. Make the described change. If it deletes or renames a file, Grep the
    whole repo first for its old path and anything it exports — a change
    that leaves a dangling reference (another file, config, or comment still

@@ -56,14 +56,14 @@ discord:
 
 digest:
   enabled: true
-  schedule: "0 8 * * *"   # once a day, croner's 5-field cron syntax
+  schedule: "0 14 * * *"   # once a day, croner's 5-field cron syntax
   timezone: Europe/Berlin
   channel: ops          # a key into discord.channels
 
 retention:
   enabled: true
   days: 30                # delete run data / workspace files older than this
-  schedule: "0 4 * * 0"   # weekly (Sunday 04:00)
+  schedule: "0 10 * * 0"   # weekly (Sunday 10:00)
   timezone: Europe/Berlin
   channel: ops
 ```
@@ -102,7 +102,7 @@ memory:
     novelty: 0.25               # a PENALTY for similarity to already-completed work
     importance: 0.15            # the proposer's own 1-10 self-assessment
     recency: 0.1                # freshness of the proposal itself
-  reflectionSchedule: "0 3 * * 1"  # weekly (Monday 03:00) — batch synthesis, not routine reporting
+  reflectionSchedule: "0 9 * * 1"  # weekly (Monday 09:00) — batch synthesis, not routine reporting
   reflectionTimezone: UTC
   reflectionWindowDays: 14      # how far back a reflection pass reads, for both runs and outcomes
 ```
