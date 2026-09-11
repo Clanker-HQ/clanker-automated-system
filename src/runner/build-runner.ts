@@ -13,6 +13,7 @@ import type { MemoryStore } from "../memory/memory-store.js";
 import type { DiscordOutbox } from "../outbox/discord.js";
 import type { AgentDef } from "../registry.js";
 import type { BreakerStore } from "../state/breaker.js";
+import type { GovernanceGateStore } from "../state/governance-gate.js";
 import type { PrFixAttemptStore } from "../state/pr-fix-attempts.js";
 import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
@@ -44,6 +45,7 @@ export function buildRunner(
     router?: Router;
     wake?: () => Promise<void>;
     fixAttempts?: PrFixAttemptStore;
+    governanceGate?: GovernanceGateStore;
     systemContext?: string;
     memory?: MemoryStore;
     memoryConfig?: MemoryConfig;
