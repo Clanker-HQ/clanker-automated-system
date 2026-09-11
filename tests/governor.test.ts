@@ -850,6 +850,41 @@ describe("Governor rate-limit recording", () => {
     expect(second).toBeGreaterThan(first);
   });
 
+  // Regression for a real 2026-09-12 incident: within a single run, the
+  // SDK's own accurate rate_limit_event (a real multi-hour resetsAt, handled
+  // by recordRateLimit) was immediately followed by a generic "rate_limit"
+  // error string carrying no time at all. recordRateLimitError's 2-30-minute
+  // guessed cooldown then overwrote the accurate multi-hour reading down to
+  // a few minutes out, reopening admission into a limit that had not
+  // actually cleared — every few minutes, for hours, exhausting webhook- and
+  // task-retry budgets sized to survive one long wait, not dozens of short
+  // ones.
+  it("recordRateLimitError does not shorten an existing rejection that is still live and further out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    // Real wall-clock, not FIXED_NOW: recordRateLimit's recordedAt comes from
+    // this.now(), and recordRateLimitError's own staleness check (via
+    // currentRateLimit) is deliberately against the real clock (see its
+    // comment) — mixing a frozen historical `now` with that real-clock check
+    // would make the first snapshot look stale by pure test-clock skew,
+    // which is not the scenario this test exists to cover.
+    const governor = build(dir, () => new Date());
+    const farFuture = Math.floor(Date.now() / 1000) + 4 * 60 * 60;
+    await governor.recordRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: farFuture });
+    await governor.recordRateLimitError(undefined);
+    const snapshot = await new RateLimitTracker(dir).read();
+    expect(snapshot?.resetsAt).toBe(farFuture);
+  });
+
+  it("recordRateLimitError still extends the recorded rejection when its own reading reaches further out than what's on file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir, () => new Date());
+    await governor.recordRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: Math.floor(Date.now() / 1000) + 60 });
+    const laterReset = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    await governor.recordRateLimitError(laterReset);
+    const snapshot = await new RateLimitTracker(dir).read();
+    expect(snapshot?.resetsAt).toBe(Math.floor(laterReset.getTime() / 1000));
+  });
+
   it("a non-rejected recordRateLimit call resets the backoff level", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const governor = build(dir);
