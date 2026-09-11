@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { touchesExcludedPath } from "../src/control/excluded-paths.js";
+import { INFRA_REPO, touchesExcludedPath } from "../src/control/excluded-paths.js";
 import { GithubApiTransport } from "../src/control/github-api-transport.js";
 
 /** A minimal Response-shaped stub — only the members GithubApiTransport reads. */
@@ -73,7 +73,7 @@ describe("GithubApiTransport.getPullRequest", () => {
     expect(info.changedFiles).toContain("src/core/governor.ts");
     expect(info.changedFiles).toContain("README.md");
     // And the mapping that produces it is what Lock 4 actually consumes.
-    expect(touchesExcludedPath(info.changedFiles)).toBe(true);
+    expect(touchesExcludedPath(info.changedFiles, INFRA_REPO)).toBe(true);
   });
 
   it("fails closed — refuses rather than silently truncating — when the changed-files list is paginated", async () => {
@@ -158,6 +158,33 @@ describe("GithubApiTransport.mergePullRequest", () => {
     const fetchImpl = vi.fn(async () => fakeResponse({ ok: true, status: 200 })) as unknown as typeof fetch;
     const t = new GithubApiTransport({ token: "x", fetchImpl });
     await expect(t.mergePullRequest("owner/repo", 1, "sha-1")).resolves.toEqual({ merged: true });
+  });
+});
+
+describe("GithubApiTransport.hasCommentSince", () => {
+  it("passes `since` through as an ISO-8601 query param and returns true when at least one comment comes back", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: true, status: 200, json: [{ id: 1 }] })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    const since = new Date("2026-09-09T20:16:43.000Z");
+
+    await expect(t.hasCommentSince("owner/repo", 7, since)).resolves.toBe(true);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.stringContaining(`/repos/owner/repo/issues/7/comments?since=${encodeURIComponent(since.toISOString())}`),
+      expect.anything(),
+    );
+  });
+
+  it("returns false when no comments come back", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: true, status: 200, json: [] })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.hasCommentSince("owner/repo", 7, new Date())).resolves.toBe(false);
+  });
+
+  it("throws on a non-2xx response", async () => {
+    const fetchImpl = vi.fn(async () => fakeResponse({ ok: false, status: 500 })) as unknown as typeof fetch;
+    const t = new GithubApiTransport({ token: "x", fetchImpl });
+    await expect(t.hasCommentSince("owner/repo", 7, new Date())).rejects.toThrow(/failed to list comments/);
   });
 });
 

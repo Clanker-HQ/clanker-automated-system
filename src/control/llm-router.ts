@@ -80,7 +80,36 @@ export class LlmRouter implements Router {
     }
 
     const normalized = answer.toLowerCase();
-    if (normalized === "none" || normalized === "") return null;
-    return specialists.find((s) => s.name.toLowerCase() === normalized)?.name ?? null;
+    const specialistNames = specialists.map((s) => s.name);
+
+    if (normalized === "none" || normalized === "") {
+      // The two "nothing matched" outcomes look identical to a caller (both
+      // return null), but they mean very different things when debugging an
+      // "unrouted" failure: an explicit "none" is the model making a
+      // judgment call, while an empty answer means the call produced no
+      // usable assistant text at all (e.g. aborted before a reply, or a
+      // reply that toRunEvents didn't extract). Logging the raw answer and
+      // the specialist menu that was offered lets that distinction, and the
+      // menu itself, be inspected after the fact instead of guessed at.
+      console.log(
+        `[llm-router] no specialist matched: rawAnswer=${JSON.stringify(answer)} reason=${
+          normalized === "none" ? "model said none" : "empty/no answer received"
+        } availableSpecialists=${JSON.stringify(specialistNames)}`,
+      );
+      return null;
+    }
+
+    const matched = specialists.find((s) => s.name.toLowerCase() === normalized)?.name ?? null;
+    if (matched === null) {
+      // The model replied with something, but it wasn't "none" and didn't
+      // match any specialist name — a matching-logic problem (typo, wrong
+      // case, extra text) or a reasoning problem (model invented a name)
+      // rather than the model correctly deciding nothing fits.
+      console.log(
+        `[llm-router] no specialist matched: rawAnswer=${JSON.stringify(answer)} reason=unrecognized specialist name ` +
+          `availableSpecialists=${JSON.stringify(specialistNames)}`,
+      );
+    }
+    return matched;
   }
 }

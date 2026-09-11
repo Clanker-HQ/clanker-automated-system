@@ -533,6 +533,58 @@ describe("Governor.admit", () => {
     expect((governor as unknown as { activeSlots: number }).activeSlots).toBe(0);
     expect(await governor.admit(agent(), "trigger")).toEqual({ kind: "admit" });
   });
+
+  it("a pr-reviewer admit queued behind others still gets the next freed slot first", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 1\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+      now: () => new Date("2026-08-26T12:00:00.000Z"),
+    });
+
+    // Occupy the only slot, then queue a normal agent ahead of pr-reviewer —
+    // enqueued one at a time (see the "adjustConcurrency grants only as
+    // many waiters..." test above for why order isn't otherwise guaranteed).
+    expect(await governor.admit(agent("builder"), "trigger")).toEqual({ kind: "admit" });
+
+    let builderQueuedResolved = false;
+    const builderQueued = governor.admit(agent("builder"), "trigger").then((r) => {
+      builderQueuedResolved = true;
+      return r;
+    });
+    await waitForWaiters(governor, 1);
+
+    let reviewerResolved = false;
+    const reviewerQueued = governor.admit(agent("pr-reviewer"), "trigger").then((r) => {
+      reviewerResolved = true;
+      return r;
+    });
+    await new Promise<void>((resolve) => {
+      const deadline = Date.now() + 2000;
+      const poll = (): void => {
+        if ((governor as unknown as { priorityWaiters: unknown[] }).priorityWaiters.length >= 1 || Date.now() > deadline) {
+          resolve();
+        } else {
+          setTimeout(poll, 2);
+        }
+      };
+      poll();
+    });
+
+    // One slot frees up: pr-reviewer jumps ahead of the builder that was
+    // already waiting, even though it queued second.
+    governor.releaseSlot();
+    expect(await reviewerQueued).toEqual({ kind: "admit" });
+    expect(reviewerResolved).toBe(true);
+    expect(builderQueuedResolved).toBe(false);
+
+    governor.releaseSlot();
+    expect(await builderQueued).toEqual({ kind: "admit" });
+  });
 });
 
 describe("Governor.status", () => {

@@ -420,16 +420,89 @@ in would mean `!stop` no longer stops anything).
 spent, breaker tripped, rate-limit rejection, STOP file, a disabled agent)
 simply drops that cron fire: it is logged, alert-worthy ones post a Discord
 alert, and nothing is retried or queued. The agent's next run is its next
-scheduled fire. **One exception: a dispatched task.** A `!task` refused
-admission goes back to `pending` with its routing decision kept, and is
-retried on the dispatcher's next periodic tick (or the next `!task` / finished
-run) — a queued task has nowhere else to go, unlike a cron agent that gets
-another fire regardless. It is not dropped, and it is not notified per retry
-either; `!tasks` still showing it is how you know it's waiting on the governor.
+scheduled fire. **Two exceptions: a dispatched task, and a webhook event.**
+A `!task` refused admission goes back to `pending` with its routing decision
+kept, and is retried on the dispatcher's next periodic tick (or the next
+`!task` / finished run) — a queued task has nowhere else to go, unlike a cron
+agent that gets another fire regardless. It is not dropped, and it is not
+notified per retry either; `!tasks` still showing it is how you know it's
+waiting on the governor.
+
+A webhook-triggered agent (`pr-reviewer`) has no cron fire to fall back on
+either, and until this was fixed a refusal here just vanished — silently,
+forever, with no run record, no retry, nothing to notice a PR never got
+reviewed. `makeWebhookHandler` now persists a refused event via
+`WebhookRetryStore` (`src/control/webhook-retry-store.ts`), and
+`drainWebhookRetries` retries every pending one on the same 30s cadence the
+dispatcher polls the task queue on (cheap to check — a refusal is a local
+read, no API call, no spend). An event still refused after
+`MAX_WEBHOOK_RETRY_ATTEMPTS` (20) attempts is given up on — removed from the
+retry store, with a comment posted on the PR explaining automated review
+never actually ran, so it doesn't just sit there with no comment and no
+explanation.
+
+That fix only covered a refusal *before* admission (Governor.admit()
+returning "refuse"). Discovered 2026-09-09: a run that WAS admitted and then
+got cut short mid-run by the subscription's own session/rate limit —
+orchestrator.ts's "interrupted" status — looked identical to a normal
+completed run to the retry check (`result === undefined` was the only thing
+ever treated as retryable), so it was silently dropped in exactly the same
+way, just one step later in the lifecycle. Three PRs sat with zero review
+activity on their current commit for 14+ hours because of this before it was
+found. `processEvent` now also treats `status === "interrupted"` as
+retry-worthy, and — since dispatcher.ts already learned this lesson for
+dispatched tasks (see `rateLimitDeferCount` above) — parses the reset instant
+out of the error message the same way and defers the retry entry to that
+exact time (`nextRetryAt`) rather than hammering it every 30s tick, which
+would burn through all 20 attempts in 10 minutes, nowhere near enough to
+bridge an hours-long session limit. This defer path is capped separately, by
+`MAX_WEBHOOK_RATE_LIMIT_DEFERS` (5), so a plain Governor refusal and a
+recurring session limit can't exhaust each other's budget.
+
 Don't read "parked" into this — in this system **parked** means
 something narrower and quite different: an *in-flight* run that stopped
 mid-execution to await a human approve/deny/answer, and which resumes its
 original session when you give it.
+
+**A "success" run doesn't guarantee the PR ever heard about it.** Every fix
+above assumes a completed run reaches GitHub through its own tool calls. It
+often doesn't: the Claude Code CLI's own transport can throw `AbortError:
+Stream closed` on `postReviewComment` specifically (confirmed to originate
+inside the CLI binary, not this codebase — nothing here can fix it at the
+source), frequently late in a long review after the run's own one-retry
+budget (see prompt.md) is already spent. The run finishes `"success"` — a
+real review happened, a real verdict was reached — but the PR gets no
+comment, no explanation, and no `requestFix`, indistinguishable from the
+system having done nothing at all. `pilot-01#7` and `book-pipeline#1/#2` all
+sat with zero review activity on their current commit for 14+ hours because
+of exactly this. `processEvent` now checks, from outside the run, via the
+same reliable REST transport used everywhere else in this file (specifically
+*not* through the SDK's own unreliable tool-call path), whether a comment
+actually landed on the PR since the run started (`GithubTransport.
+hasCommentSince`); if not, it posts the run's own summary as a fallback
+comment itself. A harmless double-post, if the agent's own comment did land
+and this check somehow missed it, costs far less than a PR that silently
+never hears back at all.
+
+**`pr-reviewer` jumps the `maxConcurrent` queue.** Among runs waiting on a
+free slot, `pr-reviewer`'s admit() call is granted the next one ahead of
+anything else already queued (builder, research, a scout) — a second,
+higher-priority FIFO line inside Governor, drained first (see
+`priorityWaiters` in governor.ts). Without this, review work waited in the
+exact same line as everything that keeps proposing new work, and a burst of
+self-improvement/product PRs could leave a real, actionable review (or the
+fix `requestFix` just queued — next paragraph) stalled behind it for hours.
+
+**A `pr-reviewer` rejection can trigger its own fix, bounded.** Deciding not
+to merge used to be a dead end: the comment got posted and nothing else ever
+looked at it, so a rejected PR just sat open until a human noticed. When the
+findings are concretely fixable, `pr-reviewer` can now call `requestFix` to
+queue a `builder` task carrying them, routed directly (no router guess
+needed) — the fix, once pushed, re-triggers review automatically through the
+same `synchronize` webhook a manual retry always used. Capped at
+`MAX_FIX_ATTEMPTS_PER_PR` (3) attempts per PR (`src/state/pr-fix-attempts.ts`)
+so a PR a builder genuinely can't fix doesn't loop forever — past the cap,
+`requestFix` refuses and `pr-reviewer` is told to hand it to a human instead.
 
 **`Bash`'s outward-effect detection is a pattern list, not a hard boundary.**
 Every tier below `autonomous`-with-auto-approval is only as safe as the code's
@@ -494,6 +567,47 @@ rules (`src/control/self-build-gate.ts`) instead of being refused outright —
 see `docs/superpowers/specs/2026-08-30-self-build-design.md`. Everything
 outside that exact shape is refused exactly as before.
 
+**A second, narrower exception — the governance gate — was added 2026-09-11,
+at the operator's explicit request.** They don't review this codebase's
+diffs themselves, so "refuse, a human must merge directly" for
+`src/governor.ts`, `src/grants.ts`, `src/agent-schema.ts`,
+`src/control/bot.ts`, and `config.yaml` (`GOVERNANCE_PATHS`,
+`src/control/excluded-paths.ts`) was friction standing in for a check nobody
+was actually performing, not real safety. Rather than removing the check
+(what the self-build gate already does for its own narrow shape), it's
+replaced with layered checks that don't depend on a human looking:
+`pr-reviewer` runs a SECOND, dedicated adversarial safety pass specifically
+asking whether the diff removes, weakens, or bypasses any check/cap/refusal,
+or expands what any agent can do — distinct from its ordinary review — and
+records the verdict via `attestGovernanceSafety` (`GovernanceGateStore`,
+`src/state/governance-gate.ts`). `mergePR`'s gate then independently
+requires: a `safe` attestation matching the PR's CURRENT head (never
+trusted blindly, and void the instant a new commit lands, the same way the
+stale-SHA check works elsewhere), and a hard velocity cap
+(`MAX_GOVERNANCE_MERGES_PER_WINDOW`, currently 2 per rolling 24h) — bounding
+how much a single wrong verdict can do before a human is forced back into
+the loop, since unlike the self-build gate's schema-level rules, an LLM
+safety review cannot be proven correct by construction. Every merge this
+gate allows posts a distinct, loud Discord alert (channel + the safety
+review's own reasoning), so there is still real after-the-fact visibility
+with no before-the-fact click — see CLAUDE.md's own standing instruction
+that safety comes from scoping and algorithmic checks, not a human
+rubber-stamping something they were never going to meaningfully review.
+
+Deliberately NOT eligible for this gate, and still refused unconditionally
+forever, no exception: the enforcement mechanism itself
+(`excluded-paths.ts`, `self-build-gate.ts`, `sdk-runner.ts` — the file the
+gate is even called from — `git-pusher.ts`, `credentials.ts`, `index.ts`,
+`.github/workflows/ci.yml`), the webhook trust boundary
+(`webhook-signature.ts`, `webhook-wiring.ts` — which also carries the
+untrusted-PR-content prompt-injection fencing — `webhook-receiver.ts`), and
+`grants.yaml` (the actual credential/scope source of truth, already
+separately reachable through the self-build gate's own tested rules) and
+`goals.yaml` (excluded for an unrelated reason a safety review has nothing
+to do with — see `excluded-paths.ts`). A PR mixing a governance file with
+any of those, or touching any of those alone, gets the unconditional
+refusal exactly as before either gate existed.
+
 Subsystem 2's foundation pieces are in place: `src/goals.ts` (a `goals.yaml`
 schema and loader — the file itself is never authored by the system, only
 by the operator, and is excluded from the merge pipeline the same as
@@ -537,3 +651,12 @@ Still genuinely deferred:
   infra-repo pipeline's fixed `GITHUB_PR_TOKEN`. `WEBHOOK_PUBLIC_URL` still
   needs a real tunnel/reverse-proxy URL configured to actually receive
   anything (see `.env.example`).
+  <br><br>
+  `mergePR`'s excluded-path gate (`touchesExcludedPath`) is now explicitly
+  scoped to `INFRA_REPO` (`src/control/excluded-paths.ts`) — it used to check
+  a changed PR's files by bare name against every repo, so a product repo's
+  own, unrelated `src/index.ts` (an entirely ordinary Workers/Node entrypoint
+  name) tripped the same unconditional "security-sensitive excluded path"
+  refusal this repo's *own* `src/index.ts` is meant to trigger. Caught
+  2026-09-09 after two `AAS-Labs/pilot-01` PRs were refused this way with no
+  real security path involved at all.

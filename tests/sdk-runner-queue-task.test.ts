@@ -722,7 +722,10 @@ describe("SdkRunner recentFailures tool", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
     const dir = mkdtempSync(join(tmpdir(), "cai-sdkrunner-"));
     const tasks = new TaskStore(dir);
-    const recent = "2026-08-28T00:00:00.000Z";
+    // Relative to now, not a fixed date — a hardcoded date ages out of the
+    // 14-day window this test depends on the moment enough real time passes,
+    // which is exactly what broke this test and then CI on 2026-09-11.
+    const recent = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     await failedTask(tasks, { text: "a", specialistAgent: "research", failureReason: "boom", finishedAt: recent });
     await failedTask(tasks, { text: "b", specialistAgent: "research", failureReason: "boom", finishedAt: recent });
     await failedTask(tasks, { text: "c", specialistAgent: "research", failureReason: "boom", finishedAt: recent });
