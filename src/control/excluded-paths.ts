@@ -7,6 +7,13 @@
  * docs/decisions.md ("the PR reviewer runs a PR's code directly") for why
  * this backstop exists alongside CODEOWNERS/branch protection.
  *
+ * As of 2026-09-11, that "no matter what" is no longer literally true for
+ * every path here: `GOVERNANCE_PATHS`, defined further down this file, names
+ * a small subset that instead gets a different, layered set of automated
+ * checks (see its own doc comment for the full reasoning). Every path NOT in
+ * that subset — which is most of this list — is still refused exactly as
+ * this comment describes, unconditionally, forever.
+ *
  * The set deliberately covers two groups:
  *
  * 1. The parent governance files (`src/governor.ts`, `src/grants.ts`,
@@ -125,4 +132,64 @@ export const INFRA_REPO = "Clanker-HQ/clanker-automated-system";
 export function touchesExcludedPath(changedFiles: string[], repo: string): boolean {
   if (repo !== INFRA_REPO) return false;
   return changedFiles.some((f) => EXCLUDED_PATHS.includes(f) || EXCLUDED_PREFIXES.some((p) => f.startsWith(p)));
+}
+
+/**
+ * The subset of `EXCLUDED_PATHS` eligible for the governance gate
+ * (`src/state/governance-gate.ts`, consulted from `mergePR` in
+ * sdk-runner.ts) instead of the unconditional refusal every other excluded
+ * path still gets. Added 2026-09-11, at the operator's explicit direction:
+ * they don't review this codebase's diffs themselves, so the previous
+ * "refuse, a human must merge directly" behavior for these five files
+ * bought no real scrutiny — it was friction standing in for a check nobody
+ * was actually performing. Removing the check part of that entirely (as the
+ * self-build gate already does for its own narrow shape) was rejected in
+ * favor of replacing the friction with real, layered checks: a dedicated
+ * adversarial safety review distinct from the PR's ordinary one (see
+ * attestGovernanceSafety, sdk-runner.ts), a hard per-day velocity cap
+ * (MAX_GOVERNANCE_MERGES_PER_WINDOW) bounding how much damage one wrong
+ * verdict can do before a human is forced back into the loop, and a loud,
+ * distinct Discord alert on every merge this gate actually allows, so
+ * there's real after-the-fact visibility even with no before-the-fact
+ * click — see docs/decisions.md and CLAUDE.md's own standing instruction
+ * that safety comes from scoping and algorithmic checks, not a human
+ * rubber-stamping something they were never going to meaningfully review.
+ *
+ * Deliberately a SMALL subset of `EXCLUDED_PATHS`, not all of it. What's
+ * NOT here — and stays permanently, unconditionally excluded, the same as
+ * before this gate existed — is everything that either IS the enforcement
+ * mechanism itself (`excluded-paths.ts`, `self-build-gate.ts`,
+ * `sdk-runner.ts` — the file this very check is called from — `git-pusher.ts`,
+ * `credentials.ts`, `index.ts`, `.github/workflows/ci.yml`) or protects a
+ * boundary this gate's own review can't be trusted to police, because a
+ * broken version of that exact boundary is what would let a hostile PR
+ * manipulate the review in the first place (`webhook-signature.ts`, the
+ * signature check; `webhook-wiring.ts`, the untrusted-content prompt
+ * fencing; `webhook-receiver.ts`, the delivery entrypoint) — plus
+ * `grants.yaml` (the actual credential/scope source of truth, and already
+ * separately reachable through the self-build gate's own narrow, tested
+ * rules for the common case) and `goals.yaml` (excluded for an unrelated
+ * reason — see EXCLUDED_PATHS's own doc comment — that a safety review
+ * has nothing to do with). If a PR touches any of those alongside a
+ * governance-tier file, or ANY of those alone, `isGovernanceOnlyChange`
+ * returns false and the unconditional refusal applies exactly as always.
+ */
+export const GOVERNANCE_PATHS: readonly string[] = ["src/governor.ts", "src/grants.ts", "src/agent-schema.ts", "src/control/bot.ts", "config.yaml"];
+
+/**
+ * True only when every excluded path this PR touches is within
+ * `GOVERNANCE_PATHS` — never for a PR that also touches a floor file
+ * (anything in `EXCLUDED_PATHS`/`EXCLUDED_PREFIXES` but not
+ * `GOVERNANCE_PATHS`), and never for a PR that touches no excluded path at
+ * all (that PR was never refused in the first place, so this question
+ * doesn't apply to it — callers only reach this after `touchesExcludedPath`
+ * already returned true). Mirrors `isSelfBuildChange`'s all-or-nothing
+ * shape: mixing a governance file with a floor file always falls back to
+ * the unconditional refusal, the same way mixing a self-build file with an
+ * ordinary one does.
+ */
+export function isGovernanceOnlyChange(changedFiles: string[], repo: string): boolean {
+  if (repo !== INFRA_REPO) return false;
+  const excluded = changedFiles.filter((f) => EXCLUDED_PATHS.includes(f) || EXCLUDED_PREFIXES.some((p) => f.startsWith(p)));
+  return excluded.length > 0 && excluded.every((f) => GOVERNANCE_PATHS.includes(f));
 }

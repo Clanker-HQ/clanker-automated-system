@@ -567,6 +567,47 @@ rules (`src/control/self-build-gate.ts`) instead of being refused outright —
 see `docs/superpowers/specs/2026-08-30-self-build-design.md`. Everything
 outside that exact shape is refused exactly as before.
 
+**A second, narrower exception — the governance gate — was added 2026-09-11,
+at the operator's explicit request.** They don't review this codebase's
+diffs themselves, so "refuse, a human must merge directly" for
+`src/governor.ts`, `src/grants.ts`, `src/agent-schema.ts`,
+`src/control/bot.ts`, and `config.yaml` (`GOVERNANCE_PATHS`,
+`src/control/excluded-paths.ts`) was friction standing in for a check nobody
+was actually performing, not real safety. Rather than removing the check
+(what the self-build gate already does for its own narrow shape), it's
+replaced with layered checks that don't depend on a human looking:
+`pr-reviewer` runs a SECOND, dedicated adversarial safety pass specifically
+asking whether the diff removes, weakens, or bypasses any check/cap/refusal,
+or expands what any agent can do — distinct from its ordinary review — and
+records the verdict via `attestGovernanceSafety` (`GovernanceGateStore`,
+`src/state/governance-gate.ts`). `mergePR`'s gate then independently
+requires: a `safe` attestation matching the PR's CURRENT head (never
+trusted blindly, and void the instant a new commit lands, the same way the
+stale-SHA check works elsewhere), and a hard velocity cap
+(`MAX_GOVERNANCE_MERGES_PER_WINDOW`, currently 2 per rolling 24h) — bounding
+how much a single wrong verdict can do before a human is forced back into
+the loop, since unlike the self-build gate's schema-level rules, an LLM
+safety review cannot be proven correct by construction. Every merge this
+gate allows posts a distinct, loud Discord alert (channel + the safety
+review's own reasoning), so there is still real after-the-fact visibility
+with no before-the-fact click — see CLAUDE.md's own standing instruction
+that safety comes from scoping and algorithmic checks, not a human
+rubber-stamping something they were never going to meaningfully review.
+
+Deliberately NOT eligible for this gate, and still refused unconditionally
+forever, no exception: the enforcement mechanism itself
+(`excluded-paths.ts`, `self-build-gate.ts`, `sdk-runner.ts` — the file the
+gate is even called from — `git-pusher.ts`, `credentials.ts`, `index.ts`,
+`.github/workflows/ci.yml`), the webhook trust boundary
+(`webhook-signature.ts`, `webhook-wiring.ts` — which also carries the
+untrusted-PR-content prompt-injection fencing — `webhook-receiver.ts`), and
+`grants.yaml` (the actual credential/scope source of truth, already
+separately reachable through the self-build gate's own tested rules) and
+`goals.yaml` (excluded for an unrelated reason a safety review has nothing
+to do with — see `excluded-paths.ts`). A PR mixing a governance file with
+any of those, or touching any of those alone, gets the unconditional
+refusal exactly as before either gate existed.
+
 Subsystem 2's foundation pieces are in place: `src/goals.ts` (a `goals.yaml`
 schema and loader — the file itself is never authored by the system, only
 by the operator, and is excluded from the merge pipeline the same as
