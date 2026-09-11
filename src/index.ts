@@ -43,6 +43,7 @@ import { SdkRunner } from "./runner/sdk-runner.js";
 import type { Runner } from "./runner/types.js";
 import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
+import { GovernanceGateStore } from "./state/governance-gate.js";
 import { PrFixAttemptStore } from "./state/pr-fix-attempts.js";
 import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
@@ -115,6 +116,7 @@ async function main(): Promise<void> {
   const overrides = new ConfigOverridesStore(DATA_DIR);
   const breaker = new BreakerStore(DATA_DIR);
   const fixAttempts = new PrFixAttemptStore(DATA_DIR);
+  const governanceGate = new GovernanceGateStore(DATA_DIR);
   const webhookRetries = new WebhookRetryStore(DATA_DIR);
   // Builds a GithubTransport bound to an arbitrary token — no I/O, so it
   // belongs alongside the plain constructors just above rather than inside
@@ -231,6 +233,7 @@ async function main(): Promise<void> {
       // is always set.
       wake: async () => { if (dispatcher) await dispatcher.wake(); },
       fixAttempts,
+      governanceGate,
     });
     if (runner instanceof SdkRunner) {
       // Resolved once, here, rather than only inside SdkRunner.execute: that

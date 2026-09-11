@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { EXCLUDED_PATHS, EXCLUDED_PREFIXES, INFRA_REPO, touchesExcludedPath } from "../src/control/excluded-paths.js";
+import {
+  EXCLUDED_PATHS,
+  EXCLUDED_PREFIXES,
+  GOVERNANCE_PATHS,
+  INFRA_REPO,
+  isGovernanceOnlyChange,
+  touchesExcludedPath,
+} from "../src/control/excluded-paths.js";
 
 describe("touchesExcludedPath", () => {
   it("flags a change to any exact excluded path", () => {
@@ -122,5 +129,66 @@ describe("touchesExcludedPath repo scoping", () => {
 
   it("INFRA_REPO names this project's own repo", () => {
     expect(INFRA_REPO).toBe("Clanker-HQ/clanker-automated-system");
+  });
+});
+
+// Coverage for the 2026-09-11 governance gate — the small, named exception
+// to "excluded path always refuses unconditionally" that mergePR's own gate
+// (sdk-runner.ts) consults before falling back to that refusal.
+describe("isGovernanceOnlyChange", () => {
+  it("is true for a single governance-tier file", () => {
+    for (const f of GOVERNANCE_PATHS) {
+      expect(isGovernanceOnlyChange([f], INFRA_REPO), f).toBe(true);
+    }
+  });
+
+  it("is true when every excluded file touched is governance-tier, even across several", () => {
+    expect(isGovernanceOnlyChange(["src/governor.ts", "src/grants.ts", "config.yaml"], INFRA_REPO)).toBe(true);
+  });
+
+  it("is true when a governance file is mixed with an ordinary, non-excluded file", () => {
+    expect(isGovernanceOnlyChange(["src/governor.ts", "README.md", "tests/governor.test.ts"], INFRA_REPO)).toBe(true);
+  });
+
+  it("is false when a floor (non-governance) excluded path is touched at all, even alone", () => {
+    expect(isGovernanceOnlyChange(["src/runner/sdk-runner.ts"], INFRA_REPO)).toBe(false);
+    expect(isGovernanceOnlyChange(["grants.yaml"], INFRA_REPO)).toBe(false);
+    expect(isGovernanceOnlyChange(["src/control/excluded-paths.ts"], INFRA_REPO)).toBe(false);
+    expect(isGovernanceOnlyChange(["src/control/webhook-wiring.ts"], INFRA_REPO)).toBe(false);
+  });
+
+  it("is false when a governance file is mixed with a floor file — mixing always falls back to the unconditional refusal", () => {
+    expect(isGovernanceOnlyChange(["src/governor.ts", "src/runner/sdk-runner.ts"], INFRA_REPO)).toBe(false);
+  });
+
+  it("is false when no excluded path is touched at all — that PR was never refused, so this question doesn't apply", () => {
+    expect(isGovernanceOnlyChange(["README.md", "src/foo.ts"], INFRA_REPO)).toBe(false);
+  });
+
+  it("is false for any repo other than the infra repo — GOVERNANCE_PATHS describes this repo's own layout only", () => {
+    expect(isGovernanceOnlyChange(["src/governor.ts"], "AAS-Labs/pilot-01")).toBe(false);
+  });
+
+  it("GOVERNANCE_PATHS is a proper subset of EXCLUDED_PATHS — never a path EXCLUDED_PATHS doesn't already know about", () => {
+    for (const f of GOVERNANCE_PATHS) expect(EXCLUDED_PATHS).toContain(f);
+    expect(GOVERNANCE_PATHS.length).toBeLessThan(EXCLUDED_PATHS.length);
+  });
+
+  it("GOVERNANCE_PATHS excludes the enforcement mechanism itself and the webhook trust boundary", () => {
+    for (const floorFile of [
+      "src/control/excluded-paths.ts",
+      "src/control/self-build-gate.ts",
+      "src/runner/sdk-runner.ts",
+      "src/control/git-pusher.ts",
+      "src/control/webhook-signature.ts",
+      "src/control/webhook-wiring.ts",
+      "src/control/webhook-receiver.ts",
+      "src/runner/credentials.ts",
+      "src/index.ts",
+      "grants.yaml",
+      "goals.yaml",
+    ]) {
+      expect(GOVERNANCE_PATHS, floorFile).not.toContain(floorFile);
+    }
   });
 });

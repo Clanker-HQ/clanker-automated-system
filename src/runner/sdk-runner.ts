@@ -3,7 +3,7 @@ import type { SDKControlGetUsageResponse } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import type { MemoryConfig } from "../config.js";
 import type { ConfigOverridesStore } from "../config-overrides.js";
-import { touchesExcludedPath } from "../control/excluded-paths.js";
+import { isGovernanceOnlyChange, touchesExcludedPath } from "../control/excluded-paths.js";
 import type { FindingReviewer } from "../control/finding-reviewer.js";
 import { specialistsOf, type Router } from "../control/router.js";
 import type { GitCloner } from "../control/git-cloner.js";
@@ -21,6 +21,7 @@ import { priorityScore, toPriority } from "../memory/scoring.js";
 import type { DiscordOutbox } from "../outbox/discord.js";
 import type { AgentDef } from "../registry.js";
 import type { BreakerStore } from "../state/breaker.js";
+import { MAX_GOVERNANCE_MERGES_PER_WINDOW, type GovernanceGateStore } from "../state/governance-gate.js";
 import { MAX_FIX_ATTEMPTS_PER_PR, type PrFixAttemptStore } from "../state/pr-fix-attempts.js";
 import type { StrategyStore } from "../world/strategy.js";
 import type { WorldModel } from "../world/world-model.js";
@@ -576,6 +577,15 @@ export class SdkRunner implements Runner {
       wake?: () => Promise<void>;
       /** Backs requestFix's per-PR attempt cap (see MAX_FIX_ATTEMPTS_PER_PR). Optional, same posture as `tasks`/`wake` above: without it requestFix is simply not registered. */
       fixAttempts?: PrFixAttemptStore;
+      /**
+       * Backs the governance gate (attestGovernanceSafety, and mergePR's own
+       * consultation of it — see GOVERNANCE_PATHS in excluded-paths.ts).
+       * Optional, same posture as `fixAttempts`: without it, attestGovernanceSafety
+       * is simply not registered, and mergePR falls back to refusing every
+       * governance-tier PR unconditionally, exactly as it refuses every other
+       * excluded path.
+       */
+      governanceGate?: GovernanceGateStore;
       /** Optional: without it, queueTask queues exactly what's given, no automated rationale check — same fallback posture as findingReviewer below. */
       taskReviewer?: TaskReviewer;
       /**
@@ -931,12 +941,21 @@ export class SdkRunner implements Runner {
 
                 const info = await transport.getPullRequest(repo, number);
 
+                // Set only on the governance-gate branch below, and read after a
+                // successful merge further down — the trigger for recording a
+                // merge in GovernanceGateStore's velocity log and posting the
+                // distinct Discord alert. Every other path through this handler
+                // (an ordinary merge, a self-build merge) leaves this false.
+                let mergedViaGovernanceGate = false;
+
                 // Gate 1 — self-build changes (grants.yaml, or agents/*/{agent.yaml,
                 // prompt.md} in isolation — see isSelfBuildChange) get the mechanical
-                // four-rule self-build gate instead of an unconditional refusal;
-                // everything else still gets the unconditional excluded-path refusal,
-                // exactly as before this gate existed. This runs first: no grant, no
-                // review verdict, nothing later in this handler can override either branch.
+                // four-rule self-build gate; a governance-tier-only change (see
+                // GOVERNANCE_PATHS) gets the attestation+velocity-cap gate just
+                // below; everything else still gets the unconditional excluded-path
+                // refusal, exactly as before either gate existed. This runs first:
+                // no grant, no review verdict, nothing later in this handler can
+                // override any of the three branches.
                 if (isSelfBuildChange(info.changedFiles)) {
                   const verdict = await evaluateSelfBuildPr(transport, repo, info, process.env);
                   if (!verdict.allowed) {
@@ -950,14 +969,51 @@ export class SdkRunner implements Runner {
                   // any other merge: a self-build change still needs a grant and a
                   // fresh SHA.
                 } else if (touchesExcludedPath(info.changedFiles, repo)) {
-                  return {
-                    content: [
-                      {
-                        type: "text" as const,
-                        text: "Refused: this PR touches a security-sensitive excluded path and can never merge through this pipeline. Changes to that code must be made directly by a human, outside this pipeline.",
-                      },
-                    ],
-                  };
+                  const governanceGate = this.deps.governanceGate;
+                  if (governanceGate && isGovernanceOnlyChange(info.changedFiles, repo)) {
+                    const attestation = await governanceGate.getAttestation(repo, number);
+                    if (!attestation || attestation.headSha !== info.headSha) {
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: "Refused: this PR touches only governance-tier files, but there is no safety attestation for its current head — call attestGovernanceSafety first (a fresh one, if the head has moved since an earlier attestation).",
+                          },
+                        ],
+                      };
+                    }
+                    if (attestation.verdict !== "safe") {
+                      return {
+                        content: [
+                          { type: "text" as const, text: `Refused: the governance safety review found a concern — ${attestation.reasoning}` },
+                        ],
+                      };
+                    }
+                    const recentMerges = await governanceGate.countRecentMerges();
+                    if (recentMerges >= MAX_GOVERNANCE_MERGES_PER_WINDOW) {
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: `Refused: the automated governance-merge cap (${MAX_GOVERNANCE_MERGES_PER_WINDOW} per rolling 24h) has already been reached — this needs a human to merge directly instead of waiting for the window to clear.`,
+                          },
+                        ],
+                      };
+                    }
+                    mergedViaGovernanceGate = true;
+                    // Passed the attestation + velocity-cap checks — fall through to
+                    // gates 2/3 below, same as any other merge: a governance-tier
+                    // change still needs a grant and a fresh SHA.
+                  } else {
+                    return {
+                      content: [
+                        {
+                          type: "text" as const,
+                          text: "Refused: this PR touches a security-sensitive excluded path and can never merge through this pipeline. Changes to that code must be made directly by a human, outside this pipeline.",
+                        },
+                      ],
+                    };
+                  }
                 }
 
                 // Gate 2 — does this agent hold a github-pr grant covering this repo?
@@ -988,6 +1044,29 @@ export class SdkRunner implements Runner {
                 const result = await transport.mergePullRequest(repo, number, expectedHeadSha);
                 if (!result.merged) {
                   return { content: [{ type: "text" as const, text: `Refused: ${result.reason}` }] };
+                }
+                // Real, distinct after-the-fact visibility for the one kind of
+                // merge nobody — human or live session — looked at before it
+                // happened: logged for the velocity cap, and alerted loudly so
+                // a human reading the ops channel sees exactly what landed and
+                // why the reviewing agent judged it safe, even with no
+                // before-the-fact click. Best-effort like every other
+                // bookkeeping write here: losing either must never undo an
+                // already-completed merge.
+                if (mergedViaGovernanceGate && this.deps.governanceGate) {
+                  try {
+                    await this.deps.governanceGate.recordMerge({ repo, number, headSha: expectedHeadSha });
+                  } catch (error) {
+                    console.error(`[mergePR] failed to record governance-gate merge velocity for ${repo}#${number}`, error);
+                  }
+                  const attestation = await this.deps.governanceGate.getAttestation(repo, number).catch(() => null);
+                  await this.deps.outbox
+                    ?.postAlert(
+                      agent.outbox.discord,
+                      `⚙️ **${repo}#${number}** merged through the governance gate (touches governor.ts/grants.ts/agent-schema.ts/bot.ts/config.yaml only) — no human looked at this before it merged.\n` +
+                        `Safety review: ${attestation?.reasoning ?? "(reasoning not found)"}`,
+                    )
+                    .catch((err: unknown) => console.error(`[mergePR] failed to post the governance-merge alert for ${repo}#${number}`, err));
                 }
                 // Best-effort, like the other bookkeeping writes in this file:
                 // a merged PR is done, so requestFix's attempt count for it no
@@ -1077,6 +1156,50 @@ export class SdkRunner implements Runner {
                           {
                             type: "text" as const,
                             text: `Queued fix task ${created.id} for builder (attempt ${attemptNumber}/${MAX_FIX_ATTEMPTS_PER_PR} for ${key}).`,
+                          },
+                        ],
+                      };
+                    },
+                  ),
+                ]
+              : []),
+            // Records pr-reviewer's own dedicated, adversarially-framed safety
+            // verdict on a governance-tier diff (see GOVERNANCE_PATHS,
+            // excluded-paths.ts) — the data point mergePR's own gate 1
+            // independently consults before it will act on the exception at
+            // all, never trusted blindly. This tool only ever WRITES that
+            // verdict; it authorizes nothing itself. The head SHA is fetched
+            // here, not accepted as an argument, for the same reason mergePR
+            // never trusts a model-supplied `changedFiles`: an attestation
+            // for a SHA the agent merely claims is current would let a
+            // confused or manipulated run attest against a stale diff and
+            // have a LATER, unreviewed commit ride through on it.
+            ...(agent.name === "pr-reviewer" && this.deps.governanceGate
+              ? [
+                  tool(
+                    "attestGovernanceSafety",
+                    "Record the verdict of a DEDICATED safety review for a PR that touches a governance-tier file (governor.ts, grants.ts, agent-schema.ts, bot.ts, or config.yaml) — separate from, and in addition to, your ordinary review. Before calling this, specifically ask: does this diff remove, weaken, or add a bypass to any check, cap, refusal, or credential scope? Does it expand what any agent can do (a new tool, a broader grant match, wider filesystem/network/credential access, a relaxed validation)? Call this once with your verdict before attempting mergePR — mergePR will refuse a governance-tier PR with no matching 'safe' attestation for its exact current head, or one recorded as 'unsafe', the same as any other excluded path.",
+                    {
+                      repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'must be "owner/repo"'),
+                      number: z.number().int().positive(),
+                      verdict: z.enum(["safe", "unsafe"]),
+                      reasoning: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
+                    },
+                    async ({ repo, number, verdict, reasoning }) => {
+                      const governanceGate = this.deps.governanceGate!;
+                      const effect = detectOutwardEffect("mergePR", { repo })!;
+                      const relevantGrants = this.deps.grants.filter((g) => agent.grantRefs.includes(g.id));
+                      const grant = matchGrant(relevantGrants, effect);
+                      const token = grant ? process.env[grant.secret] : undefined;
+                      const transport = token && this.deps.githubForToken ? this.deps.githubForToken(token) : github;
+
+                      const info = await transport.getPullRequest(repo, number);
+                      await governanceGate.recordAttestation({ repo, number, headSha: info.headSha, verdict, reasoning });
+                      return {
+                        content: [
+                          {
+                            type: "text" as const,
+                            text: `Recorded a "${verdict}" governance-safety attestation for ${repo}#${number} at head ${info.headSha}.`,
                           },
                         ],
                       };
