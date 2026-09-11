@@ -401,7 +401,7 @@ async function main(): Promise<void> {
   });
 
   const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
-  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries }));
+  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor }));
   void webhookReceiver.listen(webhookPort).then(
     () => {
       console.log(`[boot] webhook receiver listening on :${webhookPort}`);
@@ -425,7 +425,7 @@ async function main(): Promise<void> {
   // call, no spend) and means a retry lands within a minute of whatever it
   // was waiting on actually clearing, not whenever a human happens to notice.
   setInterval(() => {
-    void drainWebhookRetries({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries }).catch(
+    void drainWebhookRetries({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor }).catch(
       (error: unknown) => {
         console.error("[webhook-retry] drainWebhookRetries failed", error);
       },
