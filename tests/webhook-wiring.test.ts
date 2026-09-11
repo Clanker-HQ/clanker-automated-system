@@ -6,6 +6,7 @@ import type { WebhookEvent } from "../src/control/webhook-receiver.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { drainWebhookRetries, makeWebhookHandler } from "../src/control/webhook-wiring.js";
 import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, WebhookRetryStore } from "../src/control/webhook-retry-store.js";
+import type { Governor } from "../src/governor.js";
 import type { Grant } from "../src/grants.js";
 import type { Orchestrator } from "../src/orchestrator.js";
 import type { AgentDef } from "../src/registry.js";
@@ -355,6 +356,85 @@ describe("makeWebhookHandler retry persistence", () => {
     await handler(event());
 
     expect(await retryStore.list()).toEqual([]);
+  });
+
+  // Regression coverage for the 2026-09-10/11 discovery: book-pipeline#1 and
+  // #2 both burned their entire MAX_WEBHOOK_RETRY_ATTEMPTS (20 × 30s = 10min)
+  // budget and gave up, even though Governor's own rate-limit snapshot at the
+  // time already knew the real reset instant was hours out — the
+  // "interrupted" (post-admission) path deferred to a parsed reset instant,
+  // but a plain PRE-admission refusal never consulted Governor at all.
+  describe("pre-admission refusal deferred to Governor's own known reset instant", () => {
+    function governorWithStatus(overrides: Partial<{ rateLimitStatus: string | null; rateLimitResetsAt: number | null }>) {
+      return {
+        status: vi.fn().mockResolvedValue({
+          rateLimitStatus: null,
+          rateLimitResetsAt: null,
+          ...overrides,
+        }),
+      } as unknown as Governor;
+    }
+
+    it("defers to Governor's rateLimitResetsAt when the current snapshot is rejected", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const governor = governorWithStatus({ rateLimitStatus: "rejected", rateLimitResetsAt: 1789073400 });
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore, governor });
+
+      await handler(event());
+
+      const pending = await retryStore.list();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.attempts).toBe(0);
+      expect(pending[0]!.rateLimitDeferCount).toBe(1);
+      expect(pending[0]!.nextRetryAt).toBe(new Date(1789073400 * 1000).toISOString());
+    });
+
+    it("falls back to the plain flat-cadence retry when the snapshot is not rejected", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const governor = governorWithStatus({ rateLimitStatus: "allowed_warning", rateLimitResetsAt: 1789073400 });
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore, governor });
+
+      await handler(event());
+
+      const pending = await retryStore.list();
+      expect(pending[0]!.attempts).toBe(1);
+      expect(pending[0]!.rateLimitDeferCount).toBeUndefined();
+      expect(pending[0]!.nextRetryAt).toBeUndefined();
+    });
+
+    it("falls back to the plain retry when no governor is wired in at all", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore });
+
+      await handler(event());
+
+      const pending = await retryStore.list();
+      expect(pending[0]!.attempts).toBe(1);
+      expect(pending[0]!.nextRetryAt).toBeUndefined();
+    });
+
+    it("swallows a governor.status() failure and falls back to the plain retry rather than losing the event", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const governor = { status: vi.fn().mockRejectedValue(new Error("disk read failed")) } as unknown as Governor;
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore, governor });
+
+      await expect(handler(event())).resolves.toBeUndefined();
+      const pending = await retryStore.list();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.attempts).toBe(1);
+    });
   });
 
   // Regression coverage for the 2026-09-09 discovery: a run that WAS

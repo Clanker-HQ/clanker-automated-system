@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Governor } from "../governor.js";
 import { detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
@@ -54,6 +55,14 @@ interface WebhookHandlerDeps {
    * exactly as it always was.
    */
   retryStore?: WebhookRetryStore;
+  /**
+   * Read-only, so a pre-admission refusal can be told how long it will
+   * actually last — see processEvent's use of `governor.status()` below.
+   * Optional so existing tests/callers that don't wire it get exactly the
+   * old behavior: a plain refusal retried on the flat 30s/MAX_WEBHOOK_RETRY_ATTEMPTS
+   * cadence, same as before this existed.
+   */
+  governor?: Governor;
 }
 
 /**
@@ -97,6 +106,40 @@ interface ProcessEventOutcome {
    * reset time.
    */
   rateLimitResetAt?: Date;
+}
+
+/**
+ * When a pre-admission Governor.admit() refusal is actually caused by the
+ * shared rate-limit snapshot being "rejected", this is the same known reset
+ * instant `!status`/the dashboard already read off Governor — reusing it
+ * here closes a gap discovered 2026-09-10: the "interrupted" (post-admission)
+ * case already deferred to a parsed reset instant, but a PLAIN pre-admission
+ * refusal (this one) always used the flat 30s-tick/MAX_WEBHOOK_RETRY_ATTEMPTS
+ * cadence regardless of cause — 20 attempts × 30s is 10 minutes, nowhere near
+ * enough for a rate-limit window Governor itself already knew wouldn't clear
+ * for hours. book-pipeline#1 and #2 both burned their entire retry budget
+ * and gave up for exactly this reason before it was found.
+ *
+ * Best-effort and narrowly scoped: only returns a reset instant when the
+ * snapshot Governor is CURRENTLY holding says "rejected" — a refusal for a
+ * different reason (daily budget, quiet hours, the STOP file, a disabled
+ * agent, the breaker) falls through to the same flat cadence as before,
+ * since none of those carry a comparably reliable known-clear instant.
+ * `governor` is optional and a status() failure is swallowed, in both cases
+ * degrading to that same pre-existing behavior rather than failing the
+ * event.
+ */
+async function preAdmissionResetAt(deps: WebhookHandlerDeps): Promise<Date | undefined> {
+  if (!deps.governor) return undefined;
+  try {
+    const status = await deps.governor.status();
+    if (status.rateLimitStatus === "rejected" && status.rateLimitResetsAt !== null) {
+      return new Date(status.rateLimitResetsAt * 1000);
+    }
+  } catch (err: unknown) {
+    console.error("[webhook] failed to read governor status for a refused event's retry deferral", err);
+  }
+  return undefined;
 }
 
 /**
@@ -223,7 +266,7 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
 
   const triggeredAt = new Date();
   const result = await deps.orchestrator.executeRun(agent, triggeredAt, promptContext);
-  if (result === undefined) return { retry: true };
+  if (result === undefined) return { retry: true, rateLimitResetAt: await preAdmissionResetAt(deps) };
   // isLimitError, not the status alone: "interrupted" also covers a run
   // stopped after MAX_CONSECUTIVE_TOOL_FAILURES broken-tool failures (see
   // sdk-runner.ts), which retrying at any cadence — let alone a rate-limit
