@@ -502,7 +502,9 @@ export class Governor {
    * after a cooldown that doubles per consecutive miss, capped at 30 minutes.
    * consecutiveRateLimitErrors is in-memory only: a restart resets the
    * backoff level but not safety, since the snapshot itself still reads
-   * "rejected" until a genuinely fresh non-rejected reading arrives.
+   * "rejected" until a genuinely fresh non-rejected reading arrives — the
+   * write below is monotonic specifically to make that true, never letting
+   * this call's own guess shorten a rejection already on file.
    *
    * @param resetsAt the instant the error message said the limit clears, if
    * it said. Preferred over the cooldown whenever it is in the future — the
@@ -526,12 +528,25 @@ export class Governor {
       resetsAt !== undefined && resetsAt.getTime() > now.getTime()
         ? Math.floor(resetsAt.getTime() / 1000)
         : undefined;
-    await this.rateLimits.record(
-      {
-        status: "rejected",
-        resetsAt: named ?? Math.floor(now.getTime() / 1000) + cooldownMinutes * 60,
-      },
-      now,
-    );
+    const candidate = named ?? Math.floor(now.getTime() / 1000) + cooldownMinutes * 60;
+
+    // Never let this call SHORTEN a rejection that's already on file and
+    // still live — regression for a 2026-09-12 incident: within one run, the
+    // SDK's own accurate rate_limit_event (a real multi-hour resetsAt, via
+    // recordRateLimit above) was immediately followed by a generic
+    // "rate_limit" error string carrying no time at all, whose 2-30-minute
+    // guessed cooldown overwrote the accurate reading down to a few minutes
+    // out — reopening admission into a limit that had not actually cleared,
+    // every few minutes, for hours, and burning through webhook-retry and
+    // task-retry budgets meant to survive a single multi-hour wait. This
+    // makes the write monotonic: a later call may only extend the recorded
+    // rejection, never shrink it, until a genuinely non-rejected reading
+    // (recordRateLimit) replaces it outright.
+    const existing = currentRateLimit(await this.rateLimits.read(), now);
+    if (existing?.status === "rejected" && existing.resetsAt !== undefined && existing.resetsAt >= candidate) {
+      return;
+    }
+
+    await this.rateLimits.record({ status: "rejected", resetsAt: candidate }, now);
   }
 }
