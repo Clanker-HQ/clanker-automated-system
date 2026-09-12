@@ -509,9 +509,14 @@ describe("matchGrant: git-push branch enforcement", () => {
  *    dozen equivalent ways (`-XDELETE`, `--request DELETE`, a `-d` body that
  *    implies POST, curl's own default GET). A hand-rolled regex would give
  *    false confidence without closing the gap. The mitigation is narrower
- *    grant scoping in practice: `grants.yaml`'s real http-family grants
- *    (`web-read`) are read-only by convention and by which credential sits
- *    behind them, not by a `method` field this code path can't verify.
+ *    grant scoping in practice: `web-read` is read-only by convention and by
+ *    which credential sits behind it, and the two write-capable http grants
+ *    added since (`cloudflare-deploy`, `stripe-checkout`) are each scoped to
+ *    one narrow, single-purpose credential (Workers/D1 Edit only; Products/
+ *    Prices/Checkout Sessions write only) rather than a general-purpose key
+ *    that could reach further than intended — the credential's own scope
+ *    stands in for the `method` field this code path can't verify, not "http
+ *    grants never write" as a blanket rule.
  *
  * 2. `limit.perDay` (provision grants): enforcing it means turning
  *    `matchGrant` from a pure, synchronous, side-effect-free function into

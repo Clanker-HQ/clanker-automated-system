@@ -24,7 +24,7 @@ permissions:
 
 tier: autonomous
 approval: auto
-grantRefs: [builder-push, products-provision, products-push]
+grantRefs: [builder-push, products-provision, products-push, cloudflare-deploy, stripe-checkout]
 
 outbox:
   discord: ops
