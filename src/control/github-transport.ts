@@ -8,6 +8,21 @@ export interface PullRequestInfo {
   diff: string;
   title: string;
   body: string;
+  /**
+   * GitHub's own PR state at the moment this was fetched — "open" covers
+   * both a plain open PR and a merged one (GitHub's API reports `state:
+   * "open"` until closed; `merged` is the separate flag that distinguishes
+   * a merge from a plain close). webhook-wiring.ts's processEvent checks
+   * this before spending a run: a webhook-triggered review can sit queued
+   * behind a Governor refusal for hours (see WebhookRetryStore) and by the
+   * time it's finally retried, the PR it was queued for may already have
+   * been merged or closed by an earlier, cheaper duplicate delivery of the
+   * same event, or by a human — discovered 2026-09-12 when a stale retry
+   * spent $18.41 reviewing a PR that had already merged 1h38m earlier.
+   */
+  state: "open" | "closed";
+  /** True when a "closed" PR was closed via merge rather than a plain close. Meaningless when `state` is "open". */
+  merged: boolean;
 }
 
 export type MergeResult = { merged: true } | { merged: false; reason: string };
@@ -66,8 +81,18 @@ export class FakeGithubTransport implements GithubTransport {
     return `${repo}@${ref}:${path}`;
   }
 
-  seedPullRequest(info: Omit<PullRequestInfo, "base"> & { base?: string }): void {
-    this.pulls.set(this.key(info.repo, info.number), { ...info, base: info.base ?? "main" });
+  /**
+   * `base`, `state`, and `merged` all default (to "main", "open", and false
+   * respectively) so every existing test that seeds a PR without caring
+   * about closed/merged handling keeps working unchanged.
+   */
+  seedPullRequest(info: Omit<PullRequestInfo, "base" | "state" | "merged"> & { base?: string; state?: "open" | "closed"; merged?: boolean }): void {
+    this.pulls.set(this.key(info.repo, info.number), {
+      ...info,
+      base: info.base ?? "main",
+      state: info.state ?? "open",
+      merged: info.merged ?? false,
+    });
   }
 
   /** Seeds the content a getFileContent/listRepoFiles call returns for `path` at `ref`. */
