@@ -2223,6 +2223,40 @@ export class SdkRunner implements Runner {
         if (events.some((e) => e.type === "usage")) sawTerminalUsage = true;
         yield* events;
 
+        // Hard cap, enforced by THIS loop rather than left to the SDK's own
+        // `maxBudgetUsd` option alone. That option only stops the run once the
+        // SDK notices — in practice, no earlier than the terminal `result`
+        // message for the turn in progress — so a tool-retry loop that racks
+        // up many cheap-looking turns in a row (each comfortably under budget
+        // on its own) can still blow past the cap well before that check ever
+        // fires: the 2026-09-08 pr-reviewer run that spent $8.64 against a
+        // $3.00 maxBudgetUsd did exactly this. Checked after EVERY message
+        // (not just on a tool_result), using the same running per-turn token
+        // total `accumulateUsage` already maintains above, so this notices
+        // the overrun the instant it happens rather than once per tool call.
+        // Estimated, not exact — the SDK's own precise `total_cost_usd` is
+        // only ever known on the terminal `result` message — but the same
+        // estimate the abort-fallback synthesis below already relies on to
+        // report a truthful cost for a run that never reached one, so a
+        // systematic bias in the estimate does not make this cap easier to
+        // blow past than the number this run will actually be charged
+        // against later.
+        const estimatedCostUsd = estimateCostUsd(agent.run.model, partial.inputTokens, partial.outputTokens);
+        if (estimatedCostUsd > agent.run.maxBudgetUsd) {
+          // "interrupted", not "error" — same reasoning as the tool-failure
+          // cap just below: the agent didn't do anything the breaker should
+          // hold against it, its own configured ceiling did its job.
+          terminalEvent = {
+            type: "interrupted",
+            reason:
+              `Stopped after cumulative cost reached an estimated $${estimatedCostUsd.toFixed(2)}, over its ` +
+              `$${agent.run.maxBudgetUsd.toFixed(2)} maxBudgetUsd cap. The SDK's own budget enforcement did not ` +
+              `stop this run in time (see sdk-runner.ts), so this loop's own running estimate is the actual cap.`,
+          };
+          controller.abort();
+          break;
+        }
+
         for (const event of events) {
           if (event.type !== "tool_result") continue;
           consecutiveToolFailures = event.ok ? 0 : consecutiveToolFailures + 1;
