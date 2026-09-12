@@ -34,6 +34,38 @@ function utcForWallClock(year: number, month: number, day: number, hour: number,
   return new Date(guess - tzOffsetMs(new Date(guess), timeZone));
 }
 
+/**
+ * The next instant at or after `now` when `timeZone`'s wall clock reads
+ * `hour:minute` — rolling forward to tomorrow if that time has already
+ * passed today. Factored out of parseRateLimitReset so webhook-wiring.ts's
+ * preAdmissionResetAt can reuse the exact same "next occurrence of a named
+ * clock time" logic for a quiet-hours end time or a daily-budget midnight
+ * reset, neither of which comes from a parsed error message the way a
+ * session-limit reset does, but which name an equally knowable wall-clock
+ * instant.
+ */
+export function nextOccurrenceOfWallClock(hour: number, minute: number, timeZone: string, now: Date): Date {
+  const todayParts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
+      .formatToParts(now)
+      .filter((p) => p.type !== "literal")
+      .map((p) => [p.type, p.value]),
+  );
+  const year = Number(todayParts.year);
+  const month = Number(todayParts.month);
+  const day = Number(todayParts.day);
+
+  let candidate = utcForWallClock(year, month, day, hour, minute, timeZone);
+  if (candidate.getTime() <= now.getTime()) {
+    // Roll the calendar date forward one day — Date.UTC normalizes day
+    // overflow across month/year boundaries the same way in every zone, so
+    // this needs no zone-specific handling.
+    const rolled = new Date(Date.UTC(year, month - 1, day + 1));
+    candidate = utcForWallClock(rolled.getUTCFullYear(), rolled.getUTCMonth() + 1, rolled.getUTCDate(), hour, minute, timeZone);
+  }
+  return candidate;
+}
+
 export function parseRateLimitReset(message: string, now: Date): Date | undefined {
   const match = RESET_PATTERN.exec(message);
   if (!match) return undefined;
@@ -54,25 +86,7 @@ export function parseRateLimitReset(message: string, now: Date): Date | undefine
     return undefined;
   }
 
-  const todayParts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
-      .formatToParts(now)
-      .filter((p) => p.type !== "literal")
-      .map((p) => [p.type, p.value]),
-  );
-  const year = Number(todayParts.year);
-  const month = Number(todayParts.month);
-  const day = Number(todayParts.day);
-
-  let candidate = utcForWallClock(year, month, day, hour, minute, timeZone!);
-  if (candidate.getTime() <= now.getTime()) {
-    // Roll the calendar date forward one day — Date.UTC normalizes day
-    // overflow across month/year boundaries the same way in every zone, so
-    // this needs no zone-specific handling.
-    const rolled = new Date(Date.UTC(year, month - 1, day + 1));
-    candidate = utcForWallClock(rolled.getUTCFullYear(), rolled.getUTCMonth() + 1, rolled.getUTCDate(), hour, minute, timeZone!);
-  }
-  return candidate;
+  return nextOccurrenceOfWallClock(hour, minute, timeZone!, now);
 }
 
 /**
