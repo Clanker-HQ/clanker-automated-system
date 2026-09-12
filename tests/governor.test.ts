@@ -443,6 +443,53 @@ describe("Governor.admit", () => {
     expect(secondResolved).toBe(true);
   });
 
+  // Reproduces the 2026-09-12 incident: a backlog of pr-reviewer triggers
+  // each individually passed every gate while the account still had
+  // headroom, then queued behind the single global slot (held by a
+  // long-running builder/research run) for long enough that the account's
+  // rate limit tipped over to "rejected" WHILE they waited. Before this test
+  // existed, admit() never looked again once a slot was granted, so every
+  // one of those queued triggers still fired — each burning a real CLI round
+  // trip (and a unit of its own caller's retry/defer budget) on an outcome
+  // the account had already made certain.
+  it("re-checks the rate limit after a slot finally frees up, refusing if it tipped over while queued", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 1\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+      now: () => new Date(FIXED_NOW_MS),
+    });
+
+    // Holds the only slot, exactly like a long-running builder/research run.
+    expect(await governor.admit(agent("holder"), "trigger")).toEqual({ kind: "admit" });
+
+    let queuedResult: Awaited<ReturnType<typeof governor.admit>> | undefined;
+    const queuedPromise = governor.admit(agent("queued"), "trigger").then((r) => {
+      queuedResult = r;
+      return r;
+    });
+    await waitForWaiters(governor, 1);
+    expect(queuedResult).toBeUndefined();
+
+    // The account tips over into "rejected" while the trigger above is
+    // still sitting in the queue, nowhere near the slot yet.
+    await new RateLimitTracker(dir).record(
+      { status: "rejected", rateLimitType: "five_hour", resetsAt: FIXED_NOW_SECONDS + 3600 },
+      new Date(FIXED_NOW_MS),
+    );
+
+    governor.releaseSlot();
+    expect(await queuedPromise).toMatchObject({ kind: "refuse", reason: expect.stringContaining("rate limit") });
+
+    // The slot the refused trigger transiently held was released again, not
+    // leaked — nothing is holding it.
+    expect((governor as unknown as { activeSlots: number }).activeSlots).toBe(0);
+  });
+
   it("adjustConcurrency immediately admits runs already queued behind the old, lower limit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const config = parseConfig(
