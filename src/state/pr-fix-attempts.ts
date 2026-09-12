@@ -58,4 +58,22 @@ export class PrFixAttemptStore {
     delete data[key];
     await this.writeAll(data);
   }
+
+  /**
+   * Every `(repo, PR)` key that has already used up all of
+   * MAX_FIX_ATTEMPTS_PER_PR — the same PRs `requestFix` (sdk-runner.ts) is
+   * now refusing and telling pr-reviewer to hand to a human instead, via a
+   * comment left on the PR itself. That comment is the only trace today:
+   * nothing reads this file back to say which PRs are actually waiting on a
+   * human, so this store — despite already holding the exact answer — never
+   * surfaced it anywhere a human would see it without going and checking
+   * every repo's every PR by hand. Backs digest.ts's "needing human
+   * attention" section.
+   */
+  async listExhausted(): Promise<string[]> {
+    const data = await this.readAll();
+    return Object.entries(data)
+      .filter(([, count]) => count >= MAX_FIX_ATTEMPTS_PER_PR)
+      .map(([key]) => key);
+  }
 }

@@ -7,6 +7,8 @@ import type { MemoryStore } from "../memory/memory-store.js";
 import type { AgentDef } from "../registry.js";
 import type { RunStore } from "../run-store.js";
 import type { MetricsStore } from "../state/metrics-store.js";
+import type { PrFixAttemptStore } from "../state/pr-fix-attempts.js";
+import type { WebhookGiveUpStore } from "../state/webhook-give-ups.js";
 import type { StrategyStore } from "../world/strategy.js";
 
 interface DigestOutbox {
@@ -34,6 +36,10 @@ export function startDigest(opts: {
   agents?: AgentDef[];
   /** Passed straight through: buildDigestText treats every enabled cron agent as un-exempt when this is absent. */
   strategyStore?: StrategyStore;
+  /** Passed straight through: buildDigestText drops the "needing a human" section's fix-attempts half when this is absent. */
+  fixAttempts?: PrFixAttemptStore;
+  /** Passed straight through: buildDigestText drops the "needing a human" section's webhook-give-up half when this is absent. */
+  webhookGiveUps?: WebhookGiveUpStore;
 }): Cron {
   const now = opts.now ?? (() => new Date());
   // Async rather than `void run().catch()`: croner awaits an async callback,
@@ -46,6 +52,7 @@ export function startDigest(opts: {
         store: opts.store, tasks: opts.tasks, since, memory: opts.memory, memoryConfig: opts.memoryConfig,
         metricsStore: opts.metricsStore, probeStore: opts.probeStore, declaredSlugs: opts.declaredSlugs,
         agents: opts.agents, strategyStore: opts.strategyStore,
+        fixAttempts: opts.fixAttempts, webhookGiveUps: opts.webhookGiveUps,
       });
       await opts.outbox.postAlert(opts.channel, text);
     } catch (error) {

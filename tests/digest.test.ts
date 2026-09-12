@@ -8,8 +8,10 @@ import { buildDigestText } from "../src/digest.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
 import type { AgentDef } from "../src/registry.js";
 import { RunStore, newRunId } from "../src/run-store.js";
+import { MAX_FIX_ATTEMPTS_PER_PR, PrFixAttemptStore } from "../src/state/pr-fix-attempts.js";
 import type { Metrics } from "../src/state/metrics-store.js";
 import { MetricsStore } from "../src/state/metrics-store.js";
+import { WebhookGiveUpStore } from "../src/state/webhook-give-ups.js";
 import { startDigest } from "../src/triggers/digest.js";
 import type { Strategy } from "../src/world/strategy.js";
 import { metricsSnapshot as baseMetricsSnapshot } from "./helpers/metrics.js";
@@ -100,6 +102,56 @@ describe("buildDigestText", () => {
     const text = await buildDigestText({ store, tasks, since: WITHIN_WINDOW });
     expect(text).toContain("Waiting on you");
     expect(text).toContain(waiting.id.slice(0, 8));
+  });
+
+  // Regression coverage for the 2026-09-13 visibility gap: a PR that
+  // exhausted its automatic fix attempts or its webhook retry budget used to
+  // leave no trace anywhere but a comment on the PR itself.
+  describe("PRs needing a human (fixAttempts / webhookGiveUps)", () => {
+    it("lists a PR that has exhausted its automatic fix attempts, regardless of how long ago", async () => {
+      const { store, tasks } = stores();
+      const fixAttempts = new PrFixAttemptStore(mkdtempSync(join(tmpdir(), "cai-digest-fixattempts-")));
+      for (let i = 0; i < MAX_FIX_ATTEMPTS_PER_PR; i++) await fixAttempts.increment("AAS-Labs/pilot-01#6");
+
+      const text = await buildDigestText({ store, tasks, since: WITHIN_WINDOW, fixAttempts });
+
+      expect(text).toContain("PRs needing a human");
+      expect(text).toContain("AAS-Labs/pilot-01#6");
+      expect(text).toContain("auto-fix exhausted");
+    });
+
+    it("does not list a PR still under the automatic fix cap", async () => {
+      const { store, tasks } = stores();
+      const fixAttempts = new PrFixAttemptStore(mkdtempSync(join(tmpdir(), "cai-digest-fixattempts-")));
+      await fixAttempts.increment("AAS-Labs/pilot-01#6");
+
+      const text = await buildDigestText({ store, tasks, since: WITHIN_WINDOW, fixAttempts });
+
+      expect(text).toBe("📅 Daily digest: nothing happened in the last 24h.");
+    });
+
+    it("lists a PR drainWebhookRetries has given up on, labeled by its reason", async () => {
+      const { store, tasks } = stores();
+      const webhookGiveUps = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-digest-giveups-")));
+      await webhookGiveUps.record("Clanker-HQ/clanker-automated-system#75", {
+        reason: "attempts", totalTries: 20, createdAt: "2026-09-11T16:18:05.867Z", gaveUpAt: "2026-09-11T16:27:24.523Z",
+      });
+      await webhookGiveUps.record("AAS-Labs/book-pipeline#1", {
+        reason: "rate-limit-defers", totalTries: 60, createdAt: "2026-09-09T00:00:00.000Z", gaveUpAt: "2026-09-11T00:00:00.000Z",
+      });
+
+      const text = await buildDigestText({ store, tasks, since: WITHIN_WINDOW, webhookGiveUps });
+
+      expect(text).toContain("Clanker-HQ/clanker-automated-system#75");
+      expect(text).toContain("review couldn't start");
+      expect(text).toContain("AAS-Labs/book-pipeline#1");
+      expect(text).toContain("session limit kept recurring");
+    });
+
+    it("says nothing happened when neither store is wired in — matches pre-existing behavior", async () => {
+      const { store, tasks } = stores();
+      expect(await buildDigestText({ store, tasks, since: WITHIN_WINDOW })).toBe("📅 Daily digest: nothing happened in the last 24h.");
+    });
   });
 
   it("flags runs that succeeded but were graded not-achieved, within the window only", async () => {
