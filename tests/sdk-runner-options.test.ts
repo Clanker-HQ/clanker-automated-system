@@ -282,9 +282,14 @@ describe("SdkRunner query options", () => {
     expect(events.some((e) => e.type === "error")).toBe(false);
   });
 
-  // The reason the counter resets on ANY success rather than tracking one tool:
-  // `builder` fails Bash on purpose all day (red, then green), and killing that
-  // loop would be far worse than the cost this check exists to avoid.
+  // The reason a single success doesn't reset the counter to zero: `builder`
+  // fails Bash on purpose all day (red, then green), and a counter that
+  // tracked one tool, or that zeroed out on any success, would either miss a
+  // genuinely broken dependency (per-tool) or let one unrelated success wipe
+  // out an unbroken run of real failures (reset-to-zero) — see the next test
+  // for exactly that bypass. Instead each success only cancels ONE prior
+  // failure (net score, floored at zero), which is enough to leave a
+  // roughly-balanced red-green loop alone without reopening the bypass.
   it("leaves a red-green loop alone, where failures are interleaved with successes", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
 
@@ -300,6 +305,40 @@ describe("SdkRunner query options", () => {
     ]);
 
     expect(events.some((e) => e.type === "interrupted")).toBe(false);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
+  // The exact bypass the `pr-reviewer` run demonstrated: a dependency that
+  // fails far more often than it succeeds was never stopped, because ANY
+  // success — however rare — reset the old counter to zero, so the failure
+  // count could never accumulate past whatever ran between two successes. A
+  // reset-to-zero counter never trips this pattern no matter how long it
+  // runs; the net-score counter must, once net failures reach the threshold.
+  it("stops a run whose tool keeps failing even though occasional unrelated calls succeed, closing the interleaving bypass", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fake-token-for-tests");
+
+    const { events } = await run([
+      toolFailure,
+      toolFailure,
+      toolFailure,
+      toolSuccess,
+      toolFailure,
+      toolFailure,
+      toolFailure,
+      toolSuccess,
+      toolFailure,
+      toolFailure,
+      toolFailure,
+      toolSuccess,
+      toolFailure,
+      toolFailure,
+      toolFailure,
+      RESULT_MESSAGE,
+    ]);
+
+    const stopped = events.find((e) => e.type === "interrupted");
+    expect(stopped).toBeDefined();
+    expect((stopped as { reason: string }).reason).toMatch(/net score/i);
     expect(events.some((e) => e.type === "error")).toBe(false);
   });
 
