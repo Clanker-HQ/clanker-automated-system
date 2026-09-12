@@ -7,6 +7,7 @@ import { isLimitError, nextOccurrenceOfWallClock, parseRateLimitReset } from "./
 import type { GithubTransport, PullRequestInfo } from "./github-transport.js";
 import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, type WebhookRetryStore } from "./webhook-retry-store.js";
 import type { WebhookEvent } from "./webhook-receiver.js";
+import type { WebhookGiveUpStore } from "../state/webhook-give-ups.js";
 
 /**
  * Matches this module's own fence-marker shape: the literal `UNTRUSTED-`
@@ -63,6 +64,17 @@ interface WebhookHandlerDeps {
    * cadence, same as before this existed.
    */
   governor?: Governor;
+  /**
+   * Where drainWebhookRetries records a `(repo, PR)` it has given up
+   * retrying, and where processEvent clears one the moment a fresh delivery
+   * for that same PR starts being processed — see that store's own doc
+   * comment for why this exists: a give-up's only trace was, until now, the
+   * comment posted on the PR itself, invisible to anything that doesn't go
+   * looking at every repo's every PR by hand. Optional purely so existing
+   * tests/callers that don't care about surfacing give-ups don't have to
+   * change; without it, a give-up behaves exactly as it always did.
+   */
+  giveUpStore?: WebhookGiveUpStore;
 }
 
 /**
@@ -211,6 +223,20 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
       a.trigger.event === event.event,
   );
   if (!agent) return { retry: false };
+
+  // A give-up record (see WebhookGiveUpStore) only ever exists for a PREVIOUS
+  // delivery's retry queue having exhausted its cap — by the time that
+  // happened, this exact event was already removed from the retry store
+  // (see drainWebhookRetries's `retryStore.resolve` on exhaustion), so
+  // processEvent is never reached for that same queued entry again. Reaching
+  // here for the SAME repo#PR key therefore always means a brand-new
+  // delivery (a fresh push, or a reopen) is being attempted from scratch —
+  // whatever needed a human before is being tried again, so it no longer
+  // belongs on the "needing human attention" list. If this fresh attempt
+  // also ends up exhausted, drainWebhookRetries records it again.
+  await deps.giveUpStore?.clear(`${event.repo}#${event.pullRequestNumber}`).catch((err: unknown) => {
+    console.error(`[webhook] failed to clear the give-up record for ${event.repo}#${event.pullRequestNumber}`, err);
+  });
 
   const github = resolveGithubTransport(deps, agent, event.repo);
 
@@ -419,6 +445,21 @@ export async function drainWebhookRetries(deps: WebhookHandlerDeps & { retryStor
     if (!exhausted) continue;
 
     await deps.retryStore.resolve(entry.id);
+    const totalTries = updated.attempts + (updated.rateLimitDeferCount ?? 0);
+    // Whichever cap was actually reached — mirrors the `exhausted` check
+    // just above so this always agrees with the reason this loop is here at
+    // all. See WebhookGiveUpStore's own doc comment for why this is
+    // recorded, not just left as the PR comment below.
+    await deps.giveUpStore
+      ?.record(`${entry.event.repo}#${entry.event.pullRequestNumber}`, {
+        reason: updated.attempts >= MAX_WEBHOOK_RETRY_ATTEMPTS ? "attempts" : "rate-limit-defers",
+        totalTries,
+        createdAt: entry.createdAt,
+        gaveUpAt: updated.lastAttemptAt,
+      })
+      .catch((err: unknown) => {
+        console.error(`[webhook-retry] failed to record the give-up for ${entry.event.repo}#${entry.event.pullRequestNumber}`, err);
+      });
     // Same agent lookup processEvent itself does — needed again here only to
     // resolve the right token for the give-up notice; `agent` from
     // processEvent's own scope isn't available outside it.
@@ -426,7 +467,6 @@ export async function drainWebhookRetries(deps: WebhookHandlerDeps & { retryStor
       (a) => a.enabled && a.trigger.type === "webhook" && (a.trigger.repo === "*" || a.trigger.repo === entry.event.repo),
     );
     const github = agent ? resolveGithubTransport(deps, agent, entry.event.repo) : deps.github;
-    const totalTries = updated.attempts + (updated.rateLimitDeferCount ?? 0);
     await github
       .postReviewComment(
         entry.event.repo,

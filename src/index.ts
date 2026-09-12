@@ -45,6 +45,7 @@ import { ApprovedGrantsStore } from "./state/approved-grants.js";
 import { BreakerStore } from "./state/breaker.js";
 import { GovernanceGateStore } from "./state/governance-gate.js";
 import { PrFixAttemptStore } from "./state/pr-fix-attempts.js";
+import { WebhookGiveUpStore } from "./state/webhook-give-ups.js";
 import { MetricsStore } from "./state/metrics-store.js";
 import { RateLimitTracker } from "./state/rate-limit.js";
 import { StrategyStore } from "./world/strategy.js";
@@ -118,6 +119,7 @@ async function main(): Promise<void> {
   const fixAttempts = new PrFixAttemptStore(DATA_DIR);
   const governanceGate = new GovernanceGateStore(DATA_DIR);
   const webhookRetries = new WebhookRetryStore(DATA_DIR);
+  const webhookGiveUps = new WebhookGiveUpStore(DATA_DIR);
   // Builds a GithubTransport bound to an arbitrary token — no I/O, so it
   // belongs alongside the plain constructors just above rather than inside
   // the try block. Shared by buildRunner below (so createRepo/openPR/mergePR/
@@ -404,7 +406,7 @@ async function main(): Promise<void> {
   });
 
   const webhookReceiver = new WebhookReceiver({ secret: webhookSecret });
-  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor }));
+  webhookReceiver.onEvent(makeWebhookHandler({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor, giveUpStore: webhookGiveUps }));
   void webhookReceiver.listen(webhookPort).then(
     () => {
       console.log(`[boot] webhook receiver listening on :${webhookPort}`);
@@ -433,7 +435,7 @@ async function main(): Promise<void> {
   // block for as long as the single global concurrency slot stays busy, and
   // without its re-entrancy guard a slow drain used to get a fresh, fully
   // duplicate drain stacked on top of it every 30s.
-  const webhookRetryDrainer = createWebhookRetryDrainer({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor });
+  const webhookRetryDrainer = createWebhookRetryDrainer({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor, giveUpStore: webhookGiveUps });
   setInterval(() => {
     void webhookRetryDrainer.drain().catch((error: unknown) => {
       console.error("[webhook-retry] drainWebhookRetries failed", error);
@@ -479,6 +481,8 @@ async function main(): Promise<void> {
           declaredSlugs: deployments.map((d) => d.slug),
           agents,
           strategyStore,
+          fixAttempts,
+          webhookGiveUps,
         });
       })
       .catch((error: unknown) => {

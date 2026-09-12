@@ -6,6 +6,7 @@ import type { WebhookEvent } from "../src/control/webhook-receiver.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
 import { createWebhookRetryDrainer, drainWebhookRetries, makeWebhookHandler } from "../src/control/webhook-wiring.js";
 import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, WebhookRetryStore } from "../src/control/webhook-retry-store.js";
+import { WebhookGiveUpStore } from "../src/state/webhook-give-ups.js";
 import type { Governor } from "../src/governor.js";
 import type { Grant } from "../src/grants.js";
 import type { Orchestrator } from "../src/orchestrator.js";
@@ -847,6 +848,95 @@ describe("drainWebhookRetries", () => {
     expect(await retryStore.list()).toEqual([]);
     expect(github.postedComments).toHaveLength(1);
     expect(github.postedComments[0]!.body).toMatch(/Giving up/i);
+  });
+
+  // Regression coverage for the 2026-09-13 visibility gap: a give-up used to
+  // leave no trace except the PR comment above — nothing local remembered it
+  // happened, so a human could only find out by checking every repo's every
+  // PR by hand. See WebhookGiveUpStore.
+  describe("give-up visibility (WebhookGiveUpStore)", () => {
+    it(`records a give-up with reason "attempts" when MAX_WEBHOOK_RETRY_ATTEMPTS is what was actually reached`, async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const giveUpStore = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-webhookgiveups-")));
+      const created = await retryStore.create(event());
+      for (let i = created.attempts; i < MAX_WEBHOOK_RETRY_ATTEMPTS - 1; i++) {
+        await retryStore.recordAttempt(created.id);
+      }
+
+      await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore, giveUpStore });
+
+      const recorded = await giveUpStore.list();
+      expect(Object.keys(recorded)).toEqual(["owner/repo#7"]);
+      expect(recorded["owner/repo#7"]!.reason).toBe("attempts");
+      expect(recorded["owner/repo#7"]!.totalTries).toBe(MAX_WEBHOOK_RETRY_ATTEMPTS);
+    });
+
+    it(`records a give-up with reason "rate-limit-defers" when MAX_WEBHOOK_RATE_LIMIT_DEFERS is what was actually reached`, async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(interruptedResult());
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const giveUpStore = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-webhookgiveups-")));
+      const created = await retryStore.create(event(), { rateLimitResetAt: new Date(Date.now() - 1000) });
+      for (let i = 1; i < MAX_WEBHOOK_RATE_LIMIT_DEFERS; i++) {
+        await retryStore.recordAttempt(created.id, { rateLimitResetAt: new Date(Date.now() - 1000) });
+      }
+
+      await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore, giveUpStore });
+
+      const recorded = await giveUpStore.list();
+      expect(recorded["owner/repo#7"]!.reason).toBe("rate-limit-defers");
+      // >= the cap, not necessarily exactly it: the defer that trips the
+      // cap is itself counted, same as the "gives up on a session limit..."
+      // test above.
+      expect(recorded["owner/repo#7"]!.totalTries).toBeGreaterThanOrEqual(MAX_WEBHOOK_RATE_LIMIT_DEFERS);
+    });
+
+    it("does not record anything when giveUpStore isn't wired in — matches the pre-existing behavior", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const created = await retryStore.create(event());
+      for (let i = created.attempts; i < MAX_WEBHOOK_RETRY_ATTEMPTS - 1; i++) {
+        await retryStore.recordAttempt(created.id);
+      }
+
+      // No giveUpStore in deps — must not throw, must still give up normally.
+      await drainWebhookRetries({ agents: [agent()], github, orchestrator, retryStore });
+
+      expect(await retryStore.list()).toEqual([]);
+      expect(github.postedComments).toHaveLength(1);
+    });
+
+    it("clears a prior give-up the moment a fresh delivery for the same PR is processed", async () => {
+      const github = githubWithSeededPr();
+      const giveUpStore = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-webhookgiveups-")));
+      await giveUpStore.record("owner/repo#7", {
+        reason: "attempts", totalTries: 20, createdAt: "2026-09-11T16:18:05.867Z", gaveUpAt: "2026-09-11T16:27:24.523Z",
+      });
+      const executeRun = vi.fn().mockResolvedValue(admittedResult());
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, giveUpStore });
+
+      await handler(event());
+
+      expect(await giveUpStore.list()).toEqual({});
+    });
+
+    it("clearing a give-up for a PR with no recorded entry is a harmless no-op", async () => {
+      const github = githubWithSeededPr();
+      const giveUpStore = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-webhookgiveups-")));
+      const executeRun = vi.fn().mockResolvedValue(admittedResult());
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, giveUpStore });
+
+      await expect(handler(event())).resolves.toBeUndefined();
+      expect(await giveUpStore.list()).toEqual({});
+    });
   });
 
   it("catches a per-entry throw (e.g. the PR vanished) and still processes the remaining entries", async () => {

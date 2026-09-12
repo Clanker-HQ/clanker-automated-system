@@ -546,6 +546,18 @@ same `synchronize` webhook a manual retry always used. Capped at
 so a PR a builder genuinely can't fix doesn't loop forever — past the cap,
 `requestFix` refuses and `pr-reviewer` is told to hand it to a human instead.
 
+That comment on the PR was, until 2026-09-13, the ONLY trace of either kind
+of give-up (this one, or `drainWebhookRetries`'s own two paragraphs above) —
+nothing local remembered either had happened, so the only way to find a PR
+waiting on a human was to check every repo's every PR by hand. The daily
+digest now reports both: `PrFixAttemptStore.listExhausted()` for the
+`requestFix` cap, and a new `WebhookGiveUpStore` (`src/state/webhook-give-ups.ts`)
+that `drainWebhookRetries` writes to at the exact moment it gives up. A
+give-up entry clears itself the next time a fresh delivery for that same PR
+is actually processed (a re-push, or a reopen) — see `processEvent`'s
+`giveUpStore?.clear()` call — so the digest only ever shows what's still
+actually stuck, not history.
+
 **`Bash`'s outward-effect detection is a pattern list, not a hard boundary.**
 Every tier below `autonomous`-with-auto-approval is only as safe as the code's
 ability to recognize "this call reaches outside the workspace" — `git push`

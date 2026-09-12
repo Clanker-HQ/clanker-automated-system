@@ -7,6 +7,8 @@ import type { AgentDef } from "./registry.js";
 import type { RunStore } from "./run-store.js";
 import { staleCronAgents, stalePasses } from "./state/liveness.js";
 import type { Metrics, MetricsStore } from "./state/metrics-store.js";
+import type { PrFixAttemptStore } from "./state/pr-fix-attempts.js";
+import type { WebhookGiveUpStore } from "./state/webhook-give-ups.js";
 import type { StrategyStore } from "./world/strategy.js";
 
 /** Twice the weekly metrics cadence, so one missed run is not an alarm. */
@@ -41,6 +43,22 @@ export async function buildDigestText(opts: {
   agents?: AgentDef[];
   /** Read for the current cycle's category allocation, so an agent correctly skipped this cycle (cron.ts's own shouldSkip) isn't reported as stopped. Absent (or a store with no strategy written yet) means every enabled cron agent is checked with no zero-allocation exemption -- fail open, same as cron.ts. */
   strategyStore?: StrategyStore;
+  /**
+   * Every PR that has exhausted its automatic fix attempts (see
+   * MAX_FIX_ATTEMPTS_PER_PR) — `requestFix` already tells pr-reviewer to
+   * post a comment on the PR itself when this happens, but until this
+   * section existed that comment was the ONLY trace, discoverable only by
+   * checking every repo's every PR by hand. Absent means this half of the
+   * "needing human attention" section is skipped — existing fixtures that
+   * don't care about it keep working unchanged.
+   */
+  fixAttempts?: PrFixAttemptStore;
+  /**
+   * Every PR drainWebhookRetries has given up retrying (see
+   * WebhookGiveUpStore) — same reasoning and same posture as `fixAttempts`
+   * above, for the other cap that leaves a PR silently waiting on a human.
+   */
+  webhookGiveUps?: WebhookGiveUpStore;
 }): Promise<string> {
   // listSince, not listRecent(10_000): the digest only ever looks at the last
   // 24h, so there's no reason to read/parse every result.json retention has
@@ -102,10 +120,19 @@ export async function buildDigestText(opts: {
       })
     : [];
 
+  // Not scoped to `since`, same reasoning as waitingTasks above: a PR that's
+  // been waiting on a human for days matters regardless of when it actually
+  // exhausted its automatic chances, and there's no other periodic sweep
+  // that would otherwise surface it again.
+  const exhaustedPrs = opts.fixAttempts ? await opts.fixAttempts.listExhausted() : [];
+  const givenUpPrs = opts.webhookGiveUps ? await opts.webhookGiveUps.list() : {};
+  const needsHumanCount = exhaustedPrs.length + Object.keys(givenUpPrs).length;
+
   if (
     recentRuns.length === 0 &&
     finishedTasks.length === 0 &&
     waitingTasks.length === 0 &&
+    needsHumanCount === 0 &&
     !hasFreshMetrics &&
     livenessWarnings.length === 0 &&
     deployWarnings.length === 0 &&
@@ -122,6 +149,13 @@ export async function buildDigestText(opts: {
   ];
   if (waitingTasks.length > 0) {
     lines.push(`⏳ Waiting on you: ${waitingTasks.map((t) => t.id.slice(0, 8)).join(", ")}`);
+  }
+  if (needsHumanCount > 0) {
+    const prLabels = [
+      ...exhaustedPrs.map((key) => `${key} (auto-fix exhausted)`),
+      ...Object.entries(givenUpPrs).map(([key, giveUp]) => `${key} (${giveUp.reason === "attempts" ? "review couldn't start" : "session limit kept recurring"})`),
+    ];
+    lines.push(`🧑 PRs needing a human — automated review/fix is done trying: ${prLabels.join(", ")}`);
   }
   if (notAchieved > 0) {
     lines.push(`⚠️ ${notAchieved} run(s) succeeded but did not achieve their objective — see \`!runs\`.`);
