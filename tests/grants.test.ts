@@ -487,6 +487,86 @@ describe("matchGrant: git-push branch enforcement", () => {
   });
 });
 
+/**
+ * Documents the two narrowing-field gaps README.md's "A grant matches on
+ * kind and target only" section calls out that aren't already covered by a
+ * dedicated describe block above (git-push branch enforcement has its own,
+ * "matchGrant: git-push branch enforcement"). These are not bugs to be
+ * quietly tolerated — they're a deliberate scope decision, recorded here so
+ * a future change to matchGrant/decide that narrows this behavior has a
+ * test to update, and so nobody rediscovers the gap by surprise and treats
+ * it as a fresh vulnerability.
+ *
+ * Why this is acceptable as shipped, not merely unfinished:
+ *
+ * 1. `method` (http grants): `detectOutwardEffect` never extracts an HTTP
+ *    method from a free-form Bash string in the first place — `OutwardEffect`
+ *    has no `method` field — so there is nothing for `matchGrant` to check
+ *    even in principle. Reading a verb like `-X DELETE` back out of a
+ *    shell-quoted, possibly-obfuscated curl invocation is the same
+ *    unsolved, adversarial parsing problem `isLocalUrl`'s doc comment
+ *    describes for hostnames, except worse: a method flag can be spelled a
+ *    dozen equivalent ways (`-XDELETE`, `--request DELETE`, a `-d` body that
+ *    implies POST, curl's own default GET). A hand-rolled regex would give
+ *    false confidence without closing the gap. The mitigation is narrower
+ *    grant scoping in practice: `grants.yaml`'s real http-family grants
+ *    (`web-read`) are read-only by convention and by which credential sits
+ *    behind them, not by a `method` field this code path can't verify.
+ *
+ * 2. `limit.perDay` (provision grants): enforcing it means turning
+ *    `matchGrant` from a pure, synchronous, side-effect-free function into
+ *    one that reads and writes persistent usage counts (a `GrantStore`
+ *    keyed by grant id + calendar day) — every call site in
+ *    `src/runner/sdk-runner.ts` (Bash interception, and the direct
+ *    mergePR/pushBranch/createRepo/cloneRepo handlers) would need to become
+ *    async and handle a new "over budget" outcome distinct from "no grant
+ *    matches". That's a real feature, not a narrow fix, and belongs in its
+ *    own reviewed change with its own tests for day-rollover, concurrent
+ *    calls, and store-corruption fallback (see `SpendStore`'s doc comment
+ *    for the shape that kind of store already takes in this codebase) —
+ *    not folded into a documentation pass. Today's mitigation is that
+ *    `provision` grants are scoped tightly (`resource` + `scope`) and every
+ *    provision-kind tool call still either parks for a human (`tier` !=
+ *    autonomous/approval != auto) or is a `createRepo`/`cloneRepo`/`gh`
+ *    invocation an operator can see in the PR/run log after the fact —
+ *    `limit.perDay` is a belt this system doesn't yet have, not the only
+ *    thing holding these grants up.
+ *
+ * If either of these stops being true — an http-family credential is added
+ * that must not authorize destructive verbs, or a provision-kind resource
+ * becomes expensive enough that an uncounted burst is a real risk — this is
+ * the debt to pay down first, and these tests are what would need to change
+ * to reflect real enforcement.
+ */
+describe("matchGrant: documented gaps (method and limit.perDay are not enforced)", () => {
+  it("an http grant scoped to method: POST also matches a DELETE to the same URL, because OutwardEffect never carries a method", () => {
+    const postOnly = parseGrants(
+      "grants.yaml",
+      'grants:\n  - id: post-only\n    kind: http\n    method: POST\n    urlPattern: "https://httpbin.org/post"\n    secret: X\n',
+    )[0]!;
+    // Bash's curl -X DELETE detection produces the exact same effect shape
+    // (kind: "http", target: the URL) as a POST would — detectOutwardEffect
+    // never looks at -X/--request at all.
+    const deleteEffect = detectOutwardEffect("Bash", { command: "curl -X DELETE https://httpbin.org/post" })!;
+    expect(deleteEffect.kind).toBe("http");
+    expect(matchGrant([postOnly], deleteEffect)).toBe(postOnly);
+  });
+
+  it("a provision grant's limit.perDay is never consulted by matchGrant — the same grant matches an unbounded number of times", () => {
+    const capped = parseGrants(
+      "grants.yaml",
+      'grants:\n  - id: new-repo\n    kind: provision\n    resource: github-repo\n    scope: "some-org"\n    limit: { perDay: 1 }\n    secret: X\n',
+    )[0]!;
+    const effect = detectOutwardEffect("createRepo", { org: "some-org", name: "whatever" })!;
+    // Calling matchGrant far more times than limit.perDay allows still
+    // returns the same grant every time — there is no counter anywhere in
+    // this call, and no state threaded between calls for it to consult.
+    for (let i = 0; i < 5; i++) {
+      expect(matchGrant([capped], effect)).toBe(capped);
+    }
+  });
+});
+
 describe("validateGrantRefs", () => {
   it("accepts refs that name a real grant", () => {
     expect(() =>
