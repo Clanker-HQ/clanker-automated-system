@@ -456,8 +456,50 @@ out of the error message the same way and defers the retry entry to that
 exact time (`nextRetryAt`) rather than hammering it every 30s tick, which
 would burn through all 20 attempts in 10 minutes, nowhere near enough to
 bridge an hours-long session limit. This defer path is capped separately, by
-`MAX_WEBHOOK_RATE_LIMIT_DEFERS` (5), so a plain Governor refusal and a
-recurring session limit can't exhaust each other's budget.
+`MAX_WEBHOOK_RATE_LIMIT_DEFERS` (60 — raised from 5 on 2026-09-12, since the
+account's own rolling five-hour session limit recurs repeatedly across a
+busy day and each recurrence burns one defer), so a plain Governor refusal
+and a recurring session limit can't exhaust each other's budget.
+
+That known-reset-instant defer originally only fired for the rate-limit
+case. Extended 2026-09-13 to cover the other two Governor refusals that name
+an equally knowable clock time: a refusal during quiet hours defers to
+`quietHours.to` (a stretch that runs up to 12h in the production example in
+config.yaml), and a daily-budget-reached refusal defers to the next local
+midnight in Governor's own timezone convention. Before this, both fell
+through to the same flat 20-attempts/10-minutes cadence as a plain refusal —
+nowhere near long enough for either to actually clear — and gave up, posting
+a "review it manually" notice for something that would have cleared on its
+own.
+
+**A drain must not overlap itself.** `drainWebhookRetries` is invoked from a
+30s `setInterval` in `src/index.ts`, and one call can block for as long as
+the single global concurrency slot stays busy (`processEvent` awaits all the
+way through `Governor.admit()` → `acquireSlot()` → `executeRun()`). Until
+2026-09-13 that interval had no re-entrancy guard, so a slow drain got a
+fresh, fully duplicate drain stacked on top of it every 30s — each one
+re-reading and re-dispatching the exact same still-unresolved retry entries.
+A backlogged burst of retries this way reviewed one PR **twelve times
+concurrently** (posting contradictory merge verdicts back to back) and, in
+the same incident, fired 45 duplicate `pr-reviewer` runs 30s apart that all
+landed in the same two-minute window once a slot finally freed, burning
+through the account's five-hour rate-limit window in minutes and cascading
+into give-up notices on four unrelated PRs. `createWebhookRetryDrainer`
+wraps `drainWebhookRetries` with the same `draining` boolean `Dispatcher`
+already used for its own periodic tick — a tick that arrives mid-drain is
+simply skipped, since the in-progress drain will reach any newly-eligible
+entry itself.
+
+**A stale retry can outlive the PR it was queued for.** A retry entry
+persists across however many Governor refusals and rate-limit defers it
+takes to clear — hours, in the quiet-hours/budget cases above — and by the
+time it's finally retried, the PR it names may already have been merged or
+closed: by an earlier, cheaper duplicate delivery of the very same event
+(see the re-entrancy bug above), or by a human. Reviewing it anyway is pure
+waste — a real, $18.41 review once reached a "safe to merge" verdict on a PR
+that had already merged 1h38m earlier. `PullRequestInfo` now carries GitHub's
+own `state`/`merged` fields, and `processEvent` skips a no-longer-open PR
+right after the fetch, before any prompt or run is built.
 
 Don't read "parked" into this — in this system **parked** means
 something narrower and quite different: an *in-flight* run that stopped
@@ -552,6 +594,31 @@ scoped by its `urlPattern`/`remote`, and by what the credential behind it is
 allowed to do, rather than by `method`, which is unenforced everywhere, or
 `branches`, which is enforced only for `pushBranch` and still unenforced for a
 raw Bash `git push`.
+
+**This is a deliberate, accepted scope decision, not an oversight left to
+fix later.** `method` can't be enforced without solving the same adversarial
+free-form-string parsing problem `detectOutwardEffect` already declines to
+solve for hostnames (see `isLocalUrl`'s doc comment) — a method flag has too
+many equivalent spellings (`-X DELETE`, `-XDELETE`, `--request=DELETE`, a
+`-d` body implying POST) to regex reliably, and `OutwardEffect` doesn't even
+carry a method field today. `limit.perDay` is enforceable in principle, but
+doing it right means `matchGrant`/`decide` becoming stateful and async (a
+`GrantStore` tracking per-grant, per-day usage counts, consulted from every
+call site in `src/runner/sdk-runner.ts`) — a real feature with its own
+day-rollover and corruption-fallback edge cases, not a narrowing of an
+existing pure function. The mitigations that stand in for enforcement today:
+`grants.yaml`'s real grants are scoped tightly by `urlPattern`/`remote`/`scope`
+and by what the credential behind each one is actually capable of, not by
+these fields; every `provision`-kind effect either parks for a human or
+leaves a visible trace (a PR, a run log) an operator reviews after the fact;
+and `EXCLUDED_PATHS` (`src/control/excluded-paths.ts`) plus the hardcoded
+`Bash` regexes in `detectOutwardEffect` catch the effects that matter most
+regardless of which grant they'd otherwise match. `tests/grants.test.ts`'s
+"matchGrant: documented gaps" block pins this behavior down with tests, so a
+future change either has to explicitly update them or is the change that
+finally closes the gap. If a `method`-sensitive http credential or an
+expensive `provision` resource is ever added, revisit this — until then, the
+gap is priced in, not ignored.
 
 **Tool calls need absolute paths.** An agent prompt that says "read `notes.md` in
 your working directory" will fail its first tool call. Say so explicitly in the

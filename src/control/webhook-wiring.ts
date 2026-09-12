@@ -3,7 +3,7 @@ import type { Governor } from "../governor.js";
 import { detectOutwardEffect, matchGrant, type Grant } from "../grants.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
-import { isLimitError, parseRateLimitReset } from "./rate-limit-reset.js";
+import { isLimitError, nextOccurrenceOfWallClock, parseRateLimitReset } from "./rate-limit-reset.js";
 import type { GithubTransport, PullRequestInfo } from "./github-transport.js";
 import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, type WebhookRetryStore } from "./webhook-retry-store.js";
 import type { WebhookEvent } from "./webhook-receiver.js";
@@ -109,25 +109,33 @@ interface ProcessEventOutcome {
 }
 
 /**
- * When a pre-admission Governor.admit() refusal is actually caused by the
- * shared rate-limit snapshot being "rejected", this is the same known reset
- * instant `!status`/the dashboard already read off Governor — reusing it
- * here closes a gap discovered 2026-09-10: the "interrupted" (post-admission)
- * case already deferred to a parsed reset instant, but a PLAIN pre-admission
- * refusal (this one) always used the flat 30s-tick/MAX_WEBHOOK_RETRY_ATTEMPTS
- * cadence regardless of cause — 20 attempts × 30s is 10 minutes, nowhere near
- * enough for a rate-limit window Governor itself already knew wouldn't clear
- * for hours. book-pipeline#1 and #2 both burned their entire retry budget
- * and gave up for exactly this reason before it was found.
+ * When a pre-admission Governor.admit() refusal is actually caused by
+ * something with a knowable "clear by" instant, this is that instant —
+ * reusing it here closes a gap discovered 2026-09-10: the "interrupted"
+ * (post-admission) case already deferred to a parsed reset instant, but a
+ * PLAIN pre-admission refusal (this one) always used the flat
+ * 30s-tick/MAX_WEBHOOK_RETRY_ATTEMPTS cadence regardless of cause — 20
+ * attempts × 30s is 10 minutes, nowhere near enough for a rate-limit window,
+ * a quiet-hours stretch, or the rest of a budget-exhausted day, each of
+ * which Governor already knows won't clear for a while. book-pipeline#1 and
+ * #2 both burned their entire retry budget and gave up for exactly this
+ * reason (the rate-limit case) before it was found; infra PRs #75/#76/#79/#80
+ * did the same later for the same underlying reason.
  *
- * Best-effort and narrowly scoped: only returns a reset instant when the
- * snapshot Governor is CURRENTLY holding says "rejected" — a refusal for a
- * different reason (daily budget, quiet hours, the STOP file, a disabled
- * agent, the breaker) falls through to the same flat cadence as before,
- * since none of those carry a comparably reliable known-clear instant.
- * `governor` is optional and a status() failure is swallowed, in both cases
- * degrading to that same pre-existing behavior rather than failing the
- * event.
+ * Extended 2026-09-13 to cover the other two Governor refusals that name an
+ * equally knowable clock time: quiet hours (known to end at `quietHours.to`)
+ * and the daily budget (known to reset at the next local midnight, in the
+ * same timezone Governor's own `spentToday` uses). Checked in the same order
+ * checkGates() itself evaluates them (quiet hours before budget) so this
+ * reads the refusal most likely to be the actual cause first — though, like
+ * the rate-limit branch below, this is a best-effort re-read of CURRENT
+ * status taken after the fact, not the exact AdmitResult that caused this
+ * particular refusal, since executeRun's `undefined` return discards that
+ * detail. A refusal for a reason with no such instant (the STOP file, a
+ * disabled agent, the breaker) still falls through to the flat cadence, since
+ * none of those carry a comparably reliable known-clear instant. `governor`
+ * is optional and a status() failure is swallowed, in both cases degrading to
+ * that same pre-existing behavior rather than failing the event.
  */
 async function preAdmissionResetAt(deps: WebhookHandlerDeps): Promise<Date | undefined> {
   if (!deps.governor) return undefined;
@@ -135,6 +143,21 @@ async function preAdmissionResetAt(deps: WebhookHandlerDeps): Promise<Date | und
     const status = await deps.governor.status();
     if (status.rateLimitStatus === "rejected" && status.rateLimitResetsAt !== null) {
       return new Date(status.rateLimitResetsAt * 1000);
+    }
+    if (status.quietHoursActive && status.quietHours) {
+      // `to` is schema-validated as exactly "HH:MM" (config.ts's TimeOfDay),
+      // so this split always yields two numeric parts — the `?? 0` fallback
+      // only appeases noUncheckedIndexedAccess, it's never actually reached.
+      const [hourStr, minuteStr] = status.quietHours.to.split(":");
+      const hour = Number(hourStr ?? 0);
+      const minute = Number(minuteStr ?? 0);
+      return nextOccurrenceOfWallClock(hour, minute, status.quietHours.timezone, new Date());
+    }
+    if (status.spentTodayUsd >= status.dailyBudgetUsd) {
+      // Same timezone convention Governor.spentToday itself resets "today"
+      // against (quietHours.timezone if configured, else UTC) — see that
+      // method in governor.ts.
+      return nextOccurrenceOfWallClock(0, 0, status.quietHours?.timezone ?? "UTC", new Date());
     }
   } catch (err: unknown) {
     console.error("[webhook] failed to read governor status for a refused event's retry deferral", err);
@@ -228,6 +251,22 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
       console.error(`[webhook] failed to post the pre-run failure notice on ${event.repo}#${event.pullRequestNumber}`, postErr);
     }
     throw err;
+  }
+
+  // A webhook-triggered review can sit queued behind a Governor refusal for
+  // hours (see WebhookRetryStore), and by the time it's finally retried the
+  // PR may already have been merged or closed — by an earlier, cheaper
+  // duplicate delivery of the very same event, or by a human. Reviewing it
+  // anyway is pure waste: there is nothing left to merge, and nowhere for a
+  // "do not merge" verdict to land. Checked here, right after the fetch and
+  // before the prompt/run are built, so this costs nothing more than the PR
+  // fetch itself — discovered 2026-09-12 when a stale retry spent $18.41
+  // reviewing (and reaching a "safe to merge" verdict on) a PR that had
+  // already merged 1h38m earlier. Not retried and not commented on: the PR
+  // is exactly as done as it should be, there is nothing to report.
+  if (pr.state !== "open") {
+    console.log(`[webhook] skipping ${event.repo}#${event.pullRequestNumber}: already ${pr.merged ? "merged" : "closed"}`);
+    return { retry: false };
   }
 
   // Title, description, changed-files list and diff are all fully
@@ -401,4 +440,46 @@ export async function drainWebhookRetries(deps: WebhookHandlerDeps & { retryStor
         console.error(`[webhook-retry] failed to post the give-up notice on ${entry.event.repo}#${entry.event.pullRequestNumber}`, err);
       });
   }
+}
+
+/**
+ * Wraps drainWebhookRetries with the same re-entrancy guard Dispatcher
+ * already uses for its own periodic tick (its `draining` boolean — see
+ * dispatcher.ts): src/index.ts's setInterval calling drainWebhookRetries
+ * directly had none, and a single drain call can block for as long as the
+ * one global concurrency slot stays busy, since processEvent awaits all the
+ * way through Governor.admit() -> acquireSlot() -> executeRun(). Discovered
+ * 2026-09-12: a backlog of queued retries sat behind a long-running
+ * builder/research run, and every 30s tick during that wait started ANOTHER
+ * full drain on top of the one still in flight — each one re-reading and
+ * re-dispatching the exact same still-unresolved entries. The result was PR
+ * #93 reviewed twelve times concurrently (contradictory verdicts posted back
+ * to back — some "merge", some "do not merge") and, separately, 45 duplicate
+ * pr-reviewer runs queued 30s apart that all fired in the same two-minute
+ * burst once a slot finally freed, burning through the account's five-hour
+ * rate-limit window in minutes and cascading into the give-up notices on
+ * #75/#76/#79/#80.
+ *
+ * A tick that arrives mid-drain is simply skipped (not queued) — the
+ * in-progress drain will reach any newly-eligible entry itself on its own
+ * next pass through the list, the same "a wake() mid-drain is a no-op"
+ * reasoning Dispatcher's own doc comment already gives for its identical
+ * guard. One drainer instance per process is the intended lifetime — call
+ * this once at boot (see src/index.ts) and reuse the returned `drain`
+ * function for every tick, never construct a fresh one per tick, or the
+ * `draining` flag guards nothing.
+ */
+export function createWebhookRetryDrainer(deps: WebhookHandlerDeps & { retryStore: WebhookRetryStore }): { drain: () => Promise<void> } {
+  let draining = false;
+  return {
+    async drain(): Promise<void> {
+      if (draining) return;
+      draining = true;
+      try {
+        await drainWebhookRetries(deps);
+      } finally {
+        draining = false;
+      }
+    },
+  };
 }

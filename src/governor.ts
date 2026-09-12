@@ -237,6 +237,49 @@ export class Governor {
   }
 
   async admit(agent: AgentDef, kind: "trigger" | "resume"): Promise<AdmitResult> {
+    const preCheck = await this.checkGates(agent, kind);
+    if (preCheck) return preCheck;
+
+    const settings = resolveGovernorSettings(this.config, await this.overrides.read());
+    await this.acquireSlot(settings.maxConcurrent, PRIORITY_AGENTS.has(agent.name));
+
+    // acquireSlot can have just waited an arbitrary amount of time — minutes
+    // to hours — behind every other run sharing the single global slot (see
+    // that field's doc comment). Every gate checkGates just passed was
+    // evaluated against the state at the MOMENT this call started, not the
+    // moment a slot actually became free; discovered 2026-09-12 when a
+    // backlog of pr-reviewer triggers, each individually admitted while the
+    // account still had headroom, sat queued behind long-running
+    // builder/research runs and then fired in a burst once a slot finally
+    // freed — by then the account's rate limit had already tipped over
+    // (recorded by an earlier run in the very same burst), but each queued
+    // trigger's admission decision had already been locked in, so every one
+    // of them still paid for a real CLI round trip that was refused the
+    // instant it started, each one separately burning a unit of whichever
+    // retry/defer budget was waiting on it. Re-checking here, after the
+    // slot is actually in hand, is what makes the decision this function
+    // returns describe the moment execution is about to begin rather than
+    // the moment the caller happened to ask.
+    const postCheck = await this.checkGates(agent, kind);
+    if (postCheck) {
+      this.releaseSlot();
+      return postCheck;
+    }
+
+    return { kind: "admit" };
+  }
+
+  /**
+   * Every admit() gate except the concurrency slot itself — STOP file,
+   * breaker, manual disable, quiet hours, daily budget, and the rate-limit
+   * snapshot/utilization pair — read fresh off disk/settings each call, so
+   * the SAME check can be run both before queueing for a slot and again
+   * right after one is actually granted (see admit()'s post-acquireSlot
+   * re-check). Returns null when every gate passes (i.e. "admit" as far as
+   * these checks are concerned) rather than an AdmitResult, since callers
+   * always no-op on that case and only ever want a value out of a refusal.
+   */
+  private async checkGates(agent: AgentDef, kind: "trigger" | "resume"): Promise<AdmitResult | null> {
     if (existsSync(join(this.dataDir, "STOP"))) {
       return { kind: "refuse", reason: "STOP file present; refusing all new runs", alert: false };
     }
@@ -335,8 +378,7 @@ export class Governor {
       };
     }
 
-    await this.acquireSlot(settings.maxConcurrent, PRIORITY_AGENTS.has(agent.name));
-    return { kind: "admit" };
+    return null;
   }
 
   private async spentToday(settings: { quietHours: QuietHours | null }, now: Date): Promise<number> {
@@ -502,7 +544,9 @@ export class Governor {
    * after a cooldown that doubles per consecutive miss, capped at 30 minutes.
    * consecutiveRateLimitErrors is in-memory only: a restart resets the
    * backoff level but not safety, since the snapshot itself still reads
-   * "rejected" until a genuinely fresh non-rejected reading arrives.
+   * "rejected" until a genuinely fresh non-rejected reading arrives — the
+   * write below is monotonic specifically to make that true, never letting
+   * this call's own guess shorten a rejection already on file.
    *
    * @param resetsAt the instant the error message said the limit clears, if
    * it said. Preferred over the cooldown whenever it is in the future — the
@@ -526,12 +570,25 @@ export class Governor {
       resetsAt !== undefined && resetsAt.getTime() > now.getTime()
         ? Math.floor(resetsAt.getTime() / 1000)
         : undefined;
-    await this.rateLimits.record(
-      {
-        status: "rejected",
-        resetsAt: named ?? Math.floor(now.getTime() / 1000) + cooldownMinutes * 60,
-      },
-      now,
-    );
+    const candidate = named ?? Math.floor(now.getTime() / 1000) + cooldownMinutes * 60;
+
+    // Never let this call SHORTEN a rejection that's already on file and
+    // still live — regression for a 2026-09-12 incident: within one run, the
+    // SDK's own accurate rate_limit_event (a real multi-hour resetsAt, via
+    // recordRateLimit above) was immediately followed by a generic
+    // "rate_limit" error string carrying no time at all, whose 2-30-minute
+    // guessed cooldown overwrote the accurate reading down to a few minutes
+    // out — reopening admission into a limit that had not actually cleared,
+    // every few minutes, for hours, and burning through webhook-retry and
+    // task-retry budgets meant to survive a single multi-hour wait. This
+    // makes the write monotonic: a later call may only extend the recorded
+    // rejection, never shrink it, until a genuinely non-rejected reading
+    // (recordRateLimit) replaces it outright.
+    const existing = currentRateLimit(await this.rateLimits.read(), now);
+    if (existing?.status === "rejected" && existing.resetsAt !== undefined && existing.resetsAt >= candidate) {
+      return;
+    }
+
+    await this.rateLimits.record({ status: "rejected", resetsAt: candidate }, now);
   }
 }

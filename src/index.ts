@@ -24,7 +24,7 @@ import { StripeRevenueTransport } from "./control/stripe-revenue-transport.js";
 import { MAX_TASK_TEXT_LENGTH, TaskStore } from "./control/task-store.js";
 import { WebhookReceiver } from "./control/webhook-receiver.js";
 import { WebhookRetryStore } from "./control/webhook-retry-store.js";
-import { drainWebhookRetries, makeWebhookHandler } from "./control/webhook-wiring.js";
+import { createWebhookRetryDrainer, makeWebhookHandler } from "./control/webhook-wiring.js";
 import { installCrashHandlers } from "./crash-handlers.js";
 import { writeDeployArtifacts } from "./deploy/caddyfile.js";
 import { type Deployment, loadDeploys } from "./deploy/deploys-schema.js";
@@ -427,12 +427,17 @@ async function main(): Promise<void> {
   // on — cheap to check (Governor's refusal checks are local reads, no API
   // call, no spend) and means a retry lands within a minute of whatever it
   // was waiting on actually clearing, not whenever a human happens to notice.
+  //
+  // One drainer instance, reused for every tick (never construct a fresh one
+  // per tick — see createWebhookRetryDrainer's own doc comment): a drain can
+  // block for as long as the single global concurrency slot stays busy, and
+  // without its re-entrancy guard a slow drain used to get a fresh, fully
+  // duplicate drain stacked on top of it every 30s.
+  const webhookRetryDrainer = createWebhookRetryDrainer({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor });
   setInterval(() => {
-    void drainWebhookRetries({ agents, github, grants, githubForToken, orchestrator, retryStore: webhookRetries, governor }).catch(
-      (error: unknown) => {
-        console.error("[webhook-retry] drainWebhookRetries failed", error);
-      },
-    );
+    void webhookRetryDrainer.drain().catch((error: unknown) => {
+      console.error("[webhook-retry] drainWebhookRetries failed", error);
+    });
   }, 30_000);
 
   if (dashboardUser && dashboardPassword) {

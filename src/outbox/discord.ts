@@ -111,6 +111,19 @@ export class DiscordOutbox {
   ): Promise<"delivered" | "undelivered"> {
     const url = this.webhookFor(channelKey);
 
+    // `formatRunMessage` already truncates the `.post()` path to
+    // DISCORD_LIMIT, so this is a no-op there — but `postAlert` callers
+    // (digest.ts, retention.ts, index.ts's summary alert, sdk-runner.ts's
+    // governance-gate alert) hand this raw, unbounded text. Discovered
+    // 2026-09-11: 23 "ops"-channel alerts over 9 days silently landed in
+    // data/undelivered/ with "HTTP 400 Bad Request" — every one of them
+    // 2014-2966 characters, just over Discord's hard 2000-character message
+    // cap, because nothing truncated a postAlert call before it reached
+    // fetch. A dropped alert defeats the after-the-fact visibility this
+    // pipeline's whole safety model (CLAUDE.md, and now the governance
+    // gate's own merge alert) depends on in place of a human approval click.
+    content = content.length > DISCORD_LIMIT ? content.slice(0, DISCORD_LIMIT - 3) + "..." : content;
+
     // Why the last attempt failed, so the undelivered file says what went
     // wrong instead of leaving the owner to guess. The webhook URL is a
     // secret and is never recorded — only the status code or error message.

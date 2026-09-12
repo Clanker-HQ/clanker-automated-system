@@ -124,3 +124,39 @@ grants:
     scope: "AAS-Labs"
     limit: { perDay: 2 }
     secret: GITHUB_PRODUCTS_TOKEN
+
+  # Backs agents/builder's grantRefs — authorizes the outward HTTP calls a
+  # Cloudflare Workers deploy makes: `wrangler publish`/`wrangler deploy`, D1
+  # migrations (`wrangler d1 migrations apply`), and any direct call to the
+  # Cloudflare REST API all go through api.cloudflare.com, so one grant
+  # covers all three. Added 2026-09-13 to unblock pilot-01 (a Cloudflare
+  # Workers + D1 product, see world/portfolio.md), which builder could not
+  # deploy at all without this — every attempt failed with "no grant matches
+  # attempted effect: network call". `method` is schema-required but not
+  # consulted at match time (see web-read's comment above), so POST is
+  # representative, not restrictive.
+  # CLOUDFLARE_API_TOKEN is NOT YET SET — this grant alone provisions no
+  # credential, it only unblocks the code path. A real Cloudflare API token
+  # (Workers Scripts:Edit + D1:Edit permissions) still needs to be added to
+  # .env before an actual deploy can succeed; until then, a deploy attempt
+  # fails at Cloudflare's API (401), not at this grant.
+  - id: cloudflare-deploy
+    kind: http
+    method: POST
+    urlPattern: "https://api.cloudflare.com/client/v4/*"
+    secret: CLOUDFLARE_API_TOKEN
+
+  # Backs agents/builder's grantRefs — authorizes calls to the Stripe API
+  # (creating Products/Prices/Checkout Sessions, e.g. pilot-01's $7/mo
+  # flat-team price), all of which go through api.stripe.com regardless of
+  # HTTP method used. Reuses STRIPE_CHECKOUT_TOKEN (already provisioned in
+  # .env, see that variable's own comment there) rather than adding a new
+  # credential — it's already scoped to exactly this (Products/Prices/
+  # Checkout Sessions write, nothing else), and until this grant existed
+  # nothing could actually use it ("NOT YET USABLE: no tool exists yet" —
+  # builder calling the API directly via Bash/curl is that tool).
+  - id: stripe-checkout
+    kind: http
+    method: POST
+    urlPattern: "https://api.stripe.com/*"
+    secret: STRIPE_CHECKOUT_TOKEN

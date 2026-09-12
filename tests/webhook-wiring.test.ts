@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { WebhookEvent } from "../src/control/webhook-receiver.js";
 import { FakeGithubTransport } from "../src/control/github-transport.js";
-import { drainWebhookRetries, makeWebhookHandler } from "../src/control/webhook-wiring.js";
+import { createWebhookRetryDrainer, drainWebhookRetries, makeWebhookHandler } from "../src/control/webhook-wiring.js";
 import { MAX_WEBHOOK_RATE_LIMIT_DEFERS, MAX_WEBHOOK_RETRY_ATTEMPTS, WebhookRetryStore } from "../src/control/webhook-retry-store.js";
 import type { Governor } from "../src/governor.js";
 import type { Grant } from "../src/grants.js";
@@ -171,6 +171,44 @@ describe("makeWebhookHandler", () => {
     // propagates — a failed notice must not mask what actually went wrong.
     await expect(handler(event())).rejects.toThrow(/no pull request seeded/);
     expect(executeRun).not.toHaveBeenCalled();
+  });
+
+  // Regression coverage: a stale retry used to review a PR that had already
+  // merged (or closed) since the event was first queued, at real cost and
+  // to no purpose — see PullRequestInfo.state's doc comment.
+  it("does not call executeRun for a PR that has already merged", async () => {
+    const github = githubWithSeededPr({ state: "closed", merged: true });
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(executeRun).not.toHaveBeenCalled();
+    // Nothing to report — the PR is exactly as done as it should be.
+    expect(github.postedComments).toEqual([]);
+  });
+
+  it("does not call executeRun for a PR that was closed without merging", async () => {
+    const github = githubWithSeededPr({ state: "closed", merged: false });
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(executeRun).not.toHaveBeenCalled();
+  });
+
+  it("still calls executeRun for a PR that is open (the default seeded state)", async () => {
+    const github = githubWithSeededPr();
+    const executeRun = vi.fn().mockResolvedValue(undefined);
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator });
+
+    await handler(event());
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
   });
 
   it("does not call executeRun for a disabled webhook agent, even with a matching repo/event", async () => {
@@ -365,11 +403,24 @@ describe("makeWebhookHandler retry persistence", () => {
   // "interrupted" (post-admission) path deferred to a parsed reset instant,
   // but a plain PRE-admission refusal never consulted Governor at all.
   describe("pre-admission refusal deferred to Governor's own known reset instant", () => {
-    function governorWithStatus(overrides: Partial<{ rateLimitStatus: string | null; rateLimitResetsAt: number | null }>) {
+    function governorWithStatus(
+      overrides: Partial<{
+        rateLimitStatus: string | null;
+        rateLimitResetsAt: number | null;
+        quietHoursActive: boolean;
+        quietHours: { from: string; to: string; timezone: string } | null;
+        spentTodayUsd: number;
+        dailyBudgetUsd: number;
+      }>,
+    ) {
       return {
         status: vi.fn().mockResolvedValue({
           rateLimitStatus: null,
           rateLimitResetsAt: null,
+          quietHoursActive: false,
+          quietHours: null,
+          spentTodayUsd: 0,
+          dailyBudgetUsd: 40,
           ...overrides,
         }),
       } as unknown as Governor;
@@ -406,6 +457,96 @@ describe("makeWebhookHandler retry persistence", () => {
       expect(pending[0]!.attempts).toBe(1);
       expect(pending[0]!.rateLimitDeferCount).toBeUndefined();
       expect(pending[0]!.nextRetryAt).toBeUndefined();
+    });
+
+    // Regression coverage for the 2026-09-13 gap: this branch used to exist
+    // only for the rate-limit case, so a refusal during quiet hours (which
+    // can last up to 12h in production, config.yaml's own commented example)
+    // fell through to the flat 20-attempt/10-minute cadence and gave up long
+    // before quiet hours actually ended.
+    it("defers to the wall-clock end of quiet hours when refused during quiet hours", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const governor = governorWithStatus({
+        quietHoursActive: true,
+        quietHours: { from: "10:00", to: "22:00", timezone: "Europe/Berlin" },
+      });
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore, governor });
+
+      vi.useFakeTimers();
+      // 16:00 Europe/Berlin (CEST, UTC+2) in September — still within the
+      // 10:00-22:00 window, so the expected defer is later THE SAME day.
+      vi.setSystemTime(new Date("2026-09-13T14:00:00.000Z"));
+      try {
+        await handler(event());
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const pending = await retryStore.list();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.attempts).toBe(0);
+      expect(pending[0]!.rateLimitDeferCount).toBe(1);
+      // 22:00 CEST == 20:00 UTC.
+      expect(pending[0]!.nextRetryAt).toBe("2026-09-13T20:00:00.000Z");
+    });
+
+    // Same gap, the other refusal it left unfixed: a budget-reached refusal
+    // resets at the next local midnight (Governor.spentToday's own boundary),
+    // which the flat 20-attempt/10-minute cadence cannot bridge either.
+    it("defers to the next local midnight when refused for the daily budget being reached", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      // No quiet hours configured, so this falls back to UTC — the same
+      // fallback Governor.spentToday itself uses.
+      const governor = governorWithStatus({ spentTodayUsd: 45, dailyBudgetUsd: 40 });
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore, governor });
+
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-13T14:00:00.000Z"));
+      try {
+        await handler(event());
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const pending = await retryStore.list();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.rateLimitDeferCount).toBe(1);
+      expect(pending[0]!.nextRetryAt).toBe("2026-09-14T00:00:00.000Z");
+    });
+
+    // Mirrors checkGates()'s own evaluation order (quiet hours before
+    // budget) — when both happen to be true at once, the quiet-hours defer
+    // is what a real refusal at that same gate would actually have hit
+    // first, so it's the more accurate guess of the two.
+    it("prefers the quiet-hours defer over the budget defer when both conditions hold", async () => {
+      const github = githubWithSeededPr();
+      const executeRun = vi.fn().mockResolvedValue(undefined);
+      const orchestrator = { executeRun } as unknown as Orchestrator;
+      const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const governor = governorWithStatus({
+        quietHoursActive: true,
+        quietHours: { from: "10:00", to: "22:00", timezone: "Europe/Berlin" },
+        spentTodayUsd: 45,
+        dailyBudgetUsd: 40,
+      });
+      const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore, governor });
+
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-13T14:00:00.000Z"));
+      try {
+        await handler(event());
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const pending = await retryStore.list();
+      expect(pending[0]!.nextRetryAt).toBe("2026-09-13T20:00:00.000Z");
     });
 
     it("falls back to the plain retry when no governor is wired in at all", async () => {
@@ -727,5 +868,88 @@ describe("drainWebhookRetries", () => {
     expect(pending[0]!.event.pullRequestNumber).toBe(99);
     expect(pending[0]!.attempts).toBe(2);
     expect(await retryStore.get(okEntry.id)).toBeNull();
+  });
+});
+
+// Regression coverage for the 2026-09-12 retry storm: src/index.ts's
+// setInterval used to call drainWebhookRetries directly with no re-entrancy
+// guard, so a drain that was still awaiting a slow admit()/executeRun call
+// got a second, fully duplicate drain stacked on top of it every 30s —
+// each one re-reading and re-dispatching the exact same still-unresolved
+// entries. PR #93 was reviewed twelve times concurrently this way.
+describe("createWebhookRetryDrainer", () => {
+  it("skips a tick that arrives while the previous drain is still in flight", async () => {
+    const github = githubWithSeededPr();
+    // executeRun's first call never resolves on its own — held open so a
+    // second drain() call arrives while the first is still awaiting it, the
+    // exact shape of the bug (a drain blocked on Governor.admit()/executeRun
+    // for as long as the single concurrency slot stays busy). Without the
+    // guard, drainWebhookRetries would re-read the still-pending entry and
+    // call executeRun a second time before this first call ever resolves.
+    let releaseFirstCall: () => void = () => {};
+    let resolveFirstCallStarted: () => void = () => {};
+    const firstCallStarted = new Promise<void>((resolve) => {
+      resolveFirstCallStarted = resolve;
+    });
+    const executeRun = vi.fn().mockImplementationOnce(async () => {
+      resolveFirstCallStarted();
+      await new Promise<void>((resolve) => {
+        releaseFirstCall = resolve;
+      });
+      return admittedResult();
+    });
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    await retryStore.create(event());
+    const drainer = createWebhookRetryDrainer({ agents: [agent()], github, orchestrator, retryStore });
+
+    const first = drainer.drain();
+    await firstCallStarted;
+    // A tick arriving mid-drain must be a no-op, not a second full drain.
+    const second = drainer.drain();
+    releaseFirstCall();
+    await Promise.all([first, second]);
+
+    expect(executeRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("still processes the next tick normally once the previous drain has finished", async () => {
+    const github = githubWithSeededPr();
+    github.seedPullRequest({
+      number: 8, repo: "owner/repo", headSha: "sha-2",
+      changedFiles: ["src/orchestrator.ts"], diff: "diff", title: "Another change", body: "Also does a thing.",
+    });
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    const drainer = createWebhookRetryDrainer({ agents: [agent()], github, orchestrator, retryStore });
+
+    await retryStore.create(event({ pullRequestNumber: 7 }));
+    await drainer.drain();
+    await retryStore.create(event({ pullRequestNumber: 8 }));
+    await drainer.drain();
+
+    expect(executeRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("a failure inside one drain still releases the guard for the next tick", async () => {
+    const github = githubWithSeededPr();
+    const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+    // Only the FIRST call fails — vi.spyOn falls back to the real
+    // implementation on every call after the queued one-time override, so
+    // this is the same retryStore/drainer throughout, not a fresh instance.
+    vi.spyOn(retryStore, "list").mockRejectedValueOnce(new Error("disk read failed"));
+    const executeRun = vi.fn().mockResolvedValue(admittedResult());
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const drainer = createWebhookRetryDrainer({ agents: [agent()], github, orchestrator, retryStore });
+
+    await expect(drainer.drain()).rejects.toThrow(/disk read failed/);
+
+    // The guard must be released even though that first drain threw — a
+    // caller (src/index.ts) always wraps drain() in its own .catch(), but the
+    // drainer itself must not stay stuck "draining" forever afterward.
+    await retryStore.create(event());
+    await drainer.drain();
+    expect(executeRun).toHaveBeenCalledTimes(1);
   });
 });

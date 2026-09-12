@@ -443,6 +443,53 @@ describe("Governor.admit", () => {
     expect(secondResolved).toBe(true);
   });
 
+  // Reproduces the 2026-09-12 incident: a backlog of pr-reviewer triggers
+  // each individually passed every gate while the account still had
+  // headroom, then queued behind the single global slot (held by a
+  // long-running builder/research run) for long enough that the account's
+  // rate limit tipped over to "rejected" WHILE they waited. Before this test
+  // existed, admit() never looked again once a slot was granted, so every
+  // one of those queued triggers still fired — each burning a real CLI round
+  // trip (and a unit of its own caller's retry/defer budget) on an outcome
+  // the account had already made certain.
+  it("re-checks the rate limit after a slot finally frees up, refusing if it tipped over while queued", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const config = parseConfig(
+      "config.yaml",
+      'governor:\n  maxConcurrent: 1\n  dailyBudgetUsd: 10\n  pendingTimeoutHours: 24\ndiscord:\n  channels: {}\n',
+    );
+    const governor = new Governor({
+      dataDir: dir, config, store: new RunStore(dir), overrides: new ConfigOverridesStore(dir),
+      rateLimits: new RateLimitTracker(dir), breaker: new BreakerStore(dir),
+      now: () => new Date(FIXED_NOW_MS),
+    });
+
+    // Holds the only slot, exactly like a long-running builder/research run.
+    expect(await governor.admit(agent("holder"), "trigger")).toEqual({ kind: "admit" });
+
+    let queuedResult: Awaited<ReturnType<typeof governor.admit>> | undefined;
+    const queuedPromise = governor.admit(agent("queued"), "trigger").then((r) => {
+      queuedResult = r;
+      return r;
+    });
+    await waitForWaiters(governor, 1);
+    expect(queuedResult).toBeUndefined();
+
+    // The account tips over into "rejected" while the trigger above is
+    // still sitting in the queue, nowhere near the slot yet.
+    await new RateLimitTracker(dir).record(
+      { status: "rejected", rateLimitType: "five_hour", resetsAt: FIXED_NOW_SECONDS + 3600 },
+      new Date(FIXED_NOW_MS),
+    );
+
+    governor.releaseSlot();
+    expect(await queuedPromise).toMatchObject({ kind: "refuse", reason: expect.stringContaining("rate limit") });
+
+    // The slot the refused trigger transiently held was released again, not
+    // leaked — nothing is holding it.
+    expect((governor as unknown as { activeSlots: number }).activeSlots).toBe(0);
+  });
+
   it("adjustConcurrency immediately admits runs already queued behind the old, lower limit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
     const config = parseConfig(
@@ -848,6 +895,41 @@ describe("Governor rate-limit recording", () => {
     await governor.recordRateLimitError();
     const second = (await new RateLimitTracker(dir).read())?.resetsAt ?? 0;
     expect(second).toBeGreaterThan(first);
+  });
+
+  // Regression for a real 2026-09-12 incident: within a single run, the
+  // SDK's own accurate rate_limit_event (a real multi-hour resetsAt, handled
+  // by recordRateLimit) was immediately followed by a generic "rate_limit"
+  // error string carrying no time at all. recordRateLimitError's 2-30-minute
+  // guessed cooldown then overwrote the accurate multi-hour reading down to
+  // a few minutes out, reopening admission into a limit that had not
+  // actually cleared — every few minutes, for hours, exhausting webhook- and
+  // task-retry budgets sized to survive one long wait, not dozens of short
+  // ones.
+  it("recordRateLimitError does not shorten an existing rejection that is still live and further out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    // Real wall-clock, not FIXED_NOW: recordRateLimit's recordedAt comes from
+    // this.now(), and recordRateLimitError's own staleness check (via
+    // currentRateLimit) is deliberately against the real clock (see its
+    // comment) — mixing a frozen historical `now` with that real-clock check
+    // would make the first snapshot look stale by pure test-clock skew,
+    // which is not the scenario this test exists to cover.
+    const governor = build(dir, () => new Date());
+    const farFuture = Math.floor(Date.now() / 1000) + 4 * 60 * 60;
+    await governor.recordRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: farFuture });
+    await governor.recordRateLimitError(undefined);
+    const snapshot = await new RateLimitTracker(dir).read();
+    expect(snapshot?.resetsAt).toBe(farFuture);
+  });
+
+  it("recordRateLimitError still extends the recorded rejection when its own reading reaches further out than what's on file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cai-gov-"));
+    const governor = build(dir, () => new Date());
+    await governor.recordRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: Math.floor(Date.now() / 1000) + 60 });
+    const laterReset = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    await governor.recordRateLimitError(laterReset);
+    const snapshot = await new RateLimitTracker(dir).read();
+    expect(snapshot?.resetsAt).toBe(Math.floor(laterReset.getTime() / 1000));
   });
 
   it("a non-rejected recordRateLimit call resets the backoff level", async () => {

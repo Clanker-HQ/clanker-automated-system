@@ -55,7 +55,14 @@ export class GithubApiTransport implements GithubTransport {
       );
     }
 
-    const pr = (await prRes.json()) as { head: { sha: string }; base: { ref: string }; title: string; body: string | null };
+    const pr = (await prRes.json()) as {
+      head: { sha: string };
+      base: { ref: string };
+      title: string;
+      body: string | null;
+      state: "open" | "closed";
+      merged: boolean;
+    };
     const files = (await filesRes.json()) as { filename: string; previous_filename?: string }[];
     const diff = await diffRes.text();
     return {
@@ -63,6 +70,8 @@ export class GithubApiTransport implements GithubTransport {
       repo,
       headSha: pr.head.sha,
       base: pr.base.ref,
+      state: pr.state,
+      merged: pr.merged,
       // A rename is reported as one entry with `filename` = the NEW path and
       // `previous_filename` = the OLD one. Reporting only the new path would
       // let a PR move an excluded file out from under Lock 4's exact-path set
