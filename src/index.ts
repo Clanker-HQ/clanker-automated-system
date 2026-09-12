@@ -139,6 +139,28 @@ async function main(): Promise<void> {
     // silently denies every effect the agent was configured to be allowed.
     grants = loadGrants(join(ROOT, "grants.yaml"));
     validateGrantRefs(agents, grants);
+    // Not mustEnv'd — unlike GITHUB_PR_TOKEN/DISCORD_BOT_TOKEN/DISCORD_OWNER_ID,
+    // a grant's `secret` is an operator-chosen name (BUILDER_PUSH_TOKEN,
+    // GITHUB_PRODUCTS_TOKEN, ...), not a fixed identifier this file could name
+    // ahead of time, and every call site that resolves one already refuses
+    // with a message naming the exact grant and env var (see sdk-runner.ts's
+    // `Refused: grant "…" has no … set.` and cloneRepo/pushBranch's own
+    // matching refusal) rather than letting an opaque GitHub auth error
+    // through — so a genuinely missing secret is never silent, only deferred
+    // to the first call that needs it. What boot-time mustEnv gives that a
+    // call-time refusal doesn't is visibility *before* an agent burns a run
+    // discovering it, so every grant's secret is checked here too — logged
+    // as a boot warning, not a thrown ValidationError, because an
+    // intentionally-not-yet-provisioned grant (e.g. BUILDER_PUSH_TOKEN before
+    // the bot PAT exists — see README's "still isn't" section) must not
+    // block every other agent from booting.
+    const missingGrantSecrets = [...new Set(grants.filter((g) => !process.env[g.secret]).map((g) => g.secret))];
+    if (missingGrantSecrets.length > 0) {
+      console.warn(
+        `[boot] warning: ${missingGrantSecrets.length} grant secret(s) not set in the environment: ` +
+          `${missingGrantSecrets.join(", ")} — any effect resolving one of these will refuse at call time until it is set.`,
+      );
+    }
     deployments = loadDeploys(join(ROOT, "deploys.yaml"), {
       maxLiveDeployments: config.deploy.maxLiveDeployments,
       availableProductEnv: new Set(config.deploy.availableProductEnv),

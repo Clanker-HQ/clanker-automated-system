@@ -719,7 +719,15 @@ Still genuinely deferred:
   `BUILDER_PUSH_TOKEN` itself is still unset, so `pushBranch` has nothing to
   authenticate with yet — generate that PAT on the bot account
   (Contents:Write + Pull requests:Write, this repo only) before relying on
-  `builder`.
+  `builder`. Boot logs a warning naming every grant secret (this one
+  included) that isn't set in the environment, so this gap is visible at
+  startup rather than only discovered the first time `pushBranch` refuses —
+  see `src/index.ts`'s `missingGrantSecrets` check. It's a warning, not a
+  boot-blocking `mustEnv`, deliberately: unlike `GITHUB_PR_TOKEN`/
+  `DISCORD_BOT_TOKEN`/`DISCORD_OWNER_ID` (fixed names this file always
+  needs), a grant's `secret` is an operator-chosen name that may legitimately
+  stay unset for a while — as `BUILDER_PUSH_TOKEN` itself did here — without
+  that being a reason every other agent should fail to boot.
   <br><br>
   AAS-Labs product repos no longer share this gap: `pr-reviewer` now also
   holds `products-repo` (GITHUB_PRODUCTS_TOKEN), `createRepo` registers a
