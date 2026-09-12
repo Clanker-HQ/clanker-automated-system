@@ -134,8 +134,18 @@ const MAX_RETRIES = RETRY_BACKOFF_MS.length;
  * Capped separately (rather than left unbounded) so a message that always
  * parses to "reset time already just passed" — a bug in parseRateLimitReset,
  * or a limit that genuinely never clears — can't defer a task forever.
+ *
+ * Raised from 5 to 60 on 2026-09-12, mirroring webhook-retry-store.ts's
+ * identically-reasoned MAX_WEBHOOK_RATE_LIMIT_DEFERS: 5 assumed a handful of
+ * hits at most, but the account's own rolling five-hour session limit
+ * recurs repeatedly across one busy day, each recurrence burning a defer —
+ * exactly what let real tasks fall through to the (also-exhausted) normal
+ * retry budget and get marked permanently failed hours before the limit
+ * that kept refusing them would have cleared on its own. 60 survives ~12
+ * days of continuous back-to-back five-hour windows while still bounding
+ * the case this cap exists for.
  */
-const MAX_RATE_LIMIT_DEFERS = 5;
+export const MAX_RATE_LIMIT_DEFERS = 60;
 
 /**
  * Caps cumulative spend across not-achieved retries at this multiple of the

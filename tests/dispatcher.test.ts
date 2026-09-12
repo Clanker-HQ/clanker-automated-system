@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryConfig } from "../src/config.js";
 import { loadConfig } from "../src/config.js";
-import { Dispatcher, runDispatchTick } from "../src/control/dispatcher.js";
+import { Dispatcher, MAX_RATE_LIMIT_DEFERS, runDispatchTick } from "../src/control/dispatcher.js";
 import { FakeRouter } from "../src/control/router.js";
 import { TaskStore } from "../src/control/task-store.js";
 import { MemoryStore } from "../src/memory/memory-store.js";
@@ -225,7 +225,7 @@ describe("runDispatchTick", () => {
     it("falls back to the normal (also-exhausted) retry budget once rate-limit defers themselves are exhausted", async () => {
       const { tasks, dataDir, world } = taskStore();
       const task = await tasks.create({ text: "x", createdBy: "discord:owner" });
-      await tasks.update(task.id, { rateLimitDeferCount: 5, retryCount: 3 });
+      await tasks.update(task.id, { rateLimitDeferCount: MAX_RATE_LIMIT_DEFERS, retryCount: 3 });
       const executeRun = vi.fn().mockResolvedValue(
         successResult({ status: "failed", error: "You've hit your session limit · resets 3:00pm (UTC)" }),
       );

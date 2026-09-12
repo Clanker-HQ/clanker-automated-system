@@ -20,11 +20,20 @@ export const MAX_WEBHOOK_RETRY_ATTEMPTS = 20;
  * Separate cap for a defer whose wait time is KNOWN (a parsed session/rate
  * limit reset instant), mirroring dispatcher.ts's identically-named
  * constant and the same reasoning: each such defer jumps straight to the
- * real reset time rather than guessing, so it practically never needs more
- * than one or two before the window actually clears. Kept low anyway so a
- * bad parse or a limit that genuinely never clears can't defer forever.
+ * real reset time rather than guessing.
+ *
+ * Raised from 5 to 60 on 2026-09-12: 5 assumed a rate/session limit would be
+ * hit at most a handful of times before a PR got reviewed. In practice the
+ * account's own rolling five-hour session limit recurs repeatedly across a
+ * single busy day, and each recurrence burns one defer — book-pipeline#1 and
+ * #2 both exhausted all 5 and gave up (posting a "review and merge it
+ * manually" notice) purely from riding out several ordinary, expected
+ * session-limit cycles, not from anything actually stuck. 60 survives
+ * roughly 12 days of continuous back-to-back five-hour windows — comfortably
+ * beyond any realistic backlog — while still bounding the case this cap
+ * exists for: a bad parse or a limit that genuinely never clears.
  */
-export const MAX_WEBHOOK_RATE_LIMIT_DEFERS = 5;
+export const MAX_WEBHOOK_RATE_LIMIT_DEFERS = 60;
 
 export interface WebhookRetryEntry {
   id: string;
