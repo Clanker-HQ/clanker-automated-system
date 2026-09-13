@@ -8,7 +8,14 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "15 11 * * *"   # weekly -> daily (2026-09-06), 15min after cleanup-scout; same reasoning -- more chances to land on an "on" window
+  # daily -> twice monthly (2026-09-13, operator directive): the daily bump on
+  # 2026-09-06 was to compensate for the supervisor not always being up during
+  # early bring-up. It's now confirmed persistently running, so the original
+  # justification is gone, and dependency staleness/vulnerabilities don't
+  # change fast enough to need more than the 1st/15th. This is a soft,
+  # per-agent cadence throttle, not a change to Governor's hard rate/budget
+  # caps (config.yaml), which stay as-is.
+  schedule: "15 11 1,15 * *"
   timezone: Europe/Berlin
 
 category: maintain

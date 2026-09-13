@@ -8,7 +8,12 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "0 13 * * *"
+  # daily -> weekly (2026-09-13, operator directive): this is the biggest
+  # single source of new build work on this repo's own codebase, which was
+  # skewing PR volume toward the infra repo over the actual products. A soft,
+  # per-agent cadence throttle — Governor's hard caps (config.yaml) are
+  # unchanged.
+  schedule: "0 13 * * 1"
   timezone: Europe/Berlin
 
 category: build

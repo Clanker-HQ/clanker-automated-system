@@ -8,7 +8,13 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "0 12 * * *"
+  # daily -> weekly (2026-09-13, operator directive): the operator wants
+  # effort concentrated on one product (currently book-pipeline) until it
+  # earns money, rather than continuously sourcing new candidates to split
+  # attention across. Weekly still keeps the pipeline of ideas alive for
+  # when it's time to pick the next one. Soft cadence throttle only —
+  # Governor's hard caps (config.yaml) are unchanged.
+  schedule: "0 12 * * 1"
   timezone: Europe/Berlin
 
 category: research
