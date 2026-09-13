@@ -66,6 +66,50 @@ export function nextOccurrenceOfWallClock(hour: number, minute: number, timeZone
   return candidate;
 }
 
+/**
+ * Ceiling on how far in the future a parsed rate-limit reset instant may be
+ * trusted before the entry deferring to it is treated as if no reset time
+ * had been parsed at all — mirroring governor.ts's RATE_LIMIT_MAX_HOLD_MS and
+ * cron.ts's MAX_LIMIT_RETRY_WAIT_MS, both bounded for the identical reason:
+ * a `resetsAt` further out than any real subscription window is not
+ * credible (a parsing slip, a clock skew, an API changing units), and
+ * trusting it anyway is exactly how a bad parse turns into a deferral that
+ * never comes back. 24 hours is well past the longest window the
+ * subscription actually has (five hours) while still comfortably covering a
+ * reset instant that names a time later today or tomorrow.
+ */
+export const RATE_LIMIT_RESET_MAX_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Validates (and where sensible, repairs) a parsed rate-limit reset instant
+ * before anything is allowed to defer to it.
+ *
+ * Two failure modes, both from parseRateLimitReset having a bug or being fed
+ * a malformed message, are guarded against here rather than trusted straight
+ * through to `nextRetryAt`:
+ *
+ * - `target` beyond RATE_LIMIT_RESET_MAX_MS out is not credible (a parsing
+ *   slip, a clock skew, an API changing units) — this returns `undefined`,
+ *   the same "treat it as if nothing had parsed" fallback a `message` that
+ *   never matched RESET_PATTERN already gets, so a caller need not
+ *   special-case an implausible reset instant differently from no reset
+ *   instant at all.
+ * - `target` already at or before `now` is clamped up to `now` rather than
+ *   rejected: an entry is already eligible for its very next drain tick
+ *   whenever `nextRetryAt` is in the past (see webhook-wiring.ts's
+ *   drainWebhookRetries and task-store.ts's nextPending, both of which treat
+ *   "in the past" as "eligible now"), which is exactly right when a reset
+ *   instant is only moments stale by the time it's recorded. Rejecting it
+ *   outright would needlessly fall back to the fixed-backoff/attempt-count
+ *   path for a defer that is, in fact, still perfectly legitimate.
+ */
+export function boundRateLimitReset(target: Date | undefined, now: Date): Date | undefined {
+  if (!target) return undefined;
+  const deltaMs = target.getTime() - now.getTime();
+  if (deltaMs > RATE_LIMIT_RESET_MAX_MS) return undefined;
+  return deltaMs < 0 ? now : target;
+}
+
 export function parseRateLimitReset(message: string, now: Date): Date | undefined {
   const match = RESET_PATTERN.exec(message);
   if (!match) return undefined;

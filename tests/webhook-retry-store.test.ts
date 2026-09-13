@@ -91,5 +91,38 @@ describe("WebhookRetryStore", () => {
       expect(updated?.rateLimitDeferCount).toBe(1); // untouched by the plain branch
       expect(updated?.nextRetryAt).toBeUndefined();
     });
+
+    // Regression coverage: a parseRateLimitReset bug or a malformed error
+    // message could otherwise hand back an implausible instant and have it
+    // written straight to `nextRetryAt`, deferring the entry for a day (or
+    // longer, on repeat) on a reset time no real subscription window
+    // justifies. See boundRateLimitReset in rate-limit-reset.ts.
+    it("create() falls back to the plain path when rateLimitResetAt is implausibly far in the future", async () => {
+      const store = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const farFuture = new Date(Date.now() + 25 * 60 * 60 * 1000);
+      const entry = await store.create(event(), { rateLimitResetAt: farFuture });
+      expect(entry.attempts).toBe(1);
+      expect(entry.rateLimitDeferCount).toBeUndefined();
+      expect(entry.nextRetryAt).toBeUndefined();
+    });
+
+    it("recordAttempt falls back to bumping attempts when rateLimitResetAt is implausibly far in the future", async () => {
+      const store = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const entry = await store.create(event());
+      const farFuture = new Date(Date.now() + 25 * 60 * 60 * 1000);
+      const updated = await store.recordAttempt(entry.id, { rateLimitResetAt: farFuture });
+      expect(updated?.attempts).toBe(2);
+      expect(updated?.rateLimitDeferCount).toBeUndefined();
+      expect(updated?.nextRetryAt).toBeUndefined();
+    });
+
+    it("create() clamps a past rateLimitResetAt up to now instead of discarding the defer", async () => {
+      const store = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
+      const before = Date.now();
+      const entry = await store.create(event(), { rateLimitResetAt: new Date(before - 60_000) });
+      expect(entry.rateLimitDeferCount).toBe(1);
+      expect(entry.nextRetryAt).toBeDefined();
+      expect(new Date(entry.nextRetryAt!).getTime()).toBeGreaterThanOrEqual(before);
+    });
   });
 });

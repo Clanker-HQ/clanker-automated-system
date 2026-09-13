@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { boundRateLimitReset } from "./rate-limit-reset.js";
 import type { WebhookEvent } from "./webhook-receiver.js";
 
 /**
@@ -97,11 +98,20 @@ export class WebhookRetryStore {
    */
   async create(event: WebhookEvent, opts?: { rateLimitResetAt?: Date }): Promise<WebhookRetryEntry> {
     await mkdir(this.dir(), { recursive: true });
-    const now = new Date().toISOString();
-    const entry: WebhookRetryEntry = opts?.rateLimitResetAt
+    const nowDate = new Date();
+    const now = nowDate.toISOString();
+    // boundRateLimitReset guards against a parseRateLimitReset bug or a
+    // malformed message handing back an instant implausibly far in the future
+    // (perpetual deferral) — see its own doc comment. A past instant is
+    // clamped to now rather than rejected, since drainWebhookRetries already
+    // treats a past nextRetryAt as eligible immediately. An instant beyond
+    // the ceiling comes back undefined and falls back to the same "no known
+    // reset time" path a plain refusal already takes.
+    const rateLimitResetAt = boundRateLimitReset(opts?.rateLimitResetAt, nowDate);
+    const entry: WebhookRetryEntry = rateLimitResetAt
       ? {
           id: randomUUID(), event, attempts: 0, rateLimitDeferCount: 1,
-          nextRetryAt: opts.rateLimitResetAt.toISOString(), createdAt: now, lastAttemptAt: now,
+          nextRetryAt: rateLimitResetAt.toISOString(), createdAt: now, lastAttemptAt: now,
         }
       : { id: randomUUID(), event, attempts: 1, createdAt: now, lastAttemptAt: now };
     await writeFile(this.path(entry.id), JSON.stringify(entry, null, 2) + "\n");
@@ -137,12 +147,17 @@ export class WebhookRetryStore {
   async recordAttempt(id: string, opts?: { rateLimitResetAt?: Date }): Promise<WebhookRetryEntry | null> {
     const entry = await this.get(id);
     if (!entry) return null;
-    const lastAttemptAt = new Date().toISOString();
+    const nowDate = new Date();
+    const lastAttemptAt = nowDate.toISOString();
     const { nextRetryAt: _droppedNextRetryAt, ...rest } = entry;
-    const next: WebhookRetryEntry = opts?.rateLimitResetAt
+    // See create()'s identical guard: an instant beyond the ceiling falls
+    // back to bumping `attempts` instead of `rateLimitDeferCount`, the same
+    // as a refusal that never named a reset time in the first place.
+    const rateLimitResetAt = boundRateLimitReset(opts?.rateLimitResetAt, nowDate);
+    const next: WebhookRetryEntry = rateLimitResetAt
       ? {
           ...rest, rateLimitDeferCount: (entry.rateLimitDeferCount ?? 0) + 1,
-          nextRetryAt: opts.rateLimitResetAt.toISOString(), lastAttemptAt,
+          nextRetryAt: rateLimitResetAt.toISOString(), lastAttemptAt,
         }
       : { ...rest, attempts: entry.attempts + 1, lastAttemptAt };
     await writeFile(this.path(id), JSON.stringify(next, null, 2) + "\n");

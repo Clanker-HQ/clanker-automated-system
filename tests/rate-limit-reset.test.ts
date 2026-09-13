@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLimitError, parseRateLimitReset } from "../src/control/rate-limit-reset.js";
+import { boundRateLimitReset, isLimitError, parseRateLimitReset, RATE_LIMIT_RESET_MAX_MS } from "../src/control/rate-limit-reset.js";
 
 describe("parseRateLimitReset", () => {
   it("parses a 12-hour reset time with am/pm into today's occurrence in that zone, when it hasn't passed yet", () => {
@@ -48,6 +48,43 @@ describe("parseRateLimitReset", () => {
 // whose message ("You've hit your session limit · resets 1:20pm
 // (Europe/Bratislava)") contains no "rate_limit" substring — the only thing
 // the old detector looked for. See src/control/rate-limit-reset.ts.
+// Guards against a parseRateLimitReset bug or a malformed message handing
+// back an instant that would defer an entry forever (too far out) or never
+// actually come due (undefined) — see boundRateLimitReset's own doc comment
+// and src/control/webhook-retry-store.ts / dispatcher.ts, which apply this
+// before ever writing to `nextRetryAt`.
+describe("boundRateLimitReset", () => {
+  const now = new Date("2026-09-13T12:00:00.000Z");
+
+  it("passes through undefined unchanged", () => {
+    expect(boundRateLimitReset(undefined, now)).toBeUndefined();
+  });
+
+  it("passes through a plausible near-future instant unchanged", () => {
+    const target = new Date(now.getTime() + 60 * 60 * 1000);
+    expect(boundRateLimitReset(target, now)).toEqual(target);
+  });
+
+  it("passes through an instant exactly at the ceiling", () => {
+    const target = new Date(now.getTime() + RATE_LIMIT_RESET_MAX_MS);
+    expect(boundRateLimitReset(target, now)).toEqual(target);
+  });
+
+  it("rejects (returns undefined for) an instant beyond the ceiling", () => {
+    const target = new Date(now.getTime() + RATE_LIMIT_RESET_MAX_MS + 1);
+    expect(boundRateLimitReset(target, now)).toBeUndefined();
+  });
+
+  it("clamps a past instant up to now, rather than rejecting it", () => {
+    const target = new Date(now.getTime() - 60 * 60 * 1000);
+    expect(boundRateLimitReset(target, now)).toEqual(now);
+  });
+
+  it("clamps an instant equal to now unchanged", () => {
+    expect(boundRateLimitReset(now, now)).toEqual(now);
+  });
+});
+
 describe("isLimitError", () => {
   it.each([
     "Claude Code returned an error result: You've hit your session limit · resets 1:20pm (Europe/Bratislava)",

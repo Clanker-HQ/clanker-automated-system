@@ -7,7 +7,7 @@ import type { MemoryInput } from "../memory/types.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult } from "../run-store.js";
 import type { WorldModel } from "../world/world-model.js";
-import { parseRateLimitReset } from "./rate-limit-reset.js";
+import { boundRateLimitReset, parseRateLimitReset } from "./rate-limit-reset.js";
 import { specialistsOf, type Router } from "./router.js";
 import type { Task, TaskStore } from "./task-store.js";
 
@@ -465,7 +465,15 @@ async function executeAndFinalize(deps: DispatcherDeps, task: Task, agent: Agent
       // this schedule exists for — so they skip straight to failing instead of
       // burning all 3 attempts (21 minutes + up to 4x the run's budget) first.
       const isDeterministic = result.status === "denied" || result.status === "timeout";
-      const rateLimitResetAt = isDeterministic ? undefined : parseRateLimitReset(reason, now());
+      // boundRateLimitReset guards against a parseRateLimitReset bug or a
+      // malformed message handing back an instant implausibly far in the
+      // future (perpetual deferral) — see its own doc comment. A past instant
+      // is clamped to now rather than rejected, since nextPending() already
+      // treats a past nextRetryAt as eligible immediately. An instant beyond
+      // the ceiling comes back undefined, and the task falls through to the
+      // ordinary backoff/failure handling below, exactly as if no reset
+      // instant had been named at all.
+      const rateLimitResetAt = isDeterministic ? undefined : boundRateLimitReset(parseRateLimitReset(reason, now()), now());
       const previousRateLimitDefers = task.rateLimitDeferCount ?? 0;
       if (rateLimitResetAt && previousRateLimitDefers < MAX_RATE_LIMIT_DEFERS) {
         console.log(
