@@ -432,7 +432,14 @@ describe("makeWebhookHandler retry persistence", () => {
       const executeRun = vi.fn().mockResolvedValue(undefined);
       const orchestrator = { executeRun } as unknown as Orchestrator;
       const retryStore = new WebhookRetryStore(mkdtempSync(join(tmpdir(), "cai-webhookretry-")));
-      const governor = governorWithStatus({ rateLimitStatus: "rejected", rateLimitResetsAt: 1789073400 });
+      // An hour out from whenever this test actually runs, not a fixed
+      // historical timestamp — boundRateLimitReset (webhook-retry-store.ts)
+      // now clamps a stale/past instant up to "now", which a hardcoded
+      // timestamp from the past would trip as soon as real time moved past
+      // it, defeating the point of this assertion (that Governor's own
+      // instant is preserved, not fabricated).
+      const rateLimitResetsAt = Math.floor(Date.now() / 1000) + 3600;
+      const governor = governorWithStatus({ rateLimitStatus: "rejected", rateLimitResetsAt });
       const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, retryStore, governor });
 
       await handler(event());
@@ -441,7 +448,7 @@ describe("makeWebhookHandler retry persistence", () => {
       expect(pending).toHaveLength(1);
       expect(pending[0]!.attempts).toBe(0);
       expect(pending[0]!.rateLimitDeferCount).toBe(1);
-      expect(pending[0]!.nextRetryAt).toBe(new Date(1789073400 * 1000).toISOString());
+      expect(pending[0]!.nextRetryAt).toBe(new Date(rateLimitResetsAt * 1000).toISOString());
     });
 
     it("falls back to the plain flat-cadence retry when the snapshot is not rejected", async () => {
