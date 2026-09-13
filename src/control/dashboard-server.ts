@@ -153,7 +153,20 @@ export class DashboardServer {
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
   }
 
-  /** Pure request handling, no real HTTP involved — exactly like WebhookReceiver.handleRequest. */
+  /**
+   * Pure request handling, no real HTTP involved — exactly like
+   * WebhookReceiver.handleRequest. Unlike WebhookReceiver though, this
+   * method's caller (both `listen()` below and every test) awaits it
+   * directly to produce the actual HTTP response, so WebhookReceiver's own
+   * `requestTimeoutMs` (a slowloris backstop on reading the incoming
+   * request, enforced by `listen()`'s http server, with the handler itself
+   * left to run fire-and-forget after a fast 202) doesn't translate here: a
+   * route below that hangs — or a dependency it calls into that hangs —
+   * would hang this method, and thus the response, forever. `routeRequest`
+   * is raced against a timer so a slow route still produces a real (504)
+   * response within `requestTimeoutMs` instead of holding the connection
+   * (and its underlying socket/file descriptor) open indefinitely.
+   */
   async handleRequest(req: DashboardRequest): Promise<DashboardResponse> {
     if (!checkAuth(req.authHeader, this.user, this.password)) return UNAUTHORIZED;
 
@@ -161,11 +174,30 @@ export class DashboardServer {
       return CROSS_ORIGIN_BLOCKED;
     }
 
-    // Every route below (added in later tasks) lives inside this try block —
-    // unlike WebhookReceiver, whose handler calls are already isolated by
-    // their own .catch(), the routes here call directly into stores that can
-    // throw on an unexpected I/O error, and a throw must still produce a
-    // real response rather than leaving the request hanging forever.
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<DashboardResponse>((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ status: 504, headers: { "content-type": "text/plain" }, body: "request timed out" });
+      }, this.requestTimeoutMs);
+    });
+
+    try {
+      return await Promise.race([this.routeRequest(req), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Every route below (added in later tasks) lives inside this try block —
+   * unlike WebhookReceiver, whose handler calls are already isolated by
+   * their own .catch(), the routes here call directly into stores that can
+   * throw on an unexpected I/O error, and a throw must still produce a
+   * real response rather than leaving the request hanging forever. Split
+   * out from `handleRequest` so that method can race this one against a
+   * timeout without duplicating the routing table.
+   */
+  private async routeRequest(req: DashboardRequest): Promise<DashboardResponse> {
     try {
       if (req.method === "GET" && req.path === "/") {
         const html = await readFile(new URL("../../public/dashboard/index.html", import.meta.url), "utf8");

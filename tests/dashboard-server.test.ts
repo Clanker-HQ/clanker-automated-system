@@ -646,6 +646,26 @@ describe("GET /api/metrics", () => {
   });
 });
 
+describe("DashboardServer request timeout", () => {
+  it("returns 504 instead of hanging forever when a route handler never resolves", async () => {
+    const deps = testDeps();
+    deps.governor = { ...deps.governor, status: () => new Promise(() => {}) };
+    const timedOut = new DashboardServer({ user: "op", password: "secret", deps, requestTimeoutMs: 20 });
+    const result = await timedOut.handleRequest({
+      method: "GET", path: "/api/status", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(504);
+  });
+
+  it("still returns the real response when the route finishes well within the timeout", async () => {
+    const fast = new DashboardServer({ user: "op", password: "secret", deps: testDeps(), requestTimeoutMs: 30_000 });
+    const result = await fast.handleRequest({
+      method: "GET", path: "/api/status", query: new URLSearchParams(), authHeader: AUTH, body: "",
+    });
+    expect(result.status).toBe(200);
+  });
+});
+
 describe("GET /", () => {
   it("serves the dashboard page once authenticated", async () => {
     const result = await server().handleRequest({
