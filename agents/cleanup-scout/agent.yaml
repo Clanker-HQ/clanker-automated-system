@@ -8,7 +8,13 @@ description: >-
 
 trigger:
   type: cron
-  schedule: "0 11 * * *"   # weekly -> daily (2026-09-06): a local-only process that isn't always on needs more chances per week to actually land on an "on" window, not just one
+  # daily -> weekly (2026-09-13, operator directive): the daily bump on
+  # 2026-09-06 compensated for the supervisor not always being up during
+  # early bring-up; it's now confirmed persistently running. Staleness in
+  # docs/dead references accumulates slowly, so weekly is enough — a soft,
+  # per-agent cadence throttle to reduce token burn per window, not a change
+  # to Governor's hard caps (config.yaml).
+  schedule: "0 11 * * 1"
   timezone: Europe/Berlin
 
 category: maintain
