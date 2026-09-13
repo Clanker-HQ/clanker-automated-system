@@ -710,16 +710,29 @@ See also `docs/superpowers/specs/2026-08-30-self-evaluation-design.md`.
 Still genuinely deferred:
 
 - **Browser capability** (`capabilities.browser`) — Plan C territory.
-- **The repo is real; the webhook and the builder's own token still aren't.**
+- **The repo is real, and so is the builder's own token now.**
   This system now lives at `Clanker-HQ/clanker-automated-system` on GitHub,
   and `GITHUB_PR_TOKEN`/`GITHUB_WEBHOOK_SECRET` are set, so `infra-repo`
   authorises real PR review/merge calls once a repo's webhook is actually
   configured (Settings → Webhooks — still per-repo, no account-wide
-  equivalent). `builder-push` already points at this same real repo, but
-  `BUILDER_PUSH_TOKEN` itself is still unset, so `pushBranch` has nothing to
-  authenticate with yet — generate that PAT on the bot account
-  (Contents:Write + Pull requests:Write, this repo only) before relying on
-  `builder`.
+  equivalent). `builder-push` already points at this same real repo, and
+  `BUILDER_PUSH_TOKEN` is the PAT on the bot account (Contents:Write +
+  Pull requests:Write, this repo only) that `pushBranch` authenticates
+  with. Because both `builder` and `repair` are enabled agents whose entire
+  reason to run depends on this one token (see their `agent.yaml`
+  `grantRefs`), it is `mustEnv`'d in `src/index.ts` — boot fails immediately
+  with a clear `ValidationError` if it isn't set, the same way a missing
+  `GITHUB_PR_TOKEN`/`DISCORD_BOT_TOKEN`/`DISCORD_OWNER_ID` already does,
+  rather than booting cleanly and only discovering the gap the first time
+  `pushBranch` refuses. Every *other* grant's secret (`GITHUB_PRODUCTS_TOKEN`,
+  `CLOUDFLARE_API_TOKEN`, `STRIPE_CHECKOUT_TOKEN`, ...) is not held to this
+  bar: those are operator-chosen names for grants that may legitimately stay
+  unprovisioned for a while (e.g. a product-specific credential before that
+  product exists) without that being a reason every other agent should fail
+  to boot, so boot only logs a warning naming any of those that are missing
+  — see `src/index.ts`'s `missingGrantSecrets` check — and each call site
+  that resolves one still refuses with a message naming the exact grant and
+  env var rather than letting an opaque auth error through.
   <br><br>
   AAS-Labs product repos no longer share this gap: `pr-reviewer` now also
   holds `products-repo` (GITHUB_PRODUCTS_TOKEN), `createRepo` registers a

@@ -139,6 +139,40 @@ async function main(): Promise<void> {
     // silently denies every effect the agent was configured to be allowed.
     grants = loadGrants(join(ROOT, "grants.yaml"));
     validateGrantRefs(agents, grants);
+    // BUILDER_PUSH_TOKEN is now mustEnv'd, same as GITHUB_PR_TOKEN/
+    // DISCORD_BOT_TOKEN/DISCORD_OWNER_ID below: `builder-push` is the one
+    // grant secret this file can name ahead of time with confidence, because
+    // two *enabled* agents (`builder`, `repair` — see their agent.yaml
+    // grantRefs) depend on it for every run they do, so a missing value is
+    // never a one-off failure deferred to a single call site; it silently
+    // disables both agents' core effect (`pushBranch`) for the entire
+    // process lifetime. That's exactly the "fails boot loudly, not the first
+    // time an agent burns a run discovering it" bar GITHUB_PR_TOKEN is held
+    // to, so it gets the same treatment rather than a softer boot-time
+    // warning. See README's `BUILDER_PUSH_TOKEN` section for the same
+    // reasoning in full.
+    mustEnv("BUILDER_PUSH_TOKEN");
+    // The remaining grant secrets (GITHUB_PRODUCTS_TOKEN, CLOUDFLARE_API_TOKEN,
+    // STRIPE_CHECKOUT_TOKEN, ...) are operator-chosen names this file has no
+    // fixed identifier for ahead of time, and every call site that resolves
+    // one already refuses with a message naming the exact grant and env var
+    // (see sdk-runner.ts's `Refused: grant "…" has no … set.` and
+    // cloneRepo/pushBranch's own matching refusal) rather than letting an
+    // opaque GitHub/API auth error through — so a missing one of these is
+    // never silent, only deferred to the first call that needs it. Logged
+    // here too, as a boot warning rather than a thrown ValidationError,
+    // because one of these being intentionally not-yet-provisioned (e.g. a
+    // product grant before that product exists) must not block every other
+    // agent from booting the way a missing BUILDER_PUSH_TOKEN now does.
+    const missingGrantSecrets = [
+      ...new Set(grants.filter((g) => g.secret !== "BUILDER_PUSH_TOKEN" && !process.env[g.secret]).map((g) => g.secret)),
+    ];
+    if (missingGrantSecrets.length > 0) {
+      console.warn(
+        `[boot] warning: ${missingGrantSecrets.length} grant secret(s) not set in the environment: ` +
+          `${missingGrantSecrets.join(", ")} — any effect resolving one of these will refuse at call time until it is set.`,
+      );
+    }
     deployments = loadDeploys(join(ROOT, "deploys.yaml"), {
       maxLiveDeployments: config.deploy.maxLiveDeployments,
       availableProductEnv: new Set(config.deploy.availableProductEnv),
