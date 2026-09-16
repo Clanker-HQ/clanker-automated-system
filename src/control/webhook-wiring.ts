@@ -340,7 +340,7 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
   if (result.status === "interrupted" && isLimitError(result.error ?? "")) {
     return { retry: true, rateLimitResetAt: parseRateLimitReset(result.error ?? "", new Date()) };
   }
-  if (result.status === "success") await postFallbackCommentIfMissing(github, pr, triggeredAt, result.summary);
+  if (result.status === "success") await postFallbackCommentIfMissing(github, pr, triggeredAt, result.summary, deps.giveUpStore);
   return { retry: false };
 }
 
@@ -363,10 +363,36 @@ async function processEvent(deps: WebhookHandlerDeps, event: WebhookEvent): Prom
  * same way. A harmless double-post (if the agent's own comment actually did
  * land and this check somehow missed it) costs far less than a PR that
  * silently never hears back at all.
+ *
+ * Also records a WebhookGiveUpStore entry (reason "comment-post-failed") the
+ * same moment it decides the run's own comment is missing — mirrors
+ * drainWebhookRetries's own give-up recording for the "attempts"/
+ * "rate-limit-defers" caps: without it, this case's only trace was the
+ * fallback comment itself, invisible to digest.ts's "needing human
+ * attention" section (#103, #106 and book-pipeline#2 all sat unnoticed this
+ * way for days). `giveUpStore` is optional for the same reason it is
+ * everywhere else in this file — existing callers/tests that don't wire it
+ * get exactly the pre-existing behavior.
  */
-async function postFallbackCommentIfMissing(github: GithubTransport, pr: PullRequestInfo, since: Date, summary: string): Promise<void> {
+async function postFallbackCommentIfMissing(
+  github: GithubTransport,
+  pr: PullRequestInfo,
+  since: Date,
+  summary: string,
+  giveUpStore?: WebhookGiveUpStore,
+): Promise<void> {
   try {
     if (await github.hasCommentSince(pr.repo, pr.number, since)) return;
+    await giveUpStore
+      ?.record(`${pr.repo}#${pr.number}`, {
+        reason: "comment-post-failed",
+        totalTries: 1,
+        createdAt: since.toISOString(),
+        gaveUpAt: new Date().toISOString(),
+      })
+      .catch((err: unknown) => {
+        console.error(`[webhook] failed to record the comment-post-failed give-up for ${pr.repo}#${pr.number}`, err);
+      });
     await github.postReviewComment(
       pr.repo,
       pr.number,

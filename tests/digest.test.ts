@@ -139,6 +139,9 @@ describe("buildDigestText", () => {
       await webhookGiveUps.record("AAS-Labs/book-pipeline#1", {
         reason: "rate-limit-defers", totalTries: 60, createdAt: "2026-09-09T00:00:00.000Z", gaveUpAt: "2026-09-11T00:00:00.000Z",
       });
+      await webhookGiveUps.record("AAS-Labs/book-pipeline#2", {
+        reason: "comment-post-failed", totalTries: 1, createdAt: "2026-09-16T17:27:41.356Z", gaveUpAt: "2026-09-16T17:34:44.151Z",
+      });
 
       const text = await buildDigestText({ store, tasks, since: WITHIN_WINDOW, webhookGiveUps });
 
@@ -146,6 +149,8 @@ describe("buildDigestText", () => {
       expect(text).toContain("review couldn't start");
       expect(text).toContain("AAS-Labs/book-pipeline#1");
       expect(text).toContain("session limit kept recurring");
+      expect(text).toContain("AAS-Labs/book-pipeline#2");
+      expect(text).toContain("reviewed but couldn't post/merge");
     });
 
     it("says nothing happened when neither store is wired in — matches pre-existing behavior", async () => {
