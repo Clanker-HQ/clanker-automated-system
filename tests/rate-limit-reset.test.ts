@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { boundRateLimitReset, isLimitError, parseRateLimitReset, RATE_LIMIT_RESET_MAX_MS } from "../src/control/rate-limit-reset.js";
 
 describe("parseRateLimitReset", () => {
@@ -73,6 +73,30 @@ describe("boundRateLimitReset", () => {
   it("rejects (returns undefined for) an instant beyond the ceiling", () => {
     const target = new Date(now.getTime() + RATE_LIMIT_RESET_MAX_MS + 1);
     expect(boundRateLimitReset(target, now)).toBeUndefined();
+  });
+
+  describe("logging a discarded far-future instant", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("logs the received reset value and the reason when discarding an instant beyond the ceiling", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const target = new Date(now.getTime() + RATE_LIMIT_RESET_MAX_MS + 1);
+      boundRateLimitReset(target, now);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const [message] = warnSpy.mock.calls[0]!;
+      expect(message).toContain(target.toISOString());
+      expect(message).toContain("too far in future");
+    });
+
+    it("does not log for a plausible instant, a clamped past instant, or undefined", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      boundRateLimitReset(undefined, now);
+      boundRateLimitReset(new Date(now.getTime() + 60 * 60 * 1000), now);
+      boundRateLimitReset(new Date(now.getTime() - 60 * 60 * 1000), now);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
   });
 
   it("clamps a past instant up to now, rather than rejecting it", () => {
