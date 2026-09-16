@@ -747,6 +747,41 @@ describe("makeWebhookHandler fallback comment", () => {
 
     await expect(handler(event())).resolves.toBeUndefined();
   });
+
+  // Regression coverage for the same visibility gap WebhookGiveUpStore
+  // already closed for the "attempts"/"rate-limit-defers" caps (see the
+  // "give-up visibility" describe block below): a comment-post failure used
+  // to leave no trace beyond the fallback comment itself — invisible to the
+  // digest, discoverable only by opening the PR (#103, #106,
+  // AAS-Labs/book-pipeline#2 all sat this way for days on 2026-09-16).
+  it(`records a give-up with reason "comment-post-failed" when the fallback comment fires`, async () => {
+    const github = githubWithSeededPr();
+    const giveUpStore = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-webhookgiveups-")));
+    const executeRun = vi.fn().mockResolvedValue({ ...admittedResult(), summary: "Do not merge: found a real bug." });
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, giveUpStore });
+
+    await handler(event());
+
+    const recorded = await giveUpStore.list();
+    expect(Object.keys(recorded)).toEqual(["owner/repo#7"]);
+    expect(recorded["owner/repo#7"]!.reason).toBe("comment-post-failed");
+  });
+
+  it("does not record a give-up when the run's own comment already landed", async () => {
+    const github = githubWithSeededPr();
+    const giveUpStore = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-webhookgiveups-")));
+    const executeRun = vi.fn().mockImplementation(async () => {
+      await github.postReviewComment("owner/repo", 7, "Do not merge: found a real bug.");
+      return admittedResult();
+    });
+    const orchestrator = { executeRun } as unknown as Orchestrator;
+    const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, giveUpStore });
+
+    await handler(event());
+
+    expect(await giveUpStore.list()).toEqual({});
+  });
 });
 
 describe("drainWebhookRetries", () => {
@@ -925,7 +960,13 @@ describe("drainWebhookRetries", () => {
       await giveUpStore.record("owner/repo#7", {
         reason: "attempts", totalTries: 20, createdAt: "2026-09-11T16:18:05.867Z", gaveUpAt: "2026-09-11T16:27:24.523Z",
       });
-      const executeRun = vi.fn().mockResolvedValue(admittedResult());
+      // Posts its own comment before resolving — a landed comment, distinct
+      // from the "comment-post-failed" fallback path covered above, so this
+      // stays focused on clear()'s behavior alone.
+      const executeRun = vi.fn().mockImplementation(async () => {
+        await github.postReviewComment("owner/repo", 7, "Looks good.");
+        return admittedResult();
+      });
       const orchestrator = { executeRun } as unknown as Orchestrator;
       const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, giveUpStore });
 
@@ -937,7 +978,10 @@ describe("drainWebhookRetries", () => {
     it("clearing a give-up for a PR with no recorded entry is a harmless no-op", async () => {
       const github = githubWithSeededPr();
       const giveUpStore = new WebhookGiveUpStore(mkdtempSync(join(tmpdir(), "cai-webhookgiveups-")));
-      const executeRun = vi.fn().mockResolvedValue(admittedResult());
+      const executeRun = vi.fn().mockImplementation(async () => {
+        await github.postReviewComment("owner/repo", 7, "Looks good.");
+        return admittedResult();
+      });
       const orchestrator = { executeRun } as unknown as Orchestrator;
       const handler = makeWebhookHandler({ agents: [agent()], github, orchestrator, giveUpStore });
 

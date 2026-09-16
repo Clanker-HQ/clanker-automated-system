@@ -9,8 +9,16 @@ import { join } from "node:path";
  * would only ever find out by browsing every repo's every PR by hand.
  */
 export interface WebhookGiveUp {
-  /** Why drainWebhookRetries stopped — the plain-refusal cap or the rate-limit-defer cap, whichever was reached. */
-  reason: "attempts" | "rate-limit-defers";
+  /**
+   * Why the PR is waiting on a human: the plain-refusal cap or the
+   * rate-limit-defer cap drainWebhookRetries reached (see its own doc
+   * comment), or `"comment-post-failed"` — a run that completed a real
+   * review but whose own `postReviewComment` tool call never reached GitHub
+   * (webhook-wiring.ts's `postFallbackCommentIfMissing`), so nothing but a
+   * host-posted fallback comment (and, for a MERGE verdict, no `mergePR`
+   * call at all) marks the PR as reviewed.
+   */
+  reason: "attempts" | "rate-limit-defers" | "comment-post-failed";
   /** attempts + rateLimitDeferCount at the moment this was recorded — the same figure the give-up PR comment itself reports. */
   totalTries: number;
   createdAt: string;

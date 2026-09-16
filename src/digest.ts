@@ -8,7 +8,7 @@ import type { RunStore } from "./run-store.js";
 import { staleCronAgents, stalePasses } from "./state/liveness.js";
 import type { Metrics, MetricsStore } from "./state/metrics-store.js";
 import type { PrFixAttemptStore } from "./state/pr-fix-attempts.js";
-import type { WebhookGiveUpStore } from "./state/webhook-give-ups.js";
+import type { WebhookGiveUp, WebhookGiveUpStore } from "./state/webhook-give-ups.js";
 import type { StrategyStore } from "./world/strategy.js";
 
 /** Twice the weekly metrics cadence, so one missed run is not an alarm. */
@@ -153,7 +153,7 @@ export async function buildDigestText(opts: {
   if (needsHumanCount > 0) {
     const prLabels = [
       ...exhaustedPrs.map((key) => `${key} (auto-fix exhausted)`),
-      ...Object.entries(givenUpPrs).map(([key, giveUp]) => `${key} (${giveUp.reason === "attempts" ? "review couldn't start" : "session limit kept recurring"})`),
+      ...Object.entries(givenUpPrs).map(([key, giveUp]) => `${key} (${giveUpReasonLabel(giveUp.reason)})`),
     ];
     lines.push(`🧑 PRs needing a human — automated review/fix is done trying: ${prLabels.join(", ")}`);
   }
@@ -184,6 +184,23 @@ export async function buildDigestText(opts: {
     lines.push(formatMetricsLine(freshMetrics.latest, freshMetrics.previous));
   }
   return lines.join("\n");
+}
+
+/**
+ * Human-readable label for each WebhookGiveUp.reason — exhaustive over the
+ * type so a future reason added there fails typecheck here instead of
+ * silently falling through to a wrong label the way the old two-way ternary
+ * would have for "comment-post-failed".
+ */
+function giveUpReasonLabel(reason: WebhookGiveUp["reason"]): string {
+  switch (reason) {
+    case "attempts":
+      return "review couldn't start";
+    case "rate-limit-defers":
+      return "session limit kept recurring";
+    case "comment-post-failed":
+      return "reviewed but couldn't post/merge";
+  }
 }
 
 export function formatMetricsLine(latest: Metrics, previous: Metrics | null): string {
