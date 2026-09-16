@@ -102,11 +102,28 @@ export const RATE_LIMIT_RESET_MAX_MS = 24 * 60 * 60 * 1000;
  *   instant is only moments stale by the time it's recorded. Rejecting it
  *   outright would needlessly fall back to the fixed-backoff/attempt-count
  *   path for a defer that is, in fact, still perfectly legitimate.
+ *
+ * A discard (the first case above) is logged: silently falling back is the
+ * right *behavior*, but a `target` this implausible only ever comes from
+ * parseRateLimitReset having a bug or upstream (Claude Code's own error
+ * wording) changing shape/units under us, and neither would otherwise leave
+ * any trace an operator could find — the caller just sees an ordinary
+ * attempt-count-based retry, indistinguishable from a message that never
+ * named a reset time at all. This is the one place that guard fires for
+ * every caller (webhook-retry-store.ts's create/recordAttempt and
+ * dispatcher.ts's failure path), so logging here covers all of them without
+ * each needing its own copy.
  */
 export function boundRateLimitReset(target: Date | undefined, now: Date): Date | undefined {
   if (!target) return undefined;
   const deltaMs = target.getTime() - now.getTime();
-  if (deltaMs > RATE_LIMIT_RESET_MAX_MS) return undefined;
+  if (deltaMs > RATE_LIMIT_RESET_MAX_MS) {
+    console.warn(
+      `[rate-limit-reset] discarding reset instant ${target.toISOString()} (now ${now.toISOString()}): ` +
+        `too far in future — exceeds the ${RATE_LIMIT_RESET_MAX_MS}ms ceiling`,
+    );
+    return undefined;
+  }
   return deltaMs < 0 ? now : target;
 }
 
