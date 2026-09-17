@@ -1814,9 +1814,19 @@ export class SdkRunner implements Runner {
                         topic: z.string().min(1).max(200),
                         conclusion: z.string().min(1),
                         confidence: z.enum(["low", "medium", "high"]),
-                        sources: z.array(z.string()).default([]),
+                        // `.optional()` only, not `.default([])`: under the
+                        // MCP SDK's real request-validation path, the
+                        // installed claude-agent-sdk re-wraps this shape
+                        // using its own bundled zod/v4-mini instance, which
+                        // — with zod >=4.6.x — doesn't reliably apply
+                        // `.default()` set with a *different* zod instance
+                        // (ours) before validating "required". `.optional()`
+                        // survives that cross-instance wrapping; the default
+                        // is applied explicitly below instead.
+                        sources: z.array(z.string()).optional(),
                       },
-                      async ({ topic, conclusion, confidence, sources }) => {
+                      async ({ topic, conclusion, confidence, sources: rawSources }) => {
+                        const sources = rawSources ?? [];
                         let finalConclusion = conclusion;
                         let finalConfidence = confidence;
                         // Never allowed to block recordFinding itself: a grading
@@ -1858,11 +1868,18 @@ export class SdkRunner implements Runner {
                         nextReviewAt: z.string().min(1),
                         bar: z.string().min(1),
                         monthlyCostUsd: z.number().nonnegative(),
-                        notes: z.array(z.string()).default([]),
+                        // See the `sources` comment on recordFinding above:
+                        // `.optional()` only, defaulted explicitly below —
+                        // `extensionCount` keeps its plain `.default(0)`
+                        // since every call site of this tool always sets it
+                        // explicitly (see extensionCount test coverage), so
+                        // the cross-instance zod-default bug never triggers
+                        // for it in practice.
+                        notes: z.array(z.string()).optional(),
                         extensionCount: z.number().int().nonnegative().default(0),
                       },
                       async (entry) => {
-                        await worldDep.upsertPortfolioEntry(entry);
+                        await worldDep.upsertPortfolioEntry({ ...entry, notes: entry.notes ?? [] });
                         return { content: [{ type: "text" as const, text: `Updated portfolio entry "${entry.slug}".` }] };
                       },
                     ),
