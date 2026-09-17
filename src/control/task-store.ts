@@ -331,7 +331,7 @@ export class TaskStore {
     const inFlight = (await this.list()).filter((t) => t.status === "queued" || t.status === "running");
     const reset: Task[] = [];
     for (const task of inFlight) {
-      reset.push(await this.update(task.id, { status: "pending", specialistAgent: undefined }));
+      reset.push(await this.update(task.id, { status: "pending", specialistAgent: undefined, startedAt: undefined }));
     }
     return { reset };
   }
