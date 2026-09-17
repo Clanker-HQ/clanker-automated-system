@@ -1,5 +1,5 @@
 import { Cron } from "croner";
-import { isLimitError, parseRateLimitReset } from "../control/rate-limit-reset.js";
+import { isLimitError, parseRateLimitReset, SHARED_RATE_LIMIT_HOLD_CEILING_MS } from "../control/rate-limit-reset.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { AgentDef } from "../registry.js";
 import type { RunResult, RunStore } from "../run-store.js";
@@ -97,8 +97,12 @@ const LIMIT_RETRY_GRACE_MS = 60_000;
  * parsing slip, a clock skew, an API changing units), and a cron agent is
  * better off waiting for its next real scheduled fire than sitting on a
  * day-long timer that survives no restart anyway.
+ *
+ * Sourced from control/rate-limit-reset.ts's SHARED_RATE_LIMIT_HOLD_CEILING_MS
+ * — the single definition of this ceiling, also used by governor.ts's
+ * RATE_LIMIT_MAX_HOLD_MS, so the two can never drift apart.
  */
-const MAX_LIMIT_RETRY_WAIT_MS = 6 * 60 * 60 * 1000;
+const MAX_LIMIT_RETRY_WAIT_MS = SHARED_RATE_LIMIT_HOLD_CEILING_MS;
 
 /** Just the slice of Governor this file needs — see limitRetryAt. */
 export interface LimitAwareGovernor {

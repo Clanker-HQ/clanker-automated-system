@@ -69,16 +69,47 @@ export function nextOccurrenceOfWallClock(hour: number, minute: number, timeZone
 /**
  * Ceiling on how far in the future a parsed rate-limit reset instant may be
  * trusted before the entry deferring to it is treated as if no reset time
- * had been parsed at all — mirroring governor.ts's RATE_LIMIT_MAX_HOLD_MS and
- * cron.ts's MAX_LIMIT_RETRY_WAIT_MS, both bounded for the identical reason:
- * a `resetsAt` further out than any real subscription window is not
+ * had been parsed at all — bounded for the same reason governor.ts's
+ * RATE_LIMIT_MAX_HOLD_MS and cron.ts's MAX_LIMIT_RETRY_WAIT_MS are each
+ * bounded: a `resetsAt` further out than any real subscription window is not
  * credible (a parsing slip, a clock skew, an API changing units), and
  * trusting it anyway is exactly how a bad parse turns into a deferral that
- * never comes back. 24 hours is well past the longest window the
- * subscription actually has (five hours) while still comfortably covering a
- * reset instant that names a time later today or tomorrow.
+ * never comes back.
+ *
+ * Deliberately a *different, looser* value than those two — not the same
+ * constant, and not merged with it. RATE_LIMIT_MAX_HOLD_MS bounds how long a
+ * *gate* may keep refusing runs on a rejected snapshot, kept tight (six
+ * hours) because refusing on a stale snapshot costs everything, forever (see
+ * that constant's own comment for the 2026-09-08 incident this guards). This
+ * constant instead bounds how far out a freshly *parsed* reset suffix like
+ * "resets 1:50pm (Europe/Bratislava)" may be trusted at all before falling
+ * back to "no reset time parsed" — and a suffix naming a time tomorrow
+ * afternoon is completely ordinary, so it needs to clear the full 24 hours a
+ * day can span, not the five-hour subscription window that bounds the other
+ * two. Sharing one constant across both purposes would either let a rejected
+ * snapshot hold the gate shut for a full day (reintroducing the 2026-09-08
+ * deadlock class RATE_LIMIT_MAX_HOLD_MS exists to prevent) or reject an
+ * entirely ordinary "resets tomorrow" suffix outright.
  */
 export const RATE_LIMIT_RESET_MAX_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Shared ceiling on how long a rejected rate-limit snapshot (or a
+ * limit-triggered cron retry) may still be trusted to describe the present —
+ * six hours, just past the longest window the subscription actually has
+ * (five hours). One definition, imported by governor.ts's
+ * RATE_LIMIT_MAX_HOLD_MS and cron.ts's MAX_LIMIT_RETRY_WAIT_MS, so the two
+ * can never drift apart the way they would if each redeclared the same
+ * literal separately — see governor.ts's RATE_LIMIT_MAX_HOLD_MS for the full
+ * reasoning (the 2026-09-08 incident this bound exists to prevent) and
+ * cron.ts's MAX_LIMIT_RETRY_WAIT_MS for why a cron retry is bounded by the
+ * identical ceiling.
+ *
+ * Not the same value as RATE_LIMIT_RESET_MAX_MS above — see that constant's
+ * comment for why the two are deliberately different and deliberately not
+ * merged.
+ */
+export const SHARED_RATE_LIMIT_HOLD_CEILING_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Validates (and where sensible, repairs) a parsed rate-limit reset instant

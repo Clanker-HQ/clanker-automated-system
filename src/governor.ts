@@ -6,6 +6,7 @@ import type { AgentDef } from "./registry.js";
 import { RunStore } from "./run-store.js";
 import { BreakerStore } from "./state/breaker.js";
 import { RateLimitTracker, type RateLimitSnapshot } from "./state/rate-limit.js";
+import { SHARED_RATE_LIMIT_HOLD_CEILING_MS } from "./control/rate-limit-reset.js";
 
 export type AdmitResult = { kind: "admit" } | { kind: "refuse"; reason: string; alert: boolean };
 
@@ -82,8 +83,12 @@ const RATE_LIMIT_SNAPSHOT_MAX_AGE_MS = 60 * 60 * 1000;
  * 2026-09-01 deadlock: a `resetsAt` further out than any real window — a
  * parsing slip, a clock skew, an API changing units — expires here regardless
  * of what it claims.
+ *
+ * Sourced from control/rate-limit-reset.ts's SHARED_RATE_LIMIT_HOLD_CEILING_MS
+ * — the single definition of this ceiling, also used by cron.ts's
+ * MAX_LIMIT_RETRY_WAIT_MS, so the two can never drift apart.
  */
-const RATE_LIMIT_MAX_HOLD_MS = 6 * 60 * 60 * 1000;
+const RATE_LIMIT_MAX_HOLD_MS = SHARED_RATE_LIMIT_HOLD_CEILING_MS;
 
 /**
  * The snapshot only if it still describes the present, else null.
