@@ -274,11 +274,11 @@ than asked for — anywhere in 0-49, always below the human `!task` default of
 50, so it never queues ahead of something a human actually asked for. `opportunity-scout` looks for plausible ways to earn money and
 queues research questions for `research` to investigate; `improvement-scout`
 reads this project's own source and docs and queues concrete gaps or
-capability ideas — both run daily. `cleanup-scout` and `dependency-scout` run
-daily and hand their findings to `builder` instead of `research` — stale
-docs/dead references, and npm vulnerabilities/outdated packages
-respectively — since fixing either means actually editing files, not
-investigating further. None of the four can push, fetch, or spend beyond
+capability ideas — both run daily. `cleanup-scout` runs weekly and
+`dependency-scout` runs twice monthly, both handing their findings to
+`builder` instead of `research` — stale docs/dead references, and npm
+vulnerabilities/outdated packages respectively — since fixing either means
+actually editing files, not investigating further. None of the four can push, fetch, or spend beyond
 proposing. Three run at `tier: readonly` (no writes possible at all);
 `dependency-scout` runs at `tier: sandboxed` instead, since `npm
 audit`/`npm outdated` need `Bash`, which `readonly` categorically forbids —
