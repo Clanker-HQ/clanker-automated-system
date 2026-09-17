@@ -37,8 +37,12 @@ describe("similarity", () => {
     expect(similarity(a, a)).toBe(1);
   });
 
-  it("scores two empty subjects as 0 rather than dividing by zero", () => {
-    expect(similarity({ subject: "" }, { subject: "" })).toBe(0);
+  it("scores two empty subjects as 1 (identical) rather than dividing by zero", () => {
+    expect(similarity({ subject: "" }, { subject: "" })).toBe(1);
+  });
+
+  it("scores an empty subject against a non-empty one as 0", () => {
+    expect(similarity({ subject: "" }, { subject: "quarterly revenue report" })).toBe(0);
   });
 
   it("does not match on key when only one side has one", () => {

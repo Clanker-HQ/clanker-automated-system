@@ -49,7 +49,8 @@ function trigrams(text: string): Set<string> {
 }
 
 function jaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 0;
+  if (a.size === 0 && b.size === 0) return 1;
+  if (a.size === 0 || b.size === 0) return 0;
   let shared = 0;
   for (const item of a) if (b.has(item)) shared += 1;
   return shared / (a.size + b.size - shared);
